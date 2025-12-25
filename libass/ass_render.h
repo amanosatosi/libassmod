@@ -203,6 +203,14 @@ typedef struct {
     unsigned max_bitmaps;
 } TextInfo;
 
+typedef struct {
+    bool active;
+    bool animated;
+    bool has_timing;
+    double x1, y1, x2, y2;
+    int32_t t1, t2;
+} MoveVCState;
+
 #include "ass_shaper.h"
 
 // Renderer state.
@@ -229,6 +237,7 @@ struct render_context {
     double org_x, org_y;        // origin
     double scale_x, scale_y;
     double hspacing;            // distance between letters, in pixels
+    double fsvp;                // extra vertical spacing between lines, script pixels
     double border_x;            // outline width
     double border_y;
     enum {
@@ -250,6 +259,7 @@ struct render_context {
     double shadow_y;
     double pbo;                 // drawing baseline offset
     ASS_StringView clip_drawing_text;
+    MoveVCState movevc;
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;

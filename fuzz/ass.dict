@@ -128,7 +128,6 @@
 "("
 ")"
 ### Non-Animateable Commands
-"\\fsc"
 "\\fn"
 "\\r"
 "\\b"
@@ -151,7 +150,10 @@
 "\\fade"
 "\\org"
 "\\t"
+"\\movevc"
 ### Animateable Commands
+"\\fsc"
+"\\fsvp"
 "\\bord"
 "\\xbord"
 "\\ybord"

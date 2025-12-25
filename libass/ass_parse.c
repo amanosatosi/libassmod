@@ -452,8 +452,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = state->style->ScaleY;
             state->scale_y = val;
         } else if (tag("fsc")) {
-            state->scale_x = state->style->ScaleX;
-            state->scale_y = state->style->ScaleY;
+            if (nargs) {
+                double val = argtod(*args) / 100;
+                double x = state->scale_x * (1 - pwr) + val * pwr;
+                double y = state->scale_y * (1 - pwr) + val * pwr;
+                state->scale_x = x < 0 ? 0 : x;
+                state->scale_y = y < 0 ? 0 : y;
+            } else {
+                state->scale_x = state->style->ScaleX;
+                state->scale_y = state->style->ScaleY;
+            }
         } else if (tag("fsp")) {
             double val;
             if (nargs) {
@@ -462,6 +470,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     state->hspacing * (1 - pwr) + val * pwr;
             } else
                 state->hspacing = state->style->Spacing;
+        } else if (tag("fsvp")) {
+            double val;
+            if (nargs)
+                val = state->fsvp * (1 - pwr) + argtod(*args) * pwr;
+            else
+                val = 0;
+            state->fsvp = val;
         } else if (tag("fs")) {
             double val = 0;
             if (nargs) {
@@ -486,6 +501,34 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 xval = yval = state->style->Outline;
             state->border_x = xval;
             state->border_y = yval;
+        } else if (complex_tag("movevc")) {
+            if (nargs == 2 || nargs == 4 || nargs == 6) {
+                MoveVCState mv = { .active = true };
+                mv.x1 = argtod(args[0]);
+                mv.y1 = argtod(args[1]);
+                if (nargs >= 4) {
+                    mv.x2 = argtod(args[2]);
+                    mv.y2 = argtod(args[3]);
+                    mv.animated = true;
+                } else {
+                    mv.x2 = mv.x1;
+                    mv.y2 = mv.y1;
+                    mv.animated = false;
+                }
+                if (nargs == 6) {
+                    mv.t1 = argtoi32(args[4]);
+                    mv.t2 = argtoi32(args[5]);
+                    if (mv.t1 > mv.t2) {
+                        int32_t tmp = mv.t2;
+                        mv.t2 = mv.t1;
+                        mv.t1 = tmp;
+                    }
+                    mv.has_timing = true;
+                }
+                state->movevc = mv;
+            } else if (!nargs) {
+                state->movevc = (MoveVCState) {0};
+            }
         } else if (complex_tag("move")) {
             double x1, x2, y1, y2;
             int32_t t1, t2, delta_t, t;

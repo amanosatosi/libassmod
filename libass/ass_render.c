@@ -692,6 +692,34 @@ static inline size_t bitmap_size(const Bitmap *bm)
     return bm->stride * bm->h;
 }
 
+static ASS_DVector movevc_offset(RenderContext *state)
+{
+    MoveVCState *mv = &state->movevc;
+    if (!mv->active)
+        return (ASS_DVector) {0, 0};
+
+    double x = mv->x1, y = mv->y1;
+    if (mv->animated) {
+        int32_t t1 = mv->has_timing ? mv->t1 : 0;
+        int32_t t2 = mv->has_timing ? mv->t2 : state->event->Duration;
+        int32_t delta_t = (uint32_t) t2 - t1;
+        int t = state->renderer->time - state->event->Start;
+        double k;
+        if (t <= t1)
+            k = 0.;
+        else if (t >= t2)
+            k = 1.;
+        else if (delta_t)
+            k = ((double) (int32_t) ((uint32_t) t - t1)) / delta_t;
+        else
+            k = 1.;
+        x = k * (mv->x2 - mv->x1) + mv->x1;
+        y = k * (mv->y2 - mv->y1) + mv->y1;
+    }
+
+    return (ASS_DVector) {x, y};
+}
+
 /**
  * Iterate through a list of bitmaps and blend with clip vector, if
  * applicable. The blended bitmaps are added to a free list which is freed
@@ -717,6 +745,11 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
 
     m[0][2] = int_to_d6(render_priv->settings.left_margin);
     m[1][2] = int_to_d6(render_priv->settings.top_margin);
+    ASS_DVector mvc = movevc_offset(state);
+    if (mvc.x || mvc.y) {
+        m[0][2] += mvc.x * state->screen_scale_x * 64;
+        m[1][2] += mvc.y * state->screen_scale_y * 64;
+    }
 
     ASS_Vector pos;
     BitmapHashKey key;
@@ -1100,6 +1133,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->scale_x = style->ScaleX;
     state->scale_y = style->ScaleY;
     state->hspacing = style->Spacing;
+    state->fsvp = 0;
     state->be = 0;
     state->blur = style->Blur;
     state->shadow_x = style->Shadow;
@@ -1138,6 +1172,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->fade = 0;
     state->drawing_scale = 0;
     state->pbo = 0;
+    state->movevc = (MoveVCState) {0};
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -1573,6 +1608,13 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
            sizeof(OutlineHashValue) + outline_size(&k->outline->outline[0]) + outline_size(&k->outline->outline[1]);
 }
 
+static inline double line_spacing(RenderContext *state)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    return render_priv->settings.line_spacing +
+           state->fsvp * state->screen_scale_y;
+}
+
 static void measure_text_on_eol(RenderContext *state, double scale, int cur_line,
                                 int max_asc, int max_desc,
                                 double max_border_x, double max_border_y)
@@ -1604,7 +1646,6 @@ static void measure_text_on_eol(RenderContext *state, double scale, int cur_line
  */
 static void measure_text(RenderContext *state)
 {
-    ASS_Renderer *render_priv = state->renderer;
     TextInfo *text_info = &state->text_info;
     text_info->height = 0;
     text_info->border_x = 0;
@@ -1646,7 +1687,7 @@ static void measure_text(RenderContext *state)
     assert(cur_line == text_info->n_lines - 1);
     measure_text_on_eol(state, scale, cur_line,
             max_asc, max_desc, max_border_x, max_border_y);
-    text_info->height += cur_line * render_priv->settings.line_spacing;
+    text_info->height += cur_line * line_spacing(state);
 }
 
 /**
@@ -1900,7 +1941,7 @@ wrap_lines_measure(RenderContext *state, char *unibrks)
             text_info->lines[cur_line].offset = i;
             cur_line++;
             pen_shift_x = d6_to_double(-cur->pos.x);
-            pen_shift_y += height + state->renderer->settings.line_spacing;
+            pen_shift_y += height + line_spacing(state);
         }
         cur->pos.x += double_to_d6(pen_shift_x);
         cur->pos.y += double_to_d6(pen_shift_y);
@@ -2276,7 +2317,7 @@ static void reorder_text(RenderContext *state)
             pen.x = 0;
             pen.y += double_to_d6(text_info->lines[lineno-1].desc);
             pen.y += double_to_d6(text_info->lines[lineno].asc);
-            pen.y += double_to_d6(render_priv->settings.line_spacing);
+            pen.y += double_to_d6(line_spacing(state));
             lineno++;
         }
         if (info->skip)

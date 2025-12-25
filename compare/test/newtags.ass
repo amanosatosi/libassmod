@@ -1,0 +1,21 @@
+[Script Info]
+Title: VSFilterMod new tags regression samples
+ScriptType: v4.00+
+PlayResX: 384
+PlayResY: 288
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,32,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\fsc200}fsc200
+Dialogue: 0,0:00:05.00,0:00:10.00,Default,,0,0,0,,{\fscx200\fscy200}fscx/fscy 200
+Dialogue: 0,0:00:10.00,0:00:15.00,Default,,0,0,0,,{\fsc100\t(0,1000,\fsc200)}anim fsc
+Dialogue: 0,0:00:15.00,0:00:20.00,Default,,0,0,0,,{\fsvp0}Line1\NLine2
+Dialogue: 0,0:00:20.00,0:00:25.00,Default,,0,0,0,,{\fsvp20}Line1\NLine2
+Dialogue: 0,0:00:25.00,0:00:30.00,Default,,0,0,0,,{\fsvp-10}Line1\NLine2
+Dialogue: 0,0:00:30.00,0:00:40.00,Default,,0,0,0,,{\pos(80,140)\movevc(0,-60,0,60)\clip(m 46 84 l 120 141 146 206 188 144 268 102 155 130)}Nya
