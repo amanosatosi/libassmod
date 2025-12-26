@@ -1134,6 +1134,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->scale_y = style->ScaleY;
     state->hspacing = style->Spacing;
     state->fsvp = 0;
+    state->fshp = 0;
     state->be = 0;
     state->blur = style->Blur;
     state->shadow_x = style->Shadow;
@@ -1612,7 +1613,7 @@ static inline double line_spacing(RenderContext *state)
 {
     ASS_Renderer *render_priv = state->renderer;
     return render_priv->settings.line_spacing +
-           state->fsvp * state->screen_scale_y;
+           state->fshp * state->screen_scale_y;
 }
 
 static void measure_text_on_eol(RenderContext *state, double scale, int cur_line,
@@ -2217,6 +2218,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->fax = state->fax;
         info->fay = state->fay;
         info->fade = state->fade;
+        info->vshift = double_to_d6(state->fsvp * state->screen_scale_y);
 
         info->hspacing_scaled = 0;
         info->scale_fix = 1;
@@ -2327,7 +2329,7 @@ static void reorder_text(RenderContext *state)
         pen.y += info->cluster_advance.y;
         while (info) {
             info->pos.x = info->offset.x + cluster_pen.x;
-            info->pos.y = info->offset.y + cluster_pen.y;
+            info->pos.y = info->offset.y + cluster_pen.y + info->vshift;
             cluster_pen.x += info->advance.x;
             cluster_pen.y += info->advance.y;
             info = info->next;

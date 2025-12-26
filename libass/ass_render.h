@@ -145,6 +145,7 @@ typedef struct glyph_info {
     uint32_t c[4];              // colors
     ASS_Vector advance;         // 26.6
     ASS_Vector cluster_advance;
+    int32_t vshift;             // 26.6 vertical shift from \fsvp
     Effect effect_type;
     int32_t effect_timing;          // time duration of current karaoke word
     // after ass_process_karaoke_effects: distance in subpixels from the karaoke origin.
@@ -237,7 +238,8 @@ struct render_context {
     double org_x, org_y;        // origin
     double scale_x, scale_y;
     double hspacing;            // distance between letters, in pixels
-    double fsvp;                // extra vertical spacing between lines, script pixels
+    double fsvp;                // per-glyph vertical shift, script pixels
+    double fshp;                // extra vertical spacing between lines, script pixels
     double border_x;            // outline width
     double border_y;
     enum {

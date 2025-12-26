@@ -154,6 +154,7 @@
 ### Animateable Commands
 "\\fsc"
 "\\fsvp"
+"\\fshp"
 "\\bord"
 "\\xbord"
 "\\ybord"

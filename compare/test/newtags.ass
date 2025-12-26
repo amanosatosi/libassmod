@@ -15,7 +15,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\fsc200}fsc200
 Dialogue: 0,0:00:05.00,0:00:10.00,Default,,0,0,0,,{\fscx200\fscy200}fscx/fscy 200
 Dialogue: 0,0:00:10.00,0:00:15.00,Default,,0,0,0,,{\fsc100\t(0,1000,\fsc200)}anim fsc
-Dialogue: 0,0:00:15.00,0:00:20.00,Default,,0,0,0,,{\fsvp0}Line1\NLine2
-Dialogue: 0,0:00:20.00,0:00:25.00,Default,,0,0,0,,{\fsvp20}Line1\NLine2
-Dialogue: 0,0:00:25.00,0:00:30.00,Default,,0,0,0,,{\fsvp-10}Line1\NLine2
+Dialogue: 0,0:00:15.00,0:00:20.00,Default,,0,0,0,,{\fshp0}Line1\NLine2
+Dialogue: 0,0:00:20.00,0:00:25.00,Default,,0,0,0,,{\fshp20}Line1\NLine2
+Dialogue: 0,0:00:25.00,0:00:30.00,Default,,0,0,0,,{\fshp-10}Line1\NLine2
 Dialogue: 0,0:00:30.00,0:00:40.00,Default,,0,0,0,,{\pos(80,140)\movevc(0,-60,0,60)\clip(m 46 84 l 120 141 146 206 188 144 268 102 155 130)}Nya
+Dialogue: 0,0:00:40.00,0:00:45.00,Default,,0,0,0,,{\fsvp0}fsvp0 {\fsvp10}fsvp10 {\fsvp-10}fsvp-10
+Dialogue: 0,0:00:45.00,0:00:50.00,Default,,0,0,0,,{\frz10\fsvp10}fsvp10 {\fsvp0}fsvp0 {\fsvp-10}fsvp-10

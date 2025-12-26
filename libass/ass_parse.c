@@ -477,6 +477,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             else
                 val = 0;
             state->fsvp = val;
+        } else if (tag("fshp")) {
+            double val;
+            if (nargs)
+                val = state->fshp * (1 - pwr) + argtod(*args) * pwr;
+            else
+                val = 0;
+            state->fshp = val;
         } else if (tag("fs")) {
             double val = 0;
             if (nargs) {
