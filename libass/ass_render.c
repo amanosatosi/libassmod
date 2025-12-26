@@ -772,7 +772,8 @@ static ASS_DVector evaluate_motion(RenderContext *state)
         double y = m->y1 + (m->y2 - m->y1) * k;
         double angle = m->angle1 + (m->angle2 - m->angle1) * k;
         double radius = m->radius1 + (m->radius2 - m->radius1) * k;
-        double theta = angle * (M_PI / 180.0);
+        // VSFilterMod angles grow clockwise with 0° pointing right.
+        double theta = -angle * (M_PI / 180.0);
         x += cos(theta) * radius;
         y += sin(theta) * radius;
         return (ASS_DVector) {x, y};
