@@ -2218,7 +2218,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->fax = state->fax;
         info->fay = state->fay;
         info->fade = state->fade;
-        info->vshift = double_to_d6(state->fsvp * state->screen_scale_y);
+        info->vshift = -double_to_d6(state->fsvp * state->screen_scale_y);
 
         info->hspacing_scaled = 0;
         info->scale_fix = 1;
