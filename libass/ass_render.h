@@ -212,6 +212,33 @@ typedef struct {
     int32_t t1, t2;
 } MoveVCState;
 
+typedef enum {
+    MOTION_NONE = 0,
+    MOTION_POS,
+    MOTION_MOVE,
+    MOTION_MOVER,
+    MOTION_MOVES3,
+    MOTION_MOVES4,
+} MotionType;
+
+typedef struct {
+    MotionType type;
+    double x1, y1, x2, y2;
+    double x3, y3, x4, y4;
+    double angle1, angle2;
+    double radius1, radius2;
+    bool has_timing;
+    int32_t t1, t2;
+} MotionState;
+
+typedef struct {
+    bool active;
+    double left, right, up, down;
+    double period;
+    uint32_t seed;
+    bool has_seed;
+} JitterState;
+
 #include "ass_shaper.h"
 
 // Renderer state.
@@ -262,6 +289,8 @@ struct render_context {
     double pbo;                 // drawing baseline offset
     ASS_StringView clip_drawing_text;
     MoveVCState movevc;
+    MotionState motion;
+    JitterState jitter;
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;

@@ -303,6 +303,26 @@ static double y2scr_sub(RenderContext *state, double y)
         (render_priv->height - render_priv->fit_height);
 }
 
+static double x2scr_offset(RenderContext *state, double x)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    if (state->explicit || !render_priv->settings.use_margins)
+        return x * render_priv->frame_content_width /
+            render_priv->par_scale_x / render_priv->track->PlayResX;
+    return x * render_priv->fit_width /
+        render_priv->par_scale_x / render_priv->track->PlayResX;
+}
+
+static double y2scr_offset(RenderContext *state, double y)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    if (state->explicit || !render_priv->settings.use_margins)
+        return y * render_priv->frame_content_height /
+            render_priv->track->PlayResY;
+    return y * render_priv->fit_height /
+        render_priv->track->PlayResY;
+}
+
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -690,6 +710,154 @@ static void restore_transform(double m[3][3], const BitmapHashKey *key)
 static inline size_t bitmap_size(const Bitmap *bm)
 {
     return bm->stride * bm->h;
+}
+
+static void motion_timing(const MotionState *motion, RenderContext *state,
+                          int32_t *t1, int32_t *t2)
+{
+    int32_t duration = state->event->Duration;
+    if (motion->has_timing) {
+        *t1 = motion->t1;
+        *t2 = motion->t2;
+    } else {
+        *t1 = 0;
+        *t2 = duration;
+    }
+
+    if (*t1 <= 0 && *t2 <= 0) {
+        *t1 = 0;
+        *t2 = duration;
+    }
+
+    if (*t1 > *t2) {
+        int32_t tmp = *t2;
+        *t2 = *t1;
+        *t1 = tmp;
+    }
+}
+
+static double motion_progress(RenderContext *state, const MotionState *motion)
+{
+    int32_t t1, t2;
+    motion_timing(motion, state, &t1, &t2);
+
+    int t = state->renderer->time - state->event->Start;
+    if (t <= t1)
+        return 0.;
+    if (t >= t2)
+        return 1.;
+
+    int32_t delta_t = (uint32_t) t2 - t1;
+    if (!delta_t)
+        return 1.;
+
+    return ((double) (int32_t) ((uint32_t) t - t1)) / delta_t;
+}
+
+static ASS_DVector evaluate_motion(RenderContext *state)
+{
+    MotionState *m = &state->motion;
+    switch (m->type) {
+    case MOTION_POS:
+        return (ASS_DVector) {m->x1, m->y1};
+    case MOTION_MOVE: {
+        double k = motion_progress(state, m);
+        double x = m->x1 + (m->x2 - m->x1) * k;
+        double y = m->y1 + (m->y2 - m->y1) * k;
+        return (ASS_DVector) {x, y};
+    }
+    case MOTION_MOVER: {
+        double k = motion_progress(state, m);
+        double x = m->x1 + (m->x2 - m->x1) * k;
+        double y = m->y1 + (m->y2 - m->y1) * k;
+        double angle = m->angle1 + (m->angle2 - m->angle1) * k;
+        double radius = m->radius1 + (m->radius2 - m->radius1) * k;
+        double theta = angle * (M_PI / 180.0);
+        x += cos(theta) * radius;
+        y += sin(theta) * radius;
+        return (ASS_DVector) {x, y};
+    }
+    case MOTION_MOVES3: {
+        double k = motion_progress(state, m);
+        double inv = 1 - k;
+        double x = inv * inv * m->x1 + 2 * inv * k * m->x2 + k * k * m->x3;
+        double y = inv * inv * m->y1 + 2 * inv * k * m->y2 + k * k * m->y3;
+        return (ASS_DVector) {x, y};
+    }
+    case MOTION_MOVES4: {
+        double k = motion_progress(state, m);
+        double inv = 1 - k;
+        double inv2 = inv * inv;
+        double k2 = k * k;
+        double x = inv2 * inv * m->x1 + 3 * inv2 * k * m->x2 +
+                   3 * inv * k2 * m->x3 + k2 * k * m->x4;
+        double y = inv2 * inv * m->y1 + 3 * inv2 * k * m->y2 +
+                   3 * inv * k2 * m->y3 + k2 * k * m->y4;
+        return (ASS_DVector) {x, y};
+    }
+    default:
+        return (ASS_DVector) {state->pos_x, state->pos_y};
+    }
+}
+
+static inline uint32_t jitter_prng(uint32_t x)
+{
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
+}
+
+static uint32_t jitter_hash_string(const char *s)
+{
+    uint32_t h = 2166136261u;
+    if (!s)
+        return h;
+    while (*s) {
+        h ^= (unsigned char) *s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static uint32_t jitter_base_seed(RenderContext *state)
+{
+    uint32_t h = jitter_hash_string(state->event->Text);
+    h ^= (uint32_t) state->event->Start;
+    h ^= (uint32_t) state->event->Duration;
+    h ^= (uint32_t) state->event->Style;
+    h ^= (uint32_t) state->event->ReadOrder;
+    return h ? h : 0x9E3779B9u;
+}
+
+static ASS_DVector jitter_offset(RenderContext *state)
+{
+    JitterState *j = &state->jitter;
+    if (!j->active)
+        return (ASS_DVector) {0, 0};
+
+    double period = j->period;
+    if (period <= 0.0)
+        period = 1.0;
+
+    long long now = state->renderer->time - state->event->Start;
+    long long bucket = (long long) floor(now / period);
+
+    uint32_t seed = jitter_base_seed(state);
+    if (j->has_seed)
+        seed ^= j->seed;
+    seed ^= (uint32_t) bucket;
+
+    uint32_t rx = jitter_prng(seed ^ 0xA5A5A5A5u);
+    uint32_t ry = jitter_prng(seed ^ 0x5A5A5A5Au);
+
+    double fx = (double) rx / (double) UINT32_MAX;
+    double fy = (double) ry / (double) UINT32_MAX;
+
+    double dx = fx * (j->left + j->right) - j->left;
+    double dy = fy * (j->up + j->down) - j->up;
+
+    return (ASS_DVector) {dx, dy};
 }
 
 static ASS_DVector movevc_offset(RenderContext *state)
@@ -1174,6 +1342,9 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->drawing_scale = 0;
     state->pbo = 0;
     state->movevc = (MoveVCState) {0};
+    state->motion = (MotionState) {0};
+    state->motion.type = MOTION_NONE;
+    state->jitter = (JitterState) {0};
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2891,6 +3062,12 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
     }
 
+    if (state->motion.type != MOTION_NONE) {
+        ASS_DVector pos = evaluate_motion(state);
+        state->pos_x = pos.x;
+        state->pos_y = pos.y;
+    }
+
     split_style_runs(state);
 
     // Find shape runs and shape text
@@ -3014,6 +3191,12 @@ ass_render_event(RenderContext *state, ASS_Event *event,
                 device_y = scr_y0;
             }
         }
+    }
+
+    ASS_DVector jitter = jitter_offset(state);
+    if (jitter.x || jitter.y) {
+        device_x += x2scr_offset(state, jitter.x);
+        device_y += y2scr_offset(state, jitter.y);
     }
 
     // fix clip coordinates

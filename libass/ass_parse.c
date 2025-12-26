@@ -28,7 +28,7 @@
 #include "ass_render.h"
 #include "ass_parse.h"
 
-#define MAX_VALID_NARGS 7
+#define MAX_VALID_NARGS 10
 #define MAX_BE 127
 #define NBSP 0xa0   // unicode non-breaking space character
 
@@ -135,6 +135,80 @@ static int32_t calc_anim_int32(uint32_t new, uint32_t old, double pwr)
     return dtoi32(calc_anim(new, old, pwr));
 }
 
+static void apply_motion(RenderContext *state, MotionState motion,
+                         double pwr, bool allow_override)
+{
+    if (motion.type == MOTION_NONE || pwr <= 0)
+        return;
+
+    if ((state->evt_type & EVENT_POSITIONED) && !allow_override)
+        return;
+
+    MotionState *dst = &state->motion;
+    MotionState old = *dst;
+
+    dst->type = motion.type;
+    dst->x1 = calc_anim(motion.x1, old.x1, pwr);
+    dst->y1 = calc_anim(motion.y1, old.y1, pwr);
+    dst->x2 = calc_anim(motion.x2, old.x2, pwr);
+    dst->y2 = calc_anim(motion.y2, old.y2, pwr);
+    dst->x3 = calc_anim(motion.x3, old.x3, pwr);
+    dst->y3 = calc_anim(motion.y3, old.y3, pwr);
+    dst->x4 = calc_anim(motion.x4, old.x4, pwr);
+    dst->y4 = calc_anim(motion.y4, old.y4, pwr);
+    dst->angle1 = calc_anim(motion.angle1, old.angle1, pwr);
+    dst->angle2 = calc_anim(motion.angle2, old.angle2, pwr);
+    dst->radius1 = calc_anim(motion.radius1, old.radius1, pwr);
+    dst->radius2 = calc_anim(motion.radius2, old.radius2, pwr);
+    dst->has_timing = motion.has_timing;
+    dst->t1 = dtoi32(calc_anim(motion.t1, old.t1, pwr));
+    dst->t2 = dtoi32(calc_anim(motion.t2, old.t2, pwr));
+
+    if (!(state->evt_type & EVENT_POSITIONED)) {
+        state->evt_type |= EVENT_POSITIONED;
+        state->detect_collisions = 0;
+    }
+}
+
+static void apply_jitter(RenderContext *state, JitterState jitter, double pwr)
+{
+    if (pwr <= 0)
+        return;
+
+    JitterState *dst = &state->jitter;
+    double left = jitter.active ? jitter.left : 0.;
+    double right = jitter.active ? jitter.right : 0.;
+    double up = jitter.active ? jitter.up : 0.;
+    double down = jitter.active ? jitter.down : 0.;
+    double period = jitter.active ? jitter.period : 0.;
+
+    dst->left = calc_anim(left, dst->left, pwr);
+    dst->right = calc_anim(right, dst->right, pwr);
+    dst->up = calc_anim(up, dst->up, pwr);
+    dst->down = calc_anim(down, dst->down, pwr);
+    dst->period = calc_anim(period, dst->period, pwr);
+
+    if (jitter.has_seed && (pwr >= 1 || !dst->has_seed)) {
+        dst->seed = jitter.seed;
+        dst->has_seed = true;
+    }
+
+    bool active = dst->left > 0 || dst->right > 0 ||
+                  dst->up > 0 || dst->down > 0;
+    dst->active = active;
+    if (!dst->active && !jitter.active && pwr >= 1) {
+        *dst = (JitterState) {0};
+    }
+}
+
+static void normalize_motion_timing(MotionState *motion)
+{
+    if (motion->has_timing && motion->t1 > motion->t2) {
+        int32_t tmp = motion->t2;
+        motion->t2 = motion->t1;
+        motion->t1 = tmp;
+    }
+}
 /**
  * \brief Calculate a weighted average of two colors
  * calculates c1*(1-a) + c2*a, but separately for each component except alpha
@@ -536,47 +610,77 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else if (!nargs) {
                 state->movevc = (MoveVCState) {0};
             }
-        } else if (complex_tag("move")) {
-            double x1, x2, y1, y2;
-            int32_t t1, t2, delta_t, t;
-            double x, y;
-            double k;
-            if (nargs == 4 || nargs == 6) {
-                x1 = argtod(args[0]);
-                y1 = argtod(args[1]);
-                x2 = argtod(args[2]);
-                y2 = argtod(args[3]);
-                t1 = t2 = 0;
-                if (nargs == 6) {
-                    t1 = argtoi32(args[4]);
-                    t2 = argtoi32(args[5]);
-                    if (t1 > t2) {
-                        long long tmp = t2;
-                        t2 = t1;
-                        t1 = tmp;
-                    }
+        } else if (complex_tag("mover")) {
+            MotionState mv = { .type = MOTION_MOVER };
+            if (nargs == 4 || nargs == 6 || nargs == 8 || nargs == 10) {
+                mv.x1 = argtod(args[0]);
+                mv.y1 = argtod(args[1]);
+                mv.x2 = argtod(args[2]);
+                mv.y2 = argtod(args[3]);
+                if (nargs >= 8) {
+                    mv.angle1 = argtod(args[4]);
+                    mv.angle2 = argtod(args[5]);
+                    mv.radius1 = argtod(args[6]);
+                    mv.radius2 = argtod(args[7]);
                 }
-            } else
-                continue;
-            if (t1 <= 0 && t2 <= 0) {
-                t1 = 0;
-                t2 = state->event->Duration;
+                if (nargs == 6 || nargs == 10) {
+                    mv.has_timing = true;
+                    mv.t1 = argtoi32(args[nargs - 2]);
+                    mv.t2 = argtoi32(args[nargs - 1]);
+                    normalize_motion_timing(&mv);
+                }
+                apply_motion(state, mv, pwr, true);
             }
-            delta_t = (uint32_t) t2 - t1;
-            t = render_priv->time - state->event->Start;
-            if (t <= t1)
-                k = 0.;
-            else if (t >= t2)
-                k = 1.;
-            else
-                k = ((double) (int32_t) ((uint32_t) t - t1)) / delta_t;
-            x = k * (x2 - x1) + x1;
-            y = k * (y2 - y1) + y1;
-            if (!(state->evt_type & EVENT_POSITIONED)) {
-                state->pos_x = x;
-                state->pos_y = y;
-                state->detect_collisions = 0;
-                state->evt_type |= EVENT_POSITIONED;
+        } else if (complex_tag("moves3")) {
+            MotionState mv = { .type = MOTION_MOVES3 };
+            if (nargs == 6 || nargs == 8) {
+                mv.x1 = argtod(args[0]);
+                mv.y1 = argtod(args[1]);
+                mv.x2 = argtod(args[2]);
+                mv.y2 = argtod(args[3]);
+                mv.x3 = argtod(args[4]);
+                mv.y3 = argtod(args[5]);
+                if (nargs == 8) {
+                    mv.has_timing = true;
+                    mv.t1 = argtoi32(args[6]);
+                    mv.t2 = argtoi32(args[7]);
+                    normalize_motion_timing(&mv);
+                }
+                apply_motion(state, mv, pwr, true);
+            }
+        } else if (complex_tag("moves4")) {
+            MotionState mv = { .type = MOTION_MOVES4 };
+            if (nargs == 8 || nargs == 10) {
+                mv.x1 = argtod(args[0]);
+                mv.y1 = argtod(args[1]);
+                mv.x2 = argtod(args[2]);
+                mv.y2 = argtod(args[3]);
+                mv.x3 = argtod(args[4]);
+                mv.y3 = argtod(args[5]);
+                mv.x4 = argtod(args[6]);
+                mv.y4 = argtod(args[7]);
+                if (nargs == 10) {
+                    mv.has_timing = true;
+                    mv.t1 = argtoi32(args[8]);
+                    mv.t2 = argtoi32(args[9]);
+                    normalize_motion_timing(&mv);
+                }
+                apply_motion(state, mv, pwr, true);
+            }
+        } else if (complex_tag("move")) {
+            MotionState mv = { .type = MOTION_MOVE };
+            if (nargs == 4 || nargs == 6) {
+                mv.x1 = argtod(args[0]);
+                mv.y1 = argtod(args[1]);
+                mv.x2 = argtod(args[2]);
+                mv.y2 = argtod(args[3]);
+                if (nargs == 6) {
+                    mv.has_timing = true;
+                    mv.t1 = argtoi32(args[4]);
+                    mv.t2 = argtoi32(args[5]);
+                    normalize_motion_timing(&mv);
+                }
+                apply_motion(state, mv, pwr, false);
             }
         } else if (tag("frx")) {
             double val;
@@ -649,7 +753,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     // handle illegal \a8 and \a4 like \a5
                     state->alignment = ((val & 3) == 0) ? 5 : val;
                 else
-                    state->alignment =
+                state->alignment =
                         state->style->Alignment;
                 state->parsed_tags |= PARSED_A;
             }
@@ -664,10 +768,24 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 ass_msg(render_priv->library, MSGL_V, "Subtitle has a new \\pos "
                        "after \\move or \\pos, ignoring");
             } else {
-                state->evt_type |= EVENT_POSITIONED;
-                state->detect_collisions = 0;
-                state->pos_x = v1;
-                state->pos_y = v2;
+                MotionState mv = { .type = MOTION_POS, .x1 = v1, .y1 = v2 };
+                apply_motion(state, mv, pwr, false);
+            }
+        } else if (complex_tag("jitter")) {
+            if (!nargs) {
+                state->jitter = (JitterState) {0};
+            } else if (nargs == 5 || nargs == 6) {
+                JitterState jit = { .active = true };
+                jit.left = FFMAX(argtod(args[0]), 0);
+                jit.right = FFMAX(argtod(args[1]), 0);
+                jit.up = FFMAX(argtod(args[2]), 0);
+                jit.down = FFMAX(argtod(args[3]), 0);
+                jit.period = argtod(args[4]);
+                if (nargs == 6) {
+                    jit.seed = (uint32_t) argtoi32(args[5]);
+                    jit.has_seed = true;
+                }
+                apply_jitter(state, jit, pwr);
             }
         } else if (complex_tag("fade") || complex_tag("fad")) {
             int32_t a1, a2, a3;
@@ -1216,6 +1334,9 @@ int ass_event_has_hard_overrides(char *str)
                 if (*str == '\\') {
                     char *p = str + 1;
                     if (mystrcmp(&p, "pos") || mystrcmp(&p, "move") ||
+                        mystrcmp(&p, "mover") || mystrcmp(&p, "moves3") ||
+                        mystrcmp(&p, "moves4") || mystrcmp(&p, "jitter") ||
+                        mystrcmp(&p, "movevc") ||
                         mystrcmp(&p, "clip") || mystrcmp(&p, "iclip") ||
                         mystrcmp(&p, "org") || mystrcmp(&p, "pbo") ||
                         mystrcmp(&p, "p"))

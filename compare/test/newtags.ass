@@ -21,3 +21,9 @@ Dialogue: 0,0:00:25.00,0:00:30.00,Default,,0,0,0,,{\fshp-10}Line1\NLine2
 Dialogue: 0,0:00:30.00,0:00:40.00,Default,,0,0,0,,{\pos(80,140)\movevc(0,-60,0,60)\clip(m 46 84 l 120 141 146 206 188 144 268 102 155 130)}Nya
 Dialogue: 0,0:00:40.00,0:00:45.00,Default,,0,0,0,,{\fsvp0}fsvp0 {\fsvp10}fsvp10 {\fsvp-10}fsvp-10
 Dialogue: 0,0:00:45.00,0:00:50.00,Default,,0,0,0,,{\frz10\fsvp10}fsvp10 {\fsvp0}fsvp0 {\fsvp-10}fsvp-10
+Dialogue: 0,0:00:50.00,0:00:55.00,Default,,0,0,0,,{\mover(10,10,60,60,0,0,0,0)}mover==move
+Dialogue: 0,0:00:55.00,0:01:00.00,Default,,0,0,0,,{\pos(200,140)\mover(0,0,0,0,-90,0,80,80)}arc
+Dialogue: 0,0:01:00.00,0:01:05.00,Default,,0,0,0,,{\moves3(50,50,300,20,330,200)}moves3
+Dialogue: 0,0:01:05.00,0:01:10.00,Default,,0,0,0,,{\moves4(50,50,300,20,330,200,100,240)}moves4
+Dialogue: 0,0:01:10.00,0:01:15.00,Default,,0,0,0,,{\pos(200,140)\jitter(10,10,10,10,80,12345)}jitter-seeded
+Dialogue: 0,0:01:15.00,0:01:20.00,Default,,0,0,0,,{\pos(200,200)\jitter(10,10,10,10,80)}jitter
