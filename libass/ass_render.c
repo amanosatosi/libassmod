@@ -809,6 +809,13 @@ static inline uint32_t jitter_prng(uint32_t x)
     return x;
 }
 
+static inline uint32_t jitter_lcg(uint32_t *state)
+{
+    /* Match the CRT rand() LCG used by VSFilter: (a * x + c) >> 16 & 0x7fff */
+    *state = *state * 214013u + 2531011u;
+    return (*state >> 16) & 0x7fff;
+}
+
 static ASS_DVector jitter_offset(RenderContext *state)
 {
     JitterState *j = &state->jitter;
@@ -824,12 +831,13 @@ static ASS_DVector jitter_offset(RenderContext *state)
         now = 0;
     long long bucket = (long long) (now / period);
 
-    uint32_t seed = j->has_seed ? j->seed : 0u;
-    uint32_t rng = (uint32_t) (((uint64_t) seed + (uint64_t) bucket) * 100u);
+    uint32_t rseed = (uint32_t) (((int64_t) (j->has_seed ? (int64_t) j->seed : 0) + bucket) * 100);
+    if (rseed == 0)
+        rseed = 1;
 
-    rng = jitter_prng(rng ? rng : 1u);
-    uint32_t rx = rng;
-    uint32_t ry = jitter_prng(rx);
+    uint32_t rng = rseed;
+    uint32_t rx = jitter_lcg(&rng);
+    uint32_t ry = jitter_lcg(&rng);
 
     uint32_t left = (uint32_t) llround(j->left * 8.0);
     uint32_t right = (uint32_t) llround(j->right * 8.0);
