@@ -304,26 +304,6 @@ static double y2scr_sub(RenderContext *state, double y)
         (render_priv->height - render_priv->fit_height);
 }
 
-static double x2scr_offset(RenderContext *state, double x)
-{
-    ASS_Renderer *render_priv = state->renderer;
-    if (state->explicit || !render_priv->settings.use_margins)
-        return x * render_priv->frame_content_width /
-            render_priv->par_scale_x / render_priv->track->PlayResX;
-    return x * render_priv->fit_width /
-        render_priv->par_scale_x / render_priv->track->PlayResX;
-}
-
-static double y2scr_offset(RenderContext *state, double y)
-{
-    ASS_Renderer *render_priv = state->renderer;
-    if (state->explicit || !render_priv->settings.use_margins)
-        return y * render_priv->frame_content_height /
-            render_priv->track->PlayResY;
-    return y * render_priv->fit_height /
-        render_priv->track->PlayResY;
-}
-
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -3264,10 +3244,11 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
 
+    // jitter offsets are already in device pixel units (1 unit = 1px)
     ASS_DVector jitter = jitter_offset(state);
     if (jitter.x || jitter.y) {
-        device_x += x2scr_offset(state, jitter.x);
-        device_y += y2scr_offset(state, jitter.y);
+        device_x += jitter.x;
+        device_y += jitter.y;
     }
 
     // fix clip coordinates
