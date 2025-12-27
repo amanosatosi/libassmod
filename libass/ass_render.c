@@ -822,14 +822,14 @@ static ASS_DVector jitter_offset(RenderContext *state)
     if (!j->active)
         return (ASS_DVector) {0, 0};
 
-    double period = j->period;
-    if (period <= 0.0)
-        period = 1.0;
+    int64_t period = (int64_t) (j->period + 0.5);
+    if (period <= 0)
+        period = 1;
 
-    long long rt100ns = (long long) llround(state->renderer->time * 10000.0);
+    int64_t rt100ns = (int64_t) llround(state->renderer->time * 10000.0);
     if (rt100ns < 0)
         rt100ns = 0;
-    long long bucket = (long long) (rt100ns / period);
+    int64_t bucket = rt100ns / period;
 
     uint32_t rseed = (uint32_t) (((int64_t) (j->has_seed ? (int64_t) j->seed : 0) + bucket) * 100);
     if (rseed == 0)
@@ -839,10 +839,10 @@ static ASS_DVector jitter_offset(RenderContext *state)
     uint32_t rx = jitter_lcg(&rng);
     uint32_t ry = jitter_lcg(&rng);
 
-    int32_t left = (int32_t) llround(j->left);
-    int32_t right = (int32_t) llround(j->right);
-    int32_t up = (int32_t) llround(j->up);
-    int32_t down = (int32_t) llround(j->down);
+    int32_t left = (int32_t) j->left;
+    int32_t right = (int32_t) j->right;
+    int32_t up = (int32_t) j->up;
+    int32_t down = (int32_t) j->down;
 
     int32_t xamp = left + right;
     int32_t yamp = up + down;
