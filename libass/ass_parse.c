@@ -775,17 +775,17 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nargs) {
                 state->jitter = (JitterState) {0};
             } else if (nargs >= 4 && nargs <= 6) {
-                /* start from current values so omitted params keep their state */
+                /* match VSFilter: ints, abs, *8 stored; period in 100ns */
                 JitterState jit = state->jitter;
                 jit.active = true;
-                jit.left = FFMAX(argtod(args[0]), 0);
-                jit.right = FFMAX(argtod(args[1]), 0);
-                jit.up = FFMAX(argtod(args[2]), 0);
-                jit.down = FFMAX(argtod(args[3]), 0);
+                jit.left = abs((int) argtod(args[0])) * 8;
+                jit.right = abs((int) argtod(args[1])) * 8;
+                jit.up = abs((int) argtod(args[2])) * 8;
+                jit.down = abs((int) argtod(args[3])) * 8;
                 if (nargs >= 5) {
-                    jit.period = argtod(args[4]);
+                    int per = (int) argtod(args[4]);
+                    jit.period = (double) per * 10000.0;
                 } else if (jit.period <= 0.0) {
-                    /* match VSFilter default of a minimal, non-zero period */
                     jit.period = 1.0;
                 }
                 if (nargs == 6) {

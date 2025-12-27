@@ -826,10 +826,10 @@ static ASS_DVector jitter_offset(RenderContext *state)
     if (period <= 0.0)
         period = 1.0;
 
-    long long now = state->renderer->time;
-    if (now < 0)
-        now = 0;
-    long long bucket = (long long) (now / period);
+    long long rt100ns = (long long) llround(state->renderer->time * 10000.0);
+    if (rt100ns < 0)
+        rt100ns = 0;
+    long long bucket = (long long) (rt100ns / period);
 
     uint32_t rseed = (uint32_t) (((int64_t) (j->has_seed ? (int64_t) j->seed : 0) + bucket) * 100);
     if (rseed == 0)
@@ -839,16 +839,16 @@ static ASS_DVector jitter_offset(RenderContext *state)
     uint32_t rx = jitter_lcg(&rng);
     uint32_t ry = jitter_lcg(&rng);
 
-    uint32_t left = (uint32_t) llround(j->left * 8.0);
-    uint32_t right = (uint32_t) llround(j->right * 8.0);
-    uint32_t up = (uint32_t) llround(j->up * 8.0);
-    uint32_t down = (uint32_t) llround(j->down * 8.0);
+    int32_t left = (int32_t) llround(j->left);
+    int32_t right = (int32_t) llround(j->right);
+    int32_t up = (int32_t) llround(j->up);
+    int32_t down = (int32_t) llround(j->down);
 
-    uint32_t xamp = left + right;
-    uint32_t yamp = up + down;
+    int32_t xamp = left + right;
+    int32_t yamp = up + down;
 
-    int32_t xoff = xamp ? (int32_t) (rx % xamp) - (int32_t) left : 0;
-    int32_t yoff = yamp ? (int32_t) (ry % yamp) - (int32_t) up : 0;
+    int32_t xoff = xamp ? (int32_t) (rx % xamp) - left : 0;
+    int32_t yoff = yamp ? (int32_t) (ry % yamp) - up : 0;
 
     return (ASS_DVector) {xoff / 8.0, yoff / 8.0};
 }
