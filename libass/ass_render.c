@@ -809,28 +809,6 @@ static inline uint32_t jitter_prng(uint32_t x)
     return x;
 }
 
-static uint32_t jitter_hash_string(const char *s)
-{
-    uint32_t h = 2166136261u;
-    if (!s)
-        return h;
-    while (*s) {
-        h ^= (unsigned char) *s++;
-        h *= 16777619u;
-    }
-    return h;
-}
-
-static uint32_t jitter_base_seed(RenderContext *state)
-{
-    uint32_t h = jitter_hash_string(state->event->Text);
-    h ^= (uint32_t) state->event->Start;
-    h ^= (uint32_t) state->event->Duration;
-    h ^= (uint32_t) state->event->Style;
-    h ^= (uint32_t) state->event->ReadOrder;
-    return h ? h : 0x9E3779B9u;
-}
-
 static ASS_DVector jitter_offset(RenderContext *state)
 {
     JitterState *j = &state->jitter;
@@ -841,24 +819,30 @@ static ASS_DVector jitter_offset(RenderContext *state)
     if (period <= 0.0)
         period = 1.0;
 
-    long long now = state->renderer->time - state->event->Start;
-    long long bucket = (long long) floor(now / period);
+    long long now = state->renderer->time;
+    if (now < 0)
+        now = 0;
+    long long bucket = (long long) (now / period);
 
-    uint32_t seed = jitter_base_seed(state);
-    if (j->has_seed)
-        seed ^= j->seed;
-    seed ^= (uint32_t) bucket;
+    uint32_t seed = j->has_seed ? j->seed : 0u;
+    uint32_t rng = (uint32_t) (((uint64_t) seed + (uint64_t) bucket) * 100u);
 
-    uint32_t rx = jitter_prng(seed ^ 0xA5A5A5A5u);
-    uint32_t ry = jitter_prng(seed ^ 0x5A5A5A5Au);
+    rng = jitter_prng(rng ? rng : 1u);
+    uint32_t rx = rng;
+    uint32_t ry = jitter_prng(rx);
 
-    double fx = (double) rx / (double) UINT32_MAX;
-    double fy = (double) ry / (double) UINT32_MAX;
+    uint32_t left = (uint32_t) llround(j->left * 8.0);
+    uint32_t right = (uint32_t) llround(j->right * 8.0);
+    uint32_t up = (uint32_t) llround(j->up * 8.0);
+    uint32_t down = (uint32_t) llround(j->down * 8.0);
 
-    double dx = fx * (j->left + j->right) - j->left;
-    double dy = fy * (j->up + j->down) - j->up;
+    uint32_t xamp = left + right;
+    uint32_t yamp = up + down;
 
-    return (ASS_DVector) {dx, dy};
+    int32_t xoff = xamp ? (int32_t) (rx % xamp) - (int32_t) left : 0;
+    int32_t yoff = yamp ? (int32_t) (ry % yamp) - (int32_t) up : 0;
+
+    return (ASS_DVector) {xoff / 8.0, yoff / 8.0};
 }
 
 static ASS_DVector movevc_offset(RenderContext *state)

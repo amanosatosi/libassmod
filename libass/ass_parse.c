@@ -774,13 +774,20 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("jitter")) {
             if (!nargs) {
                 state->jitter = (JitterState) {0};
-            } else if (nargs == 5 || nargs == 6) {
-                JitterState jit = { .active = true };
+            } else if (nargs >= 4 && nargs <= 6) {
+                /* start from current values so omitted params keep their state */
+                JitterState jit = state->jitter;
+                jit.active = true;
                 jit.left = FFMAX(argtod(args[0]), 0);
                 jit.right = FFMAX(argtod(args[1]), 0);
                 jit.up = FFMAX(argtod(args[2]), 0);
                 jit.down = FFMAX(argtod(args[3]), 0);
-                jit.period = argtod(args[4]);
+                if (nargs >= 5) {
+                    jit.period = argtod(args[4]);
+                } else if (jit.period <= 0.0) {
+                    /* match VSFilter default of a minimal, non-zero period */
+                    jit.period = 1.0;
+                }
                 if (nargs == 6) {
                     jit.seed = (uint32_t) argtoi32(args[5]);
                     jit.has_seed = true;
