@@ -27,3 +27,5 @@ Dialogue: 0,0:01:00.00,0:01:05.00,Default,,0,0,0,,{\moves3(50,50,300,20,330,200)
 Dialogue: 0,0:01:05.00,0:01:10.00,Default,,0,0,0,,{\moves4(50,50,300,20,330,200,100,240)}moves4
 Dialogue: 0,0:01:10.00,0:01:15.00,Default,,0,0,0,,{\pos(200,140)\jitter(10,10,10,10,80,12345)}jitter-seeded
 Dialogue: 0,0:01:15.00,0:01:20.00,Default,,0,0,0,,{\pos(200,200)\jitter(10,10,10,10,80)}jitter
+Comment: jitter with clip to check for cropping/misalignment
+Dialogue: 0,0:01:20.00,0:01:25.00,Default,,0,0,0,,{\clip(60,120,320,260)\pos(200,220)\bord3\shad2\jitter(6,6,6,6,120,77)}jitter-clip

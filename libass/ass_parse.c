@@ -176,29 +176,39 @@ static void apply_jitter(RenderContext *state, JitterState jitter, double pwr)
         return;
 
     JitterState *dst = &state->jitter;
-    double left = jitter.active ? jitter.left : 0.;
-    double right = jitter.active ? jitter.right : 0.;
-    double up = jitter.active ? jitter.up : 0.;
-    double down = jitter.active ? jitter.down : 0.;
-    double period = jitter.active ? jitter.period : 0.;
 
-    dst->left = calc_anim(left, dst->left, pwr);
-    dst->right = calc_anim(right, dst->right, pwr);
-    dst->up = calc_anim(up, dst->up, pwr);
-    dst->down = calc_anim(down, dst->down, pwr);
-    dst->period = calc_anim(period, dst->period, pwr);
+    if (!jitter.enabled) {
+        if (pwr >= 1)
+            *dst = ass_jitter_default_state();
+        return;
+    }
+
+    dst->left = calc_anim(jitter.left, dst->left, pwr);
+    dst->right = calc_anim(jitter.right, dst->right, pwr);
+    dst->up = calc_anim(jitter.up, dst->up, pwr);
+    dst->down = calc_anim(jitter.down, dst->down, pwr);
+    dst->enabled = true;
+
+    if (jitter.has_period) {
+        dst->period = calc_anim(jitter.period, dst->period, pwr);
+        dst->has_period = true;
+    }
 
     if (jitter.has_seed && (pwr >= 1 || !dst->has_seed)) {
         dst->seed = jitter.seed;
         dst->has_seed = true;
     }
+}
 
-    bool active = dst->left > 0 || dst->right > 0 ||
-                  dst->up > 0 || dst->down > 0;
-    dst->active = active;
-    if (!dst->active && !jitter.active && pwr >= 1) {
-        *dst = (JitterState) {0};
-    }
+static double jitter_extent_from_arg(struct arg arg)
+{
+    int32_t raw = argtoi32(arg);
+    int64_t extent = raw;
+    if (extent < 0)
+        extent = -extent;
+    if (extent > INT32_MAX / 8)
+        extent = INT32_MAX / 8;
+    return (double) extent * 8.0;
 }
 
 static void normalize_motion_timing(MotionState *motion)
@@ -773,17 +783,22 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (complex_tag("jitter")) {
             if (!nargs) {
-                state->jitter = (JitterState) {0};
-            } else if (nargs == 5 || nargs == 6) {
-                JitterState jit = { .active = true };
-                jit.left = FFMAX(argtod(args[0]), 0);
-                jit.right = FFMAX(argtod(args[1]), 0);
-                jit.up = FFMAX(argtod(args[2]), 0);
-                jit.down = FFMAX(argtod(args[3]), 0);
-                jit.period = argtod(args[4]);
-                if (nargs == 6) {
-                    jit.seed = (uint32_t) argtoi32(args[5]);
-                    jit.has_seed = true;
+                state->jitter = ass_jitter_default_state();
+            } else if (nargs >= 4) {
+                JitterState jit = ass_jitter_default_state();
+                jit.enabled = true;
+                jit.left = jitter_extent_from_arg(args[0]);
+                jit.right = jitter_extent_from_arg(args[1]);
+                jit.up = jitter_extent_from_arg(args[2]);
+                jit.down = jitter_extent_from_arg(args[3]);
+                if (nargs >= 5) {
+                    double period_ms = fabs(argtod(args[4]));
+                    jit.period = period_ms * 10000.0;
+                    jit.has_period = true;
+                    if (nargs >= 6) {
+                        jit.seed = (uint32_t) argtoi32(args[5]);
+                        jit.has_seed = true;
+                    }
                 }
                 apply_jitter(state, jit, pwr);
             }

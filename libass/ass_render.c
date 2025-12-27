@@ -23,6 +23,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdbool.h>
+#include <limits.h>
 
 #ifdef CONFIG_UNIBREAK
 #include <linebreak.h>
@@ -801,64 +802,133 @@ static ASS_DVector evaluate_motion(RenderContext *state)
     }
 }
 
-static inline uint32_t jitter_prng(uint32_t x)
+static inline uint32_t jitter_rand15(uint32_t *state)
 {
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    return x;
+    *state = *state * 214013u + 2531011u;
+    return (*state >> 16) & 0x7FFFu;
 }
 
-static uint32_t jitter_hash_string(const char *s)
+static int32_t jitter_extent_to_int(double value)
 {
-    uint32_t h = 2166136261u;
-    if (!s)
-        return h;
-    while (*s) {
-        h ^= (unsigned char) *s++;
-        h *= 16777619u;
-    }
-    return h;
+    if (value <= 0.0)
+        return 0;
+    int64_t rounded = llround(value);
+    if (rounded < 0)
+        rounded = 0;
+    if (rounded > INT32_MAX)
+        rounded = INT32_MAX;
+    return (int32_t) rounded;
 }
 
-static uint32_t jitter_base_seed(RenderContext *state)
+static ASS_DVector jitter_compute_offset(const JitterState *j, long long time_100ns)
 {
-    uint32_t h = jitter_hash_string(state->event->Text);
-    h ^= (uint32_t) state->event->Start;
-    h ^= (uint32_t) state->event->Duration;
-    h ^= (uint32_t) state->event->Style;
-    h ^= (uint32_t) state->event->ReadOrder;
-    return h ? h : 0x9E3779B9u;
-}
+    if (!j->enabled)
+        return (ASS_DVector) {0, 0};
 
-static ASS_DVector jitter_offset(RenderContext *state)
-{
-    JitterState *j = &state->jitter;
-    if (!j->active)
+    int32_t left = jitter_extent_to_int(j->left);
+    int32_t right = jitter_extent_to_int(j->right);
+    int32_t up = jitter_extent_to_int(j->up);
+    int32_t down = jitter_extent_to_int(j->down);
+
+    if (!left && !right && !up && !down)
         return (ASS_DVector) {0, 0};
 
     double period = j->period;
-    if (period <= 0.0)
+    if (period < 1.0)
         period = 1.0;
 
+    double bucket_d = floor((double) FFMAX(time_100ns, 0) / period);
+    if (bucket_d < 0)
+        bucket_d = 0;
+    long long bucket = bucket_d >= (double) LLONG_MAX ? LLONG_MAX : (long long) bucket_d;
+    uint32_t bucket32 = (uint32_t) bucket;
+
+    uint32_t base_seed = (j->has_seed && j->has_period) ? j->seed : 0;
+    uint32_t rseed = (base_seed + bucket32) * 100u;
+
+    uint32_t state = rseed;
+    int64_t xamp = (int64_t) left + right;
+    if (xamp > INT32_MAX)
+        xamp = INT32_MAX;
+    int32_t x = 0;
+    if (xamp > 0) {
+        uint32_t rand_val = jitter_rand15(&state);
+        x = (int32_t) (rand_val % (uint32_t) xamp) - left;
+    }
+
+    int64_t yamp = (int64_t) up + down;
+    if (yamp > INT32_MAX)
+        yamp = INT32_MAX;
+    int32_t y = 0;
+    if (yamp > 0) {
+        uint32_t rand_val = jitter_rand15(&state);
+        y = (int32_t) (rand_val % (uint32_t) yamp) - up;
+    }
+
+    return (ASS_DVector) {(double) x / 8.0, (double) y / 8.0};
+}
+
+#if DEBUG_LEVEL >= 2
+static void jitter_run_debug_tests(void)
+{
+    static bool ran = false;
+    if (ran)
+        return;
+    ran = true;
+
+    JitterState def = ass_jitter_default_state();
+    ASS_DVector off = jitter_compute_offset(&def, 0);
+    assert(off.x == 0.0 && off.y == 0.0);
+
+    JitterState no_period_a = ass_jitter_default_state();
+    no_period_a.enabled = true;
+    no_period_a.left = no_period_a.right = no_period_a.up = no_period_a.down = 8;
+    JitterState no_period_b = no_period_a;
+    no_period_a.seed = 1234;
+    no_period_a.has_seed = true;
+    no_period_b.seed = 5678;
+    no_period_b.has_seed = true;
+    ASS_DVector np_a = jitter_compute_offset(&no_period_a, 50000);
+    ASS_DVector np_b = jitter_compute_offset(&no_period_b, 50000);
+    assert(np_a.x == np_b.x && np_a.y == np_b.y);
+
+    JitterState sample = ass_jitter_default_state();
+    sample.enabled = true;
+    sample.left = sample.right = sample.up = sample.down = 16;
+    sample.has_period = true;
+    sample.period = 200000.0;
+    sample.has_seed = true;
+    sample.seed = 7;
+
+    long long bucket_time = (long long) (sample.period / 2);
+    ASS_DVector bucket0 = jitter_compute_offset(&sample, bucket_time);
+    ASS_DVector bucket0_repeat = jitter_compute_offset(&sample, bucket_time);
+    assert(bucket0.x == bucket0_repeat.x && bucket0.y == bucket0_repeat.y);
+    assert(bucket0.x == 0.5 && bucket0.y == 0.5);
+
+    ASS_DVector bucket1 = jitter_compute_offset(&sample,
+            (long long) (sample.period + bucket_time));
+    assert(bucket1.x == 1.375 && bucket1.y == -0.5);
+    assert(bucket0.x != bucket1.x || bucket0.y != bucket1.y);
+}
+#endif
+
+static ASS_DVector jitter_offset(RenderContext *state)
+{
+#if DEBUG_LEVEL >= 2
+    jitter_run_debug_tests();
+#endif
+    const JitterState *j = &state->jitter;
+    if (!j->enabled)
+        return (ASS_DVector) {0, 0};
+
     long long now = state->renderer->time - state->event->Start;
-    long long bucket = (long long) floor(now / period);
+    if (now <= 0)
+        return jitter_compute_offset(j, 0);
 
-    uint32_t seed = jitter_base_seed(state);
-    if (j->has_seed)
-        seed ^= j->seed;
-    seed ^= (uint32_t) bucket;
-
-    uint32_t rx = jitter_prng(seed ^ 0xA5A5A5A5u);
-    uint32_t ry = jitter_prng(seed ^ 0x5A5A5A5Au);
-
-    double fx = (double) rx / (double) UINT32_MAX;
-    double fy = (double) ry / (double) UINT32_MAX;
-
-    double dx = fx * (j->left + j->right) - j->left;
-    double dy = fy * (j->up + j->down) - j->up;
-
-    return (ASS_DVector) {dx, dy};
+    long long limit = LLONG_MAX / 10000;
+    long long clamped = now > limit ? LLONG_MAX : now * 10000;
+    return jitter_compute_offset(j, clamped);
 }
 
 static ASS_DVector movevc_offset(RenderContext *state)
@@ -1345,7 +1415,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->movevc = (MoveVCState) {0};
     state->motion = (MotionState) {0};
     state->motion.type = MOTION_NONE;
-    state->jitter = (JitterState) {0};
+    state->jitter = ass_jitter_default_state();
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;

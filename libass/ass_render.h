@@ -232,12 +232,28 @@ typedef struct {
 } MotionState;
 
 typedef struct {
-    bool active;
+    bool enabled;
     double left, right, up, down;
     double period;
     uint32_t seed;
     bool has_seed;
+    bool has_period;
 } JitterState;
+
+static inline JitterState ass_jitter_default_state(void)
+{
+    return (JitterState) {
+        .enabled = false,
+        .left = 0.0,
+        .right = 0.0,
+        .up = 0.0,
+        .down = 0.0,
+        .period = 1.0,
+        .seed = 0,
+        .has_seed = false,
+        .has_period = false,
+    };
+}
 
 #include "ass_shaper.h"
 
