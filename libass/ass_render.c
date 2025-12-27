@@ -304,6 +304,26 @@ static double y2scr_sub(RenderContext *state, double y)
         (render_priv->height - render_priv->fit_height);
 }
 
+static double x2scr_offset(RenderContext *state, double x)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    if (state->explicit || !render_priv->settings.use_margins)
+        return x * render_priv->frame_content_width /
+            render_priv->par_scale_x / render_priv->track->PlayResX;
+    return x * render_priv->fit_width /
+        render_priv->par_scale_x / render_priv->track->PlayResX;
+}
+
+static double y2scr_offset(RenderContext *state, double y)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    if (state->explicit || !render_priv->settings.use_margins)
+        return y * render_priv->frame_content_height /
+            render_priv->track->PlayResY;
+    return y * render_priv->fit_height /
+        render_priv->track->PlayResY;
+}
+
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -893,22 +913,36 @@ static void jitter_run_debug_tests(void)
 }
 #endif
 
-static ASS_DVector jitter_offset(RenderContext *state)
+static long long jitter_current_time(RenderContext *state)
+{
+    long long now = state->renderer->time - state->event->Start;
+    if (now <= 0)
+        return 0;
+    long long limit = LLONG_MAX / 10000;
+    return now > limit ? LLONG_MAX : now * 10000;
+}
+
+static void update_glyph_jitter_offsets(RenderContext *state)
 {
 #if DEBUG_LEVEL >= 2
     jitter_run_debug_tests();
 #endif
-    const JitterState *j = &state->jitter;
-    if (!j->enabled)
-        return (ASS_DVector) {0, 0};
+    TextInfo *text_info = &state->text_info;
+    long long time_100ns = jitter_current_time(state);
 
-    long long now = state->renderer->time - state->event->Start;
-    if (now <= 0)
-        return jitter_compute_offset(j, 0);
-
-    long long limit = LLONG_MAX / 10000;
-    long long clamped = now > limit ? LLONG_MAX : now * 10000;
-    return jitter_compute_offset(j, clamped);
+    for (int i = 0; i < text_info->length; i++) {
+        for (GlyphInfo *info = text_info->glyphs + i; info; info = info->next) {
+            double dx = 0.0;
+            double dy = 0.0;
+            if (info->has_jitter) {
+                ASS_DVector offset = jitter_compute_offset(&info->jitter, time_100ns);
+                dx = x2scr_offset(state, offset.x);
+                dy = y2scr_offset(state, offset.y);
+            }
+            info->jitter_dx = dx;
+            info->jitter_dy = dy;
+        }
+    }
 }
 
 static ASS_DVector movevc_offset(RenderContext *state)
@@ -1362,6 +1396,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->frz = style->Angle;
     state->fax = state->fay = 0.;
     state->font_encoding = style->Encoding;
+    state->jitter = ass_jitter_default_state();
 }
 
 /**
@@ -2441,6 +2476,10 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->fay = state->fay;
         info->fade = state->fade;
         info->vshift = -double_to_d6(state->fsvp * state->screen_scale_y);
+        if (state->jitter.enabled) {
+            info->has_jitter = true;
+            info->jitter = state->jitter;
+        }
 
         info->hspacing_scaled = 0;
         info->scale_fix = 1;
@@ -2675,10 +2714,12 @@ static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *info = text_info->glyphs + i;
         while (info) {
-            info->shift.x = info->pos.x + double_to_d6(device_x - center.x +
+            double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
+            double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
+            info->shift.x = info->pos.x + double_to_d6(device_x + jitter_dx - center.x +
                     info->shadow_x * state->border_scale_x /
                     render_priv->par_scale_x);
-            info->shift.y = info->pos.y + double_to_d6(device_y - center.y +
+            info->shift.y = info->pos.y + double_to_d6(device_y + jitter_dy - center.y +
                     info->shadow_y * state->border_scale_y);
             info = info->next;
         }
@@ -2831,8 +2872,11 @@ static void render_and_combine_glyphs(RenderContext *state,
             assert(current_info);
 
             ASS_Vector pos, pos_o;
-            info->pos.x = double_to_d6(device_x + d6_to_double(info->pos.x) * render_priv->par_scale_x);
-            info->pos.y = double_to_d6(device_y) + info->pos.y;
+            double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
+            double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
+            info->pos.x = double_to_d6(device_x + jitter_dx +
+                                       d6_to_double(info->pos.x) * render_priv->par_scale_x);
+            info->pos.y = double_to_d6(device_y + jitter_dy) + info->pos.y;
             get_bitmap_glyph(state, info, &current_info->leftmost_x, &pos, &pos_o,
                              &offset, !current_info->bitmap_count, flags);
 
@@ -3244,12 +3288,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
 
-    // jitter offsets are already in device pixel units (1 unit = 1px)
-    ASS_DVector jitter = jitter_offset(state);
-    if (jitter.x || jitter.y) {
-        device_x += jitter.x;
-        device_y += jitter.y;
-    }
+    update_glyph_jitter_offsets(state);
 
     // fix clip coordinates
     if (state->explicit || !render_priv->settings.use_margins) {

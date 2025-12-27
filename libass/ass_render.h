@@ -127,6 +127,7 @@ typedef struct glyph_info {
     unsigned symbol;
     bool skip;                  // skip glyph when layouting text
     bool is_trimmed_whitespace;
+    bool has_jitter;
     ASS_Font *font;
     int face_index;
     int glyph_index;
@@ -176,6 +177,9 @@ typedef struct glyph_info {
 
     ASS_Vector shift;
     Bitmap *bm, *bm_o;
+    JitterState jitter;
+    double jitter_dx;
+    double jitter_dy;
 
     // next glyph in this cluster
     struct glyph_info *next;

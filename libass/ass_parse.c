@@ -781,6 +781,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 MotionState mv = { .type = MOTION_POS, .x1 = v1, .y1 = v2 };
                 apply_motion(state, mv, pwr, false);
             }
+        } else if (tag("jitter0")) {
+            state->jitter = ass_jitter_default_state();
         } else if (complex_tag("jitter")) {
             if (!nargs) {
                 state->jitter = ass_jitter_default_state();
