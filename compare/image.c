@@ -17,6 +17,7 @@
  */
 
 #include "image.h"
+#include <setjmp.h>
 #include <png.h>
 
 

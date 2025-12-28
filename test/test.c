@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <setjmp.h>
 #include "../libass/ass.h"
 #include <png.h>
 
