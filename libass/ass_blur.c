@@ -172,11 +172,22 @@ static void find_best_method(BlurMethod *blur, double r2)
  */
 bool ass_gaussian_blur(const BitmapEngine *engine, Bitmap *bm, double r2x, double r2y)
 {
-    BlurMethod blur_x, blur_y;
-    find_best_method(&blur_x, r2x);
-    if (r2y == r2x)
-        memcpy(&blur_y, &blur_x, sizeof(blur_y));
-    else find_best_method(&blur_y, r2y);
+    const double min_r2 = 0.001;
+    bool do_x = r2x > min_r2;
+    bool do_y = r2y > min_r2;
+
+    if (!do_x && !do_y)
+        return true;
+
+    BlurMethod blur_x = {0}, blur_y = {0};
+    if (do_x)
+        find_best_method(&blur_x, r2x);
+    if (do_y) {
+        if (r2y == r2x && do_x)
+            memcpy(&blur_y, &blur_x, sizeof(blur_y));
+        else
+            find_best_method(&blur_y, r2y);
+    }
 
     uint32_t w = bm->w, h = bm->h;
     int offset_x = ((2 * blur_x.radius + 9) << blur_x.level) - 5;
@@ -197,30 +208,34 @@ bool ass_gaussian_blur(const BitmapEngine *engine, Bitmap *bm, double r2x, doubl
     int16_t *buf[2] = {tmp, tmp + size};
     int index = 0;
 
-    for (int i = 0; i < blur_y.level; i++) {
+    for (int i = 0; do_y && i < blur_y.level; i++) {
         engine->shrink_vert(buf[index ^ 1], buf[index], w, h);
         h = (h + 5) >> 1;
         index ^= 1;
     }
-    for (int i = 0; i < blur_x.level; i++) {
+    for (int i = 0; do_x && i < blur_x.level; i++) {
         engine->shrink_horz(buf[index ^ 1], buf[index], w, h);
         w = (w + 5) >> 1;
         index ^= 1;
     }
-    assert(blur_x.radius >= 4 && blur_x.radius <= 8);
-    engine->blur_horz[blur_x.radius - 4](buf[index ^ 1], buf[index], w, h, blur_x.coeff);
-    w += 2 * blur_x.radius;
-    index ^= 1;
-    assert(blur_y.radius >= 4 && blur_y.radius <= 8);
-    engine->blur_vert[blur_y.radius - 4](buf[index ^ 1], buf[index], w, h, blur_y.coeff);
-    h += 2 * blur_y.radius;
-    index ^= 1;
-    for (int i = 0; i < blur_x.level; i++) {
+    if (do_x) {
+        assert(blur_x.radius >= 4 && blur_x.radius <= 8);
+        engine->blur_horz[blur_x.radius - 4](buf[index ^ 1], buf[index], w, h, blur_x.coeff);
+        w += 2 * blur_x.radius;
+        index ^= 1;
+    }
+    if (do_y) {
+        assert(blur_y.radius >= 4 && blur_y.radius <= 8);
+        engine->blur_vert[blur_y.radius - 4](buf[index ^ 1], buf[index], w, h, blur_y.coeff);
+        h += 2 * blur_y.radius;
+        index ^= 1;
+    }
+    for (int i = 0; do_x && i < blur_x.level; i++) {
         engine->expand_horz(buf[index ^ 1], buf[index], w, h);
         w = 2 * w + 4;
         index ^= 1;
     }
-    for (int i = 0; i < blur_y.level; i++) {
+    for (int i = 0; do_y && i < blur_y.level; i++) {
         engine->expand_vert(buf[index ^ 1], buf[index], w, h);
         h = 2 * h + 4;
         index ^= 1;

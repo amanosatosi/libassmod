@@ -510,12 +510,33 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             double val;
             if (nargs) {
                 val = argtod(*args);
-                val = state->blur * (1 - pwr) + val * pwr;
+                val = state->blur_x * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
                 val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
-                state->blur = val;
             } else
-                state->blur = 0.0;
+                val = 0.0;
+            state->blur_x = val;
+            state->blur_y = val;
+        } else if (tag("xblur")) {
+            double val;
+            if (nargs) {
+                val = argtod(*args);
+                val = state->blur_x * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+                val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
+            } else
+                val = 0.0;
+            state->blur_x = val;
+        } else if (tag("yblur")) {
+            double val;
+            if (nargs) {
+                val = argtod(*args);
+                val = state->blur_y * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+                val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
+            } else
+                val = 0.0;
+            state->blur_y = val;
             // ASS standard tags
         } else if (tag("fscx")) {
             double val;
@@ -717,6 +738,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 state->frz =
                     state->style->Angle;
+        } else if (tag("z")) {
+            double val;
+            if (nargs) {
+                val = argtod(*args);
+                val = state->z * (1 - pwr) + val * pwr;
+                if (!isfinite(val))
+                    val = 0.0;
+            } else
+                val = 0.0;
+            state->z = val;
         } else if (tag("fn")) {
             char *start = args->start;
             if (nargs && strncmp(start, "0", args->end - start)) {

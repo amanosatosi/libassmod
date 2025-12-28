@@ -179,10 +179,12 @@ typedef struct glyph_info {
     bool reset_effect;
     int asc, desc;              // font max ascender and descender
     int be;                     // blur edges
-    double blur;                // gaussian blur
+    double blur_x;              // gaussian blur horizontal radius
+    double blur_y;              // gaussian blur vertical radius
     double shadow_x;
     double shadow_y;
     double frx, fry, frz;       // rotation
+    double z;                   // 3D translation along camera Z
     double fax, fay;            // text shearing
     double scale_x, scale_y;
     // amount of scale_x,y change due to fix_glyph_scaling
@@ -303,7 +305,8 @@ struct render_context {
     char detect_collisions;
     char be;                    // blur edges
     int fade;                   // alpha from \fad
-    double blur;                // gaussian blur
+    double blur_x;              // gaussian blur horizontal radius
+    double blur_y;              // gaussian blur vertical radius
     double shadow_x;
     double shadow_y;
     double pbo;                 // drawing baseline offset
@@ -311,6 +314,7 @@ struct render_context {
     MoveVCState movevc;
     MotionState motion;
     JitterState jitter;
+    double z;                   // 3D translation along camera Z
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;

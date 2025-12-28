@@ -1389,7 +1389,8 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->fsvp = 0;
     state->fshp = 0;
     state->be = 0;
-    state->blur = style->Blur;
+    state->blur_x = style->Blur;
+    state->blur_y = style->Blur;
     state->shadow_x = style->Shadow;
     state->shadow_y = style->Shadow;
     state->frx = state->fry = 0.;
@@ -1397,6 +1398,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->fax = state->fay = 0.;
     state->font_encoding = style->Encoding;
     state->jitter = ass_jitter_default_state();
+    state->z = 0.0;
 }
 
 /**
@@ -1652,7 +1654,15 @@ static void calc_transform_matrix(RenderContext *state,
         z4[i] = x2[i] * sy + z3[i] * cy;
     }
 
-    double dist = 20000 * state->blur_scale_y;
+    double dist_base = 20000 * state->blur_scale_y;
+    double z_shift = info->z * state->blur_scale_y * 64.0;
+    double dist = dist_base + z_shift;
+    if (!isfinite(dist))
+        dist = dist_base;
+    if (dist < 1.0)
+        dist = 1.0;
+    else if (dist > 1e9)
+        dist = 1e9;
     z4[2] += dist;
 
     double scale_x = dist * render_priv->par_scale_x;
@@ -2349,12 +2359,14 @@ static void split_style_runs(RenderContext *state)
             last->c[2] != info->c[2] ||
             last->c[3] != info->c[3] ||
             last->be != info->be ||
-            last->blur != info->blur ||
+            last->blur_x != info->blur_x ||
+            last->blur_y != info->blur_y ||
             last->shadow_x != info->shadow_x ||
             last->shadow_y != info->shadow_y ||
             last->frx != info->frx ||
             last->fry != info->fry ||
             last->frz != info->frz ||
+            last->z != info->z ||
             last->fax != info->fax ||
             last->fay != info->fay ||
             last->scale_x != info->scale_x ||
@@ -2455,7 +2467,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->font_size =
             fabs(state->font_size * state->screen_scale_y);
         info->be = state->be;
-        info->blur = state->blur;
+        info->blur_x = state->blur_x;
+        info->blur_y = state->blur_y;
         info->shadow_x = state->shadow_x;
         info->shadow_y = state->shadow_y;
         info->scale_x = state->scale_x;
@@ -2472,6 +2485,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->frx = state->frx;
         info->fry = state->fry;
         info->frz = state->frz;
+        info->z = state->z;
         info->fax = state->fax;
         info->fay = state->fay;
         info->fade = state->fade;
@@ -2845,8 +2859,8 @@ static void render_and_combine_glyphs(RenderContext *state,
                 double blur_radius_scale = 2 / sqrt(log(256));
                 double blur_scale_x = state->blur_scale_x * blur_radius_scale;
                 double blur_scale_y = state->blur_scale_y * blur_radius_scale;
-                filter->blur_x = quantize_blur(info->blur * blur_scale_x, &shadow_mask_x);
-                filter->blur_y = quantize_blur(info->blur * blur_scale_y, &shadow_mask_y);
+                filter->blur_x = quantize_blur(info->blur_x * blur_scale_x, &shadow_mask_x);
+                filter->blur_y = quantize_blur(info->blur_y * blur_scale_y, &shadow_mask_y);
                 if (flags & FILTER_NONZERO_SHADOW) {
                     int32_t x = double_to_d6(info->shadow_x * state->border_scale_x);
                     int32_t y = double_to_d6(info->shadow_y * state->border_scale_y);
