@@ -1633,19 +1633,32 @@ static void calc_transform_matrix(RenderContext *state,
 
     double fax = info->fax * info->scale_x / info->scale_y;
     double fay = info->fay * info->scale_y / info->scale_x;
+    double dist_base = 20000 * state->blur_scale_y;
+    double z_shift = info->z * state->blur_scale_y * 64.0;
+    if (!isfinite(z_shift))
+        z_shift = 0.0;
+    double dist = dist_base;
+    if (!isfinite(dist))
+        dist = dist_base;
+    if (dist < 1.0)
+        dist = 1.0;
+    else if (dist > 1e9)
+        dist = 1e9;
     double x1[3] = { 1, fax, info->shift.x + info->asc * fax };
     double y1[3] = { fay, 1, info->shift.y };
+    double z1[3] = { 0, 0, z_shift };
 
-    double x2[3], y2[3];
+    double x2[3], y2[3], z2[3];
     for (int i = 0; i < 3; i++) {
         x2[i] = x1[i] * cz - y1[i] * sz;
         y2[i] = x1[i] * sz + y1[i] * cz;
+        z2[i] = z1[i];
     }
 
     double y3[3], z3[3];
     for (int i = 0; i < 3; i++) {
-        y3[i] = y2[i] * cx;
-        z3[i] = y2[i] * sx;
+        y3[i] = y2[i] * cx - z2[i] * sx;
+        z3[i] = y2[i] * sx + z2[i] * cx;
     }
 
     double x4[3], z4[3];
@@ -1654,15 +1667,6 @@ static void calc_transform_matrix(RenderContext *state,
         z4[i] = x2[i] * sy + z3[i] * cy;
     }
 
-    double dist_base = 20000 * state->blur_scale_y;
-    double z_shift = info->z * state->blur_scale_y * 64.0;
-    double dist = dist_base + z_shift;
-    if (!isfinite(dist))
-        dist = dist_base;
-    if (dist < 1.0)
-        dist = 1.0;
-    else if (dist > 1e9)
-        dist = 1e9;
     z4[2] += dist;
 
     double scale_x = dist * render_priv->par_scale_x;
