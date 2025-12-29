@@ -184,6 +184,7 @@ typedef struct glyph_info {
     double shadow_x;
     double shadow_y;
     double frx, fry, frz;       // rotation
+    double frs;                 // baseline rotation
     double z;                   // 3D translation along camera Z
     double fax, fay;            // text shearing
     double scale_x, scale_y;
@@ -282,6 +283,7 @@ struct render_context {
     int alignment;              // alignment overrides go here; if zero, style value will be used
     int justify;                // justify instructions
     double frx, fry, frz;
+    double frs;
     double fax, fay;            // text shearing
     double pos_x, pos_y;        // position
     double org_x, org_y;        // origin

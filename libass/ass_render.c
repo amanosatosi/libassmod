@@ -1395,6 +1395,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->shadow_y = style->Shadow;
     state->frx = state->fry = 0.;
     state->frz = style->Angle;
+    state->frs = 0.;
     state->fax = state->fay = 0.;
     state->font_encoding = style->Encoding;
     state->jitter = ass_jitter_default_state();
@@ -2488,7 +2489,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             info->flags |= DECO_ROTATE;
         info->frx = state->frx;
         info->fry = state->fry;
-        info->frz = state->frz;
+        info->frs = state->frs;
+        info->frz = state->frz + info->frs;
         info->z = state->z;
         info->fax = state->fax;
         info->fay = state->fay;
@@ -2639,6 +2641,47 @@ static void apply_baseline_shear(RenderContext *state)
             cur->pos.y += shear + fay * cur->offset.x;
             shear += fay * cur->advance.x;
         }
+    }
+}
+
+static void apply_baseline_rotation(RenderContext *state,
+                                    double origin_x, double origin_y)
+{
+    TextInfo *text_info = &state->text_info;
+
+    for (int i = 0; i < text_info->length; i++) {
+        GlyphInfo *root = text_info->glyphs + i;
+        if (root->frs == 0.0)
+            continue;
+
+        double angle = root->frs * ASS_PI / 180.0;
+        double s = sin(angle);
+        double c = cos(angle);
+
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double x = d6_to_double(info->pos.x);
+            double y = d6_to_double(info->pos.y);
+            double rel_x = x - origin_x;
+            double rel_y = y - origin_y;
+            double new_x = origin_x + rel_x * c - rel_y * s;
+            double new_y = origin_y + rel_x * s + rel_y * c;
+            info->pos.x = double_to_d6(new_x);
+            info->pos.y = double_to_d6(new_y);
+
+            double adv_x = d6_to_double(info->advance.x);
+            double adv_y = d6_to_double(info->advance.y);
+            double new_adv_x = adv_x * c - adv_y * s;
+            double new_adv_y = adv_x * s + adv_y * c;
+            info->advance.x = double_to_d6(new_adv_x);
+            info->advance.y = double_to_d6(new_adv_y);
+        }
+
+        double cadv_x = d6_to_double(root->cluster_advance.x);
+        double cadv_y = d6_to_double(root->cluster_advance.y);
+        double new_cadv_x = cadv_x * c - cadv_y * s;
+        double new_cadv_y = cadv_x * s + cadv_y * c;
+        root->cluster_advance.x = double_to_d6(new_cadv_x);
+        root->cluster_advance.y = double_to_d6(new_cadv_y);
     }
 }
 
@@ -3225,8 +3268,26 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     // determine text bounding box
     ASS_DRect bbox;
     compute_string_bbox(text_info, &bbox);
+    ASS_DRect bbox_origin = bbox;
+    double origin_x = 0.0;
+    double origin_y = 0.0;
+    bool rotate_baseline = false;
+    for (int i = 0; i < text_info->length; i++) {
+        if (text_info->glyphs[i].frs != 0.0) {
+            rotate_baseline = true;
+            break;
+        }
+    }
+    if (rotate_baseline)
+        get_base_point(&bbox_origin, state->alignment, &origin_x, &origin_y);
 
     apply_baseline_shear(state);
+
+    if (rotate_baseline) {
+        apply_baseline_rotation(state, origin_x, origin_y);
+        compute_string_bbox(text_info, &bbox);
+    }
+    ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &bbox;
 
     // determine device coordinates for text
     double device_x = 0;
@@ -3237,7 +3298,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (state->evt_type & EVENT_POSITIONED) {
         double base_x = 0;
         double base_y = 0;
-        get_base_point(&bbox, state->alignment, &base_x, &base_y);
+        get_base_point(bbox_for_origin, state->alignment, &base_x, &base_y);
         device_x =
             x2scr_pos(render_priv, state->pos_x) - base_x;
         device_y =
@@ -3347,7 +3408,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         state->clip_y1 = FFMIN(state->clip_y1, y1);
     }
 
-    calculate_rotation_params(state, &bbox, device_x, device_y);
+    calculate_rotation_params(state, bbox_for_origin, device_x, device_y);
 
     render_and_combine_glyphs(state, device_x, device_y);
 

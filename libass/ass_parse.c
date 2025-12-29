@@ -738,6 +738,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 state->frz =
                     state->style->Angle;
+        } else if (tag("frs")) {
+            double val;
+            if (nargs) {
+                val = argtod(*args);
+                state->frs = val * pwr + state->frs * (1 - pwr);
+            } else
+                state->frs = 0.;
         } else if (tag("z")) {
             double val;
             if (nargs) {
