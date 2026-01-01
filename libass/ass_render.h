@@ -39,6 +39,7 @@
 #include "ass_drawing.h"
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
+#include "gradient.h"
 
 #define GLYPH_CACHE_MAX 10000
 #define MEGABYTE (1024 * 1024)
@@ -82,6 +83,7 @@ typedef struct {
 // a rendered event
 typedef struct {
     ASS_Image *imgs;
+    ASS_ImageRGBA *imgs_rgba;
     int top, height, left, width;
     int detect_collisions;
     int shift_direction;
@@ -115,6 +117,10 @@ typedef struct {
     int x, y;
     Bitmap *bm, *bm_o, *bm_s;   // glyphs, outline, shadow bitmaps
     CompositeHashValue *image;
+    GradientState gradient;
+    uint32_t base_c[4];
+    int fade;
+    int line;
 } CombinedBitmapInfo;
 
 typedef struct {
@@ -168,6 +174,8 @@ typedef struct glyph_info {
     char linebreak;             // the first (leading) glyph of some line ?
     bool starts_new_run;
     uint32_t c[4];              // colors
+    GradientState gradient;
+    int line;
     ASS_Vector advance;         // 26.6
     ASS_Vector cluster_advance;
     int32_t vshift;             // 26.6 vertical shift from \fsvp
@@ -215,6 +223,12 @@ typedef struct glyph_info {
 typedef struct {
     double asc, desc;
     int offset, len;
+    ASS_Rect grad_char;
+    ASS_Rect grad_outline;
+    ASS_Rect grad_shadow;
+    bool grad_char_valid;
+    bool grad_outline_valid;
+    bool grad_shadow_valid;
 } LineInfo;
 
 typedef struct {
@@ -301,6 +315,7 @@ struct render_context {
     } evt_type;
     int border_style;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
+    GradientState gradient;
     int clip_x0, clip_y0, clip_x1, clip_y1;
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
     char clip_mode;             // 1 = iclip
@@ -424,6 +439,12 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
+bool ass_render_event(RenderContext *state, ASS_Event *event,
+                      EventImages *event_images, ASS_ImageRGBA **rgba_out);
+bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now);
+int cmp_event_layer(const void *p1, const void *p2);
+void fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
+int ass_detect_change(ASS_Renderer *priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on
 void ass_lazy_track_init(ASS_Library *lib, ASS_Track *track);

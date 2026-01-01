@@ -324,6 +324,82 @@ static double y2scr_offset(RenderContext *state, double y)
         render_priv->track->PlayResY;
 }
 
+static void append_rgba_tail(ASS_ImageRGBA ***tail, ASS_ImageRGBA *img)
+{
+    if (!tail || !*tail || !img)
+        return;
+    **tail = img;
+    *tail = &img->next;
+}
+
+static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
+                                         CombinedBitmapInfo *info,
+                                         const uint8_t *mask, int w, int h,
+                                         int stride, int dst_x, int dst_y,
+                                         int layer, unsigned type)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    unsigned align = 1 << render_priv->engine.align_order;
+    int rgba_stride = ass_align(align, w * 4);
+    uint8_t *rgba = ass_aligned_alloc(align, rgba_stride * h + align, false);
+    if (!rgba)
+        return NULL;
+
+    GradientRect rect = gradient_rect_for_layer(state, info->line, layer);
+    double inv_w = rect.valid && rect.x1 != rect.x0 ?
+        1.0 / (rect.x1 - rect.x0) : 0.0;
+    double inv_h = rect.valid && rect.y1 != rect.y0 ?
+        1.0 / (rect.y1 - rect.y0) : 0.0;
+
+    const GradientValues *vals = &info->gradient.layer[layer];
+    uint32_t base_color = info->base_c[layer];
+    uint8_t base_alpha = _a(base_color);
+    uint8_t fade = info->fade;
+
+    for (int y = 0; y < h; y++) {
+        double v = rect.valid ? (dst_y + y + 0.5 - rect.y0) * inv_h : 0.0;
+        uint8_t *row = rgba + y * rgba_stride;
+        const uint8_t *src = mask + y * stride;
+        for (int x = 0; x < w; x++) {
+            uint8_t cov = src[x];
+            if (!cov) {
+                row[4 * x + 0] = 0;
+                row[4 * x + 1] = 0;
+                row[4 * x + 2] = 0;
+                row[4 * x + 3] = 0;
+                continue;
+            }
+            double u = rect.valid ? (dst_x + x + 0.5 - rect.x0) * inv_w : 0.0;
+            uint32_t color = (vals->color_enabled && rect.valid) ?
+                gradient_sample_color(vals, u, v) : base_color;
+            uint8_t alpha = (vals->alpha_enabled && rect.valid) ?
+                gradient_sample_alpha(vals, u, v) : base_alpha;
+            if (fade > 0)
+                alpha = mult_alpha(alpha, fade);
+            uint8_t A = (uint8_t) ((cov * (255 - alpha) + 127) / 255);
+            row[4 * x + 0] = (uint8_t) ((_r(color) * A + 127) / 255);
+            row[4 * x + 1] = (uint8_t) ((_g(color) * A + 127) / 255);
+            row[4 * x + 2] = (uint8_t) ((_b(color) * A + 127) / 255);
+            row[4 * x + 3] = A;
+        }
+    }
+
+    ASS_ImageRGBA *img = malloc(sizeof(*img));
+    if (!img) {
+        ass_aligned_free(rgba);
+        return NULL;
+    }
+    img->w = w;
+    img->h = h;
+    img->stride = rgba_stride;
+    img->rgba = rgba;
+    img->dst_x = dst_x;
+    img->dst_y = dst_y;
+    img->type = type;
+    img->next = NULL;
+    return img;
+}
+
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -338,10 +414,13 @@ static double y2scr_offset(RenderContext *state, double y)
  * karaoke effects.  This can result in a lot of bitmaps (6 to be exact).
  */
 static ASS_Image **render_glyph_i(RenderContext *state,
+                                  CombinedBitmapInfo *combined,
                                   Bitmap *bm, int dst_x, int dst_y,
                                   uint32_t color, uint32_t color2, int brk,
                                   ASS_Image **tail, unsigned type,
-                                  CompositeHashValue *source)
+                                  CompositeHashValue *source,
+                                  int layer1, int layer2,
+                                  ASS_ImageRGBA ***rgba_tail)
 {
     ASS_Renderer *render_priv = state->renderer;
     int i, j, x0, y0, x1, y1, cx0, cy0, cx1, cy1, sx, sy, zx, zy;
@@ -414,6 +493,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             img->type = type;
             *tail = img;
             tail = &img->next;
+            append_rgba_tail(rgba_tail,
+                             render_bitmap_rgba(state, combined,
+                                 bm->buffer + r[j].y0 * bm->stride + r[j].x0,
+                                 lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
+                                 dst_x + r[j].x0, dst_y + r[j].y0,
+                                 layer1, type));
         }
         if (lbrk < r[j].x1) {
             if (lbrk < r[j].x0) lbrk = r[j].x0;
@@ -424,6 +509,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             img->type = type;
             *tail = img;
             tail = &img->next;
+            append_rgba_tail(rgba_tail,
+                             render_bitmap_rgba(state, combined,
+                                 bm->buffer + r[j].y0 * bm->stride + lbrk,
+                                 r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
+                                 dst_x + lbrk, dst_y + r[j].y0,
+                                 layer2, type));
         }
     }
 
@@ -443,14 +534,17 @@ static ASS_Image **render_glyph_i(RenderContext *state,
  * Performs clipping. Uses my_draw_bitmap for actual bitmap conversion.
  */
 static ASS_Image **
-render_glyph(RenderContext *state, Bitmap *bm, int dst_x, int dst_y,
+render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
+             Bitmap *bm, int dst_x, int dst_y,
              uint32_t color, uint32_t color2, int brk, ASS_Image **tail,
-             unsigned type, CompositeHashValue *source)
+             unsigned type, CompositeHashValue *source,
+             int layer1, int layer2, ASS_ImageRGBA ***rgba_tail)
 {
     // Inverse clipping in use?
     if (state->clip_mode)
-        return render_glyph_i(state, bm, dst_x, dst_y, color, color2,
-                              brk, tail, type, source);
+        return render_glyph_i(state, combined, bm, dst_x, dst_y, color, color2,
+                              brk, tail, type, source, layer1, layer2,
+                              rgba_tail);
 
     // brk is absolute
     // color = color left of brk
@@ -501,6 +595,11 @@ render_glyph(RenderContext *state, Bitmap *bm, int dst_x, int dst_y,
         img->type = type;
         *tail = img;
         tail = &img->next;
+        append_rgba_tail(rgba_tail,
+                         render_bitmap_rgba(state, combined,
+                             bm->buffer + bm->stride * b_y0 + b_x0,
+                             brk - b_x0, b_y1 - b_y0, bm->stride,
+                             dst_x + b_x0, dst_y + b_y0, layer1, type));
     }
     if (brk < b_x1) {           // draw right part
         if (brk < b_x0)
@@ -512,6 +611,11 @@ render_glyph(RenderContext *state, Bitmap *bm, int dst_x, int dst_y,
         img->type = type;
         *tail = img;
         tail = &img->next;
+        append_rgba_tail(rgba_tail,
+                         render_bitmap_rgba(state, combined,
+                             bm->buffer + bm->stride * b_y0 + brk,
+                             b_x1 - brk, b_y1 - b_y0, bm->stride,
+                             dst_x + brk, dst_y + b_y0, layer2, type));
     }
     return tail;
 }
@@ -1099,14 +1203,140 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
     }
 }
 
+static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
+{
+    if (!head || !state->clip_drawing_text.str)
+        return;
+
+    ASS_Renderer *render_priv = state->renderer;
+
+    OutlineHashKey ol_key;
+    ol_key.type = OUTLINE_DRAWING;
+    ol_key.u.drawing.text = state->clip_drawing_text;
+
+    double m[3][3] = {{0}};
+    int32_t scale_base = lshiftwrapi(1, state->clip_drawing_scale - 1);
+    double w = scale_base > 0 ? (1.0 / scale_base) : 0;
+    m[0][0] = state->screen_scale_x * w;
+    m[1][1] = state->screen_scale_y * w;
+    m[2][2] = 1;
+
+    m[0][2] = int_to_d6(render_priv->settings.left_margin);
+    m[1][2] = int_to_d6(render_priv->settings.top_margin);
+    ASS_DVector mvc = movevc_offset(state);
+    if (mvc.x || mvc.y) {
+        m[0][2] += mvc.x * state->screen_scale_x * 64;
+        m[1][2] += mvc.y * state->screen_scale_y * 64;
+    }
+
+    ASS_Vector pos;
+    BitmapHashKey key;
+    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
+    if (!key.outline || !key.outline->valid ||
+            !quantize_transform(m, &pos, NULL, true, &key))
+        return;
+
+    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    if (!clip_bm)
+        return;
+
+    unsigned align = 1 << render_priv->engine.align_order;
+
+    for (ASS_ImageRGBA *cur = head; cur; cur = cur->next) {
+        int left, top, right, bottom, aw, ah, as;
+        int ax, ay, bx, by, bw, bh, bs;
+        int aleft, atop, bleft, btop;
+        uint8_t *abuffer = cur->rgba;
+        uint8_t *bbuffer = clip_bm->buffer;
+        ax = cur->dst_x;
+        ay = cur->dst_y;
+        aw = cur->w;
+        ah = cur->h;
+        as = cur->stride;
+        bx = pos.x + clip_bm->left;
+        by = pos.y + clip_bm->top;
+        bw = clip_bm->w;
+        bh = clip_bm->h;
+        bs = clip_bm->stride;
+
+        left = (ax > bx) ? ax : bx;
+        top = (ay > by) ? ay : by;
+        right = ((ax + aw) < (bx + bw)) ? (ax + aw) : (bx + bw);
+        bottom = ((ay + ah) < (by + bh)) ? (ay + ah) : (by + bh);
+        aleft = left - ax;
+        atop = top - ay;
+        int wclip = right - left;
+        int hclip = bottom - top;
+        bleft = left - bx;
+        btop = top - by;
+
+        if (state->clip_drawing_mode) {
+            if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
+                ay > by + bh || !hclip || !wclip) {
+                continue;
+            }
+
+            uint8_t *nbuffer = ass_aligned_alloc(align, as * ah + align, false);
+            if (!nbuffer)
+                break;
+            memcpy(nbuffer, abuffer, as * ah);
+            for (int y = 0; y < hclip; y++) {
+                uint8_t *dst = nbuffer + (atop + y) * as + (aleft * 4);
+                uint8_t *src_mask = bbuffer + (btop + y) * bs + bleft;
+                for (int x = 0; x < wclip; x++) {
+                    uint8_t mval = 255 - src_mask[x];
+                    for (int c = 0; c < 4; c++) {
+                        dst[4 * x + c] =
+                            (uint8_t) ((dst[4 * x + c] * mval + 127) / 255);
+                    }
+                }
+            }
+            ass_aligned_free(cur->rgba);
+            cur->rgba = nbuffer;
+        } else {
+            if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
+                ay > by + bh || !hclip || !wclip) {
+                cur->w = cur->h = 0;
+                continue;
+            }
+
+            int ns = ass_align(align, wclip * 4);
+            uint8_t *nbuffer = ass_aligned_alloc(align, ns * hclip + align, false);
+            if (!nbuffer)
+                break;
+            for (int y = 0; y < hclip; y++) {
+                uint8_t *dst = nbuffer + y * ns;
+                uint8_t *src = abuffer + (atop + y) * as + aleft * 4;
+                uint8_t *src_mask = bbuffer + (btop + y) * bs + bleft;
+                for (int x = 0; x < wclip; x++) {
+                    uint8_t mval = src_mask[x];
+                    for (int c = 0; c < 4; c++) {
+                        dst[4 * x + c] =
+                            (uint8_t) ((src[4 * x + c] * mval + 127) / 255);
+                    }
+                }
+            }
+            ass_aligned_free(cur->rgba);
+            cur->rgba = nbuffer;
+            cur->dst_x += aleft;
+            cur->dst_y += atop;
+            cur->w = wclip;
+            cur->h = hclip;
+            cur->stride = ns;
+        }
+    }
+}
+
 /**
  * \brief Convert TextInfo struct to ASS_Image list
  * Splits glyphs in halves when needed (for \kf karaoke).
  */
-static ASS_Image *render_text(RenderContext *state)
+static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 {
     ASS_Image *head;
     ASS_Image **tail = &head;
+    ASS_ImageRGBA *rgba_head = NULL;
+    ASS_ImageRGBA **rgba_tail = out_rgba ? &rgba_head : NULL;
     unsigned n_bitmaps = state->text_info.n_bitmaps;
     CombinedBitmapInfo *bitmaps = state->text_info.combined_bitmaps;
 
@@ -1116,8 +1346,9 @@ static ASS_Image *render_text(RenderContext *state)
             continue;
 
         tail =
-            render_glyph(state, info->bm_s, info->x, info->y, info->c[3], 0,
-                         1000000, tail, IMAGE_TYPE_SHADOW, info->image);
+            render_glyph(state, info, info->bm_s, info->x, info->y, info->c[3], 0,
+                         1000000, tail, IMAGE_TYPE_SHADOW, info->image,
+                         3, 3, rgba_tail);
     }
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
@@ -1130,8 +1361,9 @@ static ASS_Image *render_text(RenderContext *state)
             // do nothing
         } else {
             tail =
-                render_glyph(state, info->bm_o, info->x, info->y, info->c[2],
-                             0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image);
+                render_glyph(state, info, info->bm_o, info->x, info->y, info->c[2],
+                             0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
+                             2, 2, rgba_tail);
         }
     }
 
@@ -1144,28 +1376,35 @@ static ASS_Image *render_text(RenderContext *state)
                 || (info->effect_type == EF_KARAOKE_KO)) {
             if (info->effect_timing > 0)
                 tail =
-                    render_glyph(state, info->bm, info->x, info->y,
+                    render_glyph(state, info, info->bm, info->x, info->y,
                                  info->c[0], 0, 1000000, tail,
-                                 IMAGE_TYPE_CHARACTER, info->image);
+                                 IMAGE_TYPE_CHARACTER, info->image, 0, 0,
+                                 rgba_tail);
             else
                 tail =
-                    render_glyph(state, info->bm, info->x, info->y,
+                    render_glyph(state, info, info->bm, info->x, info->y,
                                  info->c[1], 0, 1000000, tail,
-                                 IMAGE_TYPE_CHARACTER, info->image);
+                                 IMAGE_TYPE_CHARACTER, info->image, 1, 1,
+                                 rgba_tail);
         } else if (info->effect_type == EF_KARAOKE_KF) {
             tail =
-                render_glyph(state, info->bm, info->x, info->y, info->c[0],
+                render_glyph(state, info, info->bm, info->x, info->y, info->c[0],
                              info->c[1], info->effect_timing, tail,
-                             IMAGE_TYPE_CHARACTER, info->image);
+                             IMAGE_TYPE_CHARACTER, info->image, 0, 1,
+                             rgba_tail);
         } else
             tail =
-                render_glyph(state, info->bm, info->x, info->y, info->c[0],
-                             0, 1000000, tail, IMAGE_TYPE_CHARACTER, info->image);
+                render_glyph(state, info, info->bm, info->x, info->y, info->c[0],
+                             0, 1000000, tail, IMAGE_TYPE_CHARACTER, info->image,
+                             0, 0, rgba_tail);
     }
 
     *tail = 0;
     blend_vector_clip(state, head);
-
+    if (out_rgba) {
+        blend_vector_clip_rgba(state, rgba_head);
+        *out_rgba = rgba_head;
+    }
     return head;
 }
 
@@ -1368,6 +1607,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->c[1] = style->SecondaryColour;
     state->c[2] = style->OutlineColour;
     state->c[3] = style->BackColour;
+    gradient_state_reset(&state->gradient, state->c);
     state->flags =
         (style->Underline ? DECO_UNDERLINE : 0) |
         (style->StrikeOut ? DECO_STRIKETHROUGH : 0);
@@ -2363,6 +2603,7 @@ static void split_style_runs(RenderContext *state)
             last->c[1] != info->c[1] ||
             last->c[2] != info->c[2] ||
             last->c[3] != info->c[3] ||
+            !gradient_equal(&last->gradient, &info->gradient) ||
             last->be != info->be ||
             last->blur_x != info->blur_x ||
             last->blur_y != info->blur_y ||
@@ -2463,6 +2704,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->font = state->font;
         for (int i = 0; i < 4; i++)
             info->c[i] = state->c[i];
+        info->gradient = state->gradient;
+        info->line = 0;
 
         info->effect_type = state->effect_type;
         info->effect_timing = state->effect_timing;
@@ -2596,6 +2839,9 @@ static void reorder_text(RenderContext *state)
     int lineno = 1;
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *info = text_info->glyphs + cmap[i];
+        int line_id = lineno - 1;
+        for (GlyphInfo *g = info; g; g = g->next)
+            g->line = line_id;
         if (text_info->glyphs[i].linebreak) {
             pen.x = 0;
             pen.y += double_to_d6(text_info->lines[lineno-1].desc);
@@ -2836,6 +3082,123 @@ static double restore_blur(int qblur)
     return sigma * sigma;
 }
 
+static void reset_gradient_rects(TextInfo *text_info)
+{
+    for (int i = 0; i < text_info->n_lines; i++) {
+        LineInfo *ln = &text_info->lines[i];
+        rectangle_reset(&ln->grad_char);
+        rectangle_reset(&ln->grad_outline);
+        rectangle_reset(&ln->grad_shadow);
+        ln->grad_char_valid = false;
+        ln->grad_outline_valid = false;
+        ln->grad_shadow_valid = false;
+    }
+}
+
+static void update_line_rect(LineInfo *ln, ASS_Rect *rect, bool *valid,
+                             int x0, int y0, int x1, int y1)
+{
+    rectangle_update(rect, x0, y0, x1, y1);
+    *valid = true;
+}
+
+static void compute_line_gradient_rects(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    reset_gradient_rects(text_info);
+    for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
+        if (info->line < 0 || info->line >= text_info->n_lines)
+            continue;
+        LineInfo *ln = &text_info->lines[info->line];
+        if (info->bm) {
+            int x0 = info->x + info->bm->left;
+            int y0 = info->y + info->bm->top;
+            update_line_rect(ln, &ln->grad_char, &ln->grad_char_valid,
+                             x0, y0, x0 + info->bm->w, y0 + info->bm->h);
+        }
+        if (info->bm_o) {
+            int x0 = info->x + info->bm_o->left;
+            int y0 = info->y + info->bm_o->top;
+            update_line_rect(ln, &ln->grad_outline, &ln->grad_outline_valid,
+                             x0, y0, x0 + info->bm_o->w, y0 + info->bm_o->h);
+        }
+        if (info->bm_s) {
+            int x0 = info->x + info->bm_s->left;
+            int y0 = info->y + info->bm_s->top;
+            update_line_rect(ln, &ln->grad_shadow, &ln->grad_shadow_valid,
+                             x0, y0, x0 + info->bm_s->w, y0 + info->bm_s->h);
+        }
+    }
+}
+
+static GradientRect rect_from_line(const ASS_Rect *rect, bool valid)
+{
+    GradientRect gr = {0, 0, 0, 0, false};
+    if (!valid)
+        return gr;
+
+    gr.x0 = rect->x_min;
+    gr.y0 = rect->y_min;
+    gr.x1 = rect->x_max;
+    gr.y1 = rect->y_max;
+    gr.valid = gr.x1 > gr.x0 && gr.y1 > gr.y0;
+    return gr;
+}
+
+static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer)
+{
+    TextInfo *text_info = &state->text_info;
+    GradientRect gr = {0, 0, 0, 0, false};
+    if (line < 0 || line >= text_info->n_lines)
+        return gr;
+
+    LineInfo *ln = &text_info->lines[line];
+    const ASS_Rect *rect = NULL;
+    bool valid = false;
+    switch (layer) {
+    case 0:
+    case 1:
+        rect = &ln->grad_char;
+        valid = ln->grad_char_valid;
+        if (!valid && ln->grad_outline_valid) {
+            rect = &ln->grad_outline;
+            valid = true;
+        }
+        if (!valid && ln->grad_shadow_valid) {
+            rect = &ln->grad_shadow;
+            valid = true;
+        }
+        break;
+    case 2:
+        rect = &ln->grad_outline;
+        valid = ln->grad_outline_valid;
+        if (!valid && ln->grad_char_valid) {
+            rect = &ln->grad_char;
+            valid = true;
+        }
+        if (!valid && ln->grad_shadow_valid) {
+            rect = &ln->grad_shadow;
+            valid = true;
+        }
+        break;
+    default:
+        rect = &ln->grad_shadow;
+        valid = ln->grad_shadow_valid;
+        if (!valid && ln->grad_outline_valid) {
+            rect = &ln->grad_outline;
+            valid = true;
+        }
+        if (!valid && ln->grad_char_valid) {
+            rect = &ln->grad_char;
+            valid = true;
+        }
+        break;
+    }
+
+    return rect_from_line(rect, valid);
+}
+
 // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
 static void render_and_combine_glyphs(RenderContext *state,
                                       double device_x, double device_y)
@@ -2891,6 +3254,10 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info = &combined_info[nb_bitmaps];
 
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
+                memcpy(&current_info->base_c, &info->c, sizeof(info->c));
+                current_info->gradient = info->gradient;
+                current_info->fade = info->fade;
+                current_info->line = info->line;
                 for (int i = 0; i < 4; i++)
                     ass_apply_fade(&current_info->c[i], info->fade);
 
@@ -3152,7 +3519,8 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         bitmap_size(&v->bm) + bitmap_size(&v->bm_o) + bitmap_size(&v->bm_s);
 }
 
-static void add_background(RenderContext *state, EventImages *event_images)
+static void add_background(RenderContext *state, EventImages *event_images,
+                           ASS_ImageRGBA **rgba_head)
 {
     ASS_Renderer *render_priv = state->renderer;
     int size_x = state->shadow_x > 0 ?
@@ -3183,6 +3551,42 @@ static void add_background(RenderContext *state, EventImages *event_images)
         img->next = event_images->imgs;
         event_images->imgs = img;
     }
+    if (rgba_head) {
+        uint8_t alpha = 255 - _a(clr);
+        int stride = ass_align(1 << render_priv->engine.align_order, w * 4);
+        uint8_t *rgba = ass_aligned_alloc(1 << render_priv->engine.align_order,
+                                          stride * h + (1 << render_priv->engine.align_order),
+                                          false);
+        if (rgba) {
+            uint8_t pr = (uint8_t) ((_r(clr) * alpha + 127) / 255);
+            uint8_t pg = (uint8_t) ((_g(clr) * alpha + 127) / 255);
+            uint8_t pb = (uint8_t) ((_b(clr) * alpha + 127) / 255);
+            for (int y = 0; y < h; y++) {
+                uint8_t *row = rgba + y * stride;
+                for (int x = 0; x < w; x++) {
+                    row[4 * x + 0] = pr;
+                    row[4 * x + 1] = pg;
+                    row[4 * x + 2] = pb;
+                    row[4 * x + 3] = alpha;
+                }
+            }
+            ASS_ImageRGBA *rimg = malloc(sizeof(*rimg));
+            if (rimg) {
+                rimg->w = w;
+                rimg->h = h;
+                rimg->stride = stride;
+                rimg->rgba = rgba;
+                rimg->dst_x = left;
+                rimg->dst_y = top;
+                rimg->type = IMAGE_TYPE_SHADOW;
+                rimg->next = *rgba_head;
+                *rgba_head = rimg;
+                event_images->imgs_rgba = rimg;
+            } else {
+                ass_aligned_free(rgba);
+            }
+        }
+    }
 }
 
 /**
@@ -3191,9 +3595,9 @@ static void add_background(RenderContext *state, EventImages *event_images)
  * \param event_images struct containing resulting images, will also be initialized
  * Process event, appending resulting ASS_Image's to images_root.
  */
-static bool
+bool
 ass_render_event(RenderContext *state, ASS_Event *event,
-                 EventImages *event_images)
+                 EventImages *event_images, ASS_ImageRGBA **rgba_out)
 {
     ASS_Renderer *render_priv = state->renderer;
     if (event->Style >= render_priv->track->n_styles) {
@@ -3411,6 +3815,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     calculate_rotation_params(state, bbox_for_origin, device_x, device_y);
 
     render_and_combine_glyphs(state, device_x, device_y);
+    compute_line_gradient_rects(state);
 
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the
@@ -3426,10 +3831,14 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
     event_images->event = event;
-    event_images->imgs = render_text(state);
+    event_images->imgs = render_text(state, rgba_out ? &event_images->imgs_rgba : NULL);
 
     if (state->border_style == 4)
-        add_background(state, event_images);
+        add_background(state, event_images,
+                       rgba_out ? &event_images->imgs_rgba : NULL);
+
+    if (rgba_out)
+        *rgba_out = event_images->imgs_rgba;
 
     ass_shaper_cleanup(state->shaper, text_info);
     free_render_context(state);
@@ -3465,7 +3874,7 @@ static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv)
 /**
  * \brief Start a new frame
  */
-static bool
+bool
 ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
                 long long now)
 {
@@ -3519,7 +3928,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     return true;
 }
 
-static int cmp_event_layer(const void *p1, const void *p2)
+int cmp_event_layer(const void *p1, const void *p2)
 {
     ASS_Event *e1 = ((EventImages *) p1)->event;
     ASS_Event *e2 = ((EventImages *) p2)->event;
@@ -3586,6 +3995,25 @@ shift_event(ASS_Renderer *render_priv, EventImages *ei, int shift)
         }
         cur = cur->next;
     }
+    ASS_ImageRGBA *rcur = ei->imgs_rgba;
+    while (rcur) {
+        rcur->dst_y += shift;
+        if (rcur->dst_y < 0) {
+            int clip = -rcur->dst_y;
+            rcur->h -= clip;
+            rcur->rgba += clip * rcur->stride;
+            rcur->dst_y = 0;
+        }
+        if (rcur->dst_y + rcur->h >= render_priv->height) {
+            int clip = rcur->dst_y + rcur->h - render_priv->height;
+            rcur->h -= clip;
+        }
+        if (rcur->h <= 0) {
+            rcur->h = 0;
+            rcur->dst_y = 0;
+        }
+        rcur = rcur->next;
+    }
     ei->top += shift;
 }
 
@@ -3620,7 +4048,7 @@ static int fit_rect(Rect *s, Rect *fixed, int *cnt, int dir)
     return shift;
 }
 
-static void
+void
 fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
 {
     Rect *used = ass_realloc_array(NULL, cnt, sizeof(*used));
@@ -3729,7 +4157,7 @@ static int ass_image_compare(ASS_Image *i1, ASS_Image *i2)
  * \param priv library handle
  * \return 0 if identical, 1 if different positions, 2 if different content
  */
-static int ass_detect_change(ASS_Renderer *priv)
+int ass_detect_change(ASS_Renderer *priv)
 {
     ASS_Image *img, *img2;
     int diff;
@@ -3792,7 +4220,7 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                     realloc(priv->eimg,
                             priv->eimg_size * sizeof(EventImages));
             }
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt))
+            if (ass_render_event(&priv->state, event, priv->eimg + cnt, NULL))
                 cnt++;
         }
     }

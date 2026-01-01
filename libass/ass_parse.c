@@ -241,19 +241,6 @@ static inline void change_alpha(uint32_t *var, int32_t new, double pwr)
     *var = (*var & 0xFFFFFF00) | (uint8_t)calc_anim_int32(new, _a(*var), pwr);
 }
 
-/**
- * \brief Multiply two alpha values
- * \param a first value
- * \param b second value
- * \return result of multiplication
- * At least one of the parameters must be less than or equal to 0xFF.
- * The result is less than or equal to max(a, b, 0xFF).
- */
-static inline uint32_t mult_alpha(uint32_t a, uint32_t b)
-{
-    return a - ((uint64_t) a * b + 0x7F) / 0xFF + b;
-}
-
 void ass_apply_fade(uint32_t *clr, int fade)
 {
     // VSFilter compatibility: apply fade only when it's positive
@@ -391,43 +378,71 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         for (int i = 0; i <= MAX_VALID_NARGS; ++i)
             args[i].start = args[i].end = "";
 
+        size_t name_len = name_end - p;
+        bool is_transition = name_len == 1 && p[0] == 't';
+
         // Split parenthesized arguments. Do this for all tags and before
         // any non-parenthesized argument because that's what VSFilter does.
         if (*q == '(') {
             ++q;
-            while (1) {
-                if (q != end)
-                    skip_spaces(&q);
-
-                // Split on commas. If there is a backslash, ignore any
-                // commas following it and lump everything starting from
-                // the last comma, through the backslash and all the way
-                // to the end of the argument string into a single argument.
-
-                char *r = q;
-                while (*r != ',' && *r != '\\' && *r != ')' && r != end)
-                    ++r;
-
-                if (*r == ',') {
-                    push_arg(args, &nargs, q, r);
-                    q = r + 1;
-                } else {
-                    // Swallow the rest of the parenthesized string. This could
-                    // be either a backslash-argument or simply the last argument.
-                    if (*r == '\\') {
+            if (is_transition) {
+                int depth = 1;
+                char *arg_start = q;
+                while (q != end && depth > 0) {
+                    if (*q == '\\')
                         has_backslash_arg = true;
-                        char *paren = memchr(r, ')', end - r);
-                        if (paren)
-                            r = paren;
-                        else
-                            r = end;
+                    if (*q == '(') {
+                        depth++;
+                    } else if (*q == ')') {
+                        depth--;
+                        if (depth == 0) {
+                            push_arg(args, &nargs, arg_start, q);
+                            ++q;
+                            break;
+                        }
+                    } else if (*q == ',' && depth == 1) {
+                        push_arg(args, &nargs, arg_start, q);
+                        arg_start = q + 1;
                     }
-                    push_arg(args, &nargs, q, r);
-                    q = r;
-                    // The closing parenthesis could be missing.
+                    ++q;
+                }
+                if (depth > 0 && arg_start < q)
+                    push_arg(args, &nargs, arg_start, q);
+            } else {
+                while (1) {
                     if (q != end)
-                        ++q;
-                    break;
+                        skip_spaces(&q);
+
+                    // Split on commas. If there is a backslash, ignore any
+                    // commas following it and lump everything starting from
+                    // the last comma, through the backslash and all the way
+                    // to the end of the argument string into a single argument.
+
+                    char *r = q;
+                    while (*r != ',' && *r != '\\' && *r != ')' && r != end)
+                        ++r;
+
+                    if (*r == ',') {
+                        push_arg(args, &nargs, q, r);
+                        q = r + 1;
+                    } else {
+                        // Swallow the rest of the parenthesized string. This could
+                        // be either a backslash-argument or simply the last argument.
+                        if (*r == '\\') {
+                            has_backslash_arg = true;
+                            char *paren = memchr(r, ')', end - r);
+                            if (paren)
+                                r = paren;
+                            else
+                                r = end;
+                        }
+                        push_arg(args, &nargs, q, r);
+                        q = r;
+                        // The closing parenthesis could be missing.
+                        if (q != end)
+                            ++q;
+                        break;
+                    }
                 }
             }
         }
@@ -782,6 +797,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_alpha(&state->c[3],
                              _a(state->style->BackColour), 1);
             }
+            for (i = 0; i < 4; ++i)
+                gradient_disable_alpha(&state->gradient, i,
+                                       _a(state->c[i]), pwr);
             // FIXME: simplify
         } else if (tag("an")) {
             int32_t val = argtoi32(*args);
@@ -969,6 +987,90 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 if (parse_vector_clip(state, args, nargs))
                     state->clip_drawing_mode = 0;
             }
+        } else if (tag("1vc")) {
+            if (nargs) {
+                uint32_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = parse_color_tag(args[i].start);
+                gradient_apply_color(&state->gradient, 0, vals, cnt, pwr);
+            } else {
+                gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
+            }
+        } else if (tag("2vc")) {
+            if (nargs) {
+                uint32_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = parse_color_tag(args[i].start);
+                gradient_apply_color(&state->gradient, 1, vals, cnt, pwr);
+            } else {
+                gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
+            }
+        } else if (tag("3vc")) {
+            if (nargs) {
+                uint32_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = parse_color_tag(args[i].start);
+                gradient_apply_color(&state->gradient, 2, vals, cnt, pwr);
+            } else {
+                gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
+            }
+        } else if (tag("4vc")) {
+            if (nargs) {
+                uint32_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = parse_color_tag(args[i].start);
+                gradient_apply_color(&state->gradient, 3, vals, cnt, pwr);
+            } else {
+                gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
+            }
+        } else if (tag("1va")) {
+            if (nargs) {
+                uint8_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
+                gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
+            } else {
+                gradient_disable_alpha(&state->gradient, 0,
+                                       _a(state->c[0]), pwr);
+            }
+        } else if (tag("2va")) {
+            if (nargs) {
+                uint8_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
+                gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
+            } else {
+                gradient_disable_alpha(&state->gradient, 1,
+                                       _a(state->c[1]), pwr);
+            }
+        } else if (tag("3va")) {
+            if (nargs) {
+                uint8_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
+                gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+            } else {
+                gradient_disable_alpha(&state->gradient, 2,
+                                       _a(state->c[2]), pwr);
+            }
+        } else if (tag("4va")) {
+            if (nargs) {
+                uint8_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
+                gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
+            } else {
+                gradient_disable_alpha(&state->gradient, 3,
+                                       _a(state->c[3]), pwr);
+            }
         } else if (tag("c") || tag("1c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -976,6 +1078,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[0],
                              state->style->PrimaryColour, 1);
+            gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
         } else if (tag("2c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -983,6 +1086,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[1],
                              state->style->SecondaryColour, 1);
+            gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
         } else if (tag("3c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -990,6 +1094,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[2],
                              state->style->OutlineColour, 1);
+            gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -997,6 +1102,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[3],
                              state->style->BackColour, 1);
+            gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
         } else if (tag("1a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1004,6 +1110,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[0],
                              _a(state->style->PrimaryColour), 1);
+            gradient_disable_alpha(&state->gradient, 0,
+                                   _a(state->c[0]), pwr);
         } else if (tag("2a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1011,6 +1119,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[1],
                              _a(state->style->SecondaryColour), 1);
+            gradient_disable_alpha(&state->gradient, 1,
+                                   _a(state->c[1]), pwr);
         } else if (tag("3a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1018,6 +1128,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[2],
                              _a(state->style->OutlineColour), 1);
+            gradient_disable_alpha(&state->gradient, 2,
+                                   _a(state->c[2]), pwr);
         } else if (tag("4a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1025,6 +1137,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[3],
                              _a(state->style->BackColour), 1);
+            gradient_disable_alpha(&state->gradient, 3,
+                                   _a(state->c[3]), pwr);
         } else if (tag("r")) {
             if (nargs) {
                 int len = args->end - args->start;

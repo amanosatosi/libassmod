@@ -85,6 +85,15 @@ typedef struct ass_image {
     // New fields can be added here in new ABI-compatible library releases.
 } ASS_Image;
 
+typedef struct ass_image_rgba {
+    int w, h;                   // Bitmap width/height
+    int stride;                 // Bytes per row
+    uint8_t *rgba;              // Premultiplied RGBA8888 buffer
+    int dst_x, dst_y;           // Bitmap placement inside the video frame
+    int type;                   // Same meaning as ASS_Image.type
+    struct ass_image_rgba *next;
+} ASS_ImageRGBA;
+
 /*
  * Hinting type. (see ass_set_hinting below)
  *
@@ -616,6 +625,9 @@ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
  */
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
+ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
+                                     long long now, int *detect_change);
+void ass_free_images_rgba(ASS_ImageRGBA *img);
 
 
 /*

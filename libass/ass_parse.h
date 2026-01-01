@@ -28,6 +28,11 @@
 #define _b(c)   (((c) >> 8) & 0xFF)
 #define _a(c)   ((c) & 0xFF)
 
+static inline uint32_t mult_alpha(uint32_t a, uint32_t b)
+{
+    return a - ((uint64_t) a * b + 0x7F) / 0xFF + b;
+}
+
 void ass_update_font(RenderContext *state);
 void ass_apply_transition_effects(RenderContext *state);
 void ass_process_karaoke_effects(RenderContext *state);
