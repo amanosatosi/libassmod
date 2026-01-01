@@ -98,7 +98,7 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
             }
             if (ass_render_event(&priv->state, event, priv->eimg + cnt,
                                  &priv->eimg[cnt].imgs_rgba)) {
-                priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
+                priv->frame_needs_rgba = true;
                 cnt++;
             }
         }

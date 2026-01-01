@@ -3847,10 +3847,10 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
     event_images->event = event;
-    event_images->needs_rgba = state->needs_rgba;
+    bool want_rgba = rgba_out != NULL;
+    event_images->needs_rgba = state->needs_rgba || want_rgba;
     event_images->imgs_rgba = NULL;
-    ASS_ImageRGBA **rgba_ptr = (rgba_out && state->needs_rgba) ?
-        &event_images->imgs_rgba : NULL;
+    ASS_ImageRGBA **rgba_ptr = want_rgba ? &event_images->imgs_rgba : NULL;
     event_images->imgs = render_text(state, rgba_ptr);
 
     if (state->border_style == 4)
