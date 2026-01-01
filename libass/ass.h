@@ -628,6 +628,8 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
 ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
                                      long long now, int *detect_change);
 void ass_free_images_rgba(ASS_ImageRGBA *img);
+int ass_track_has_rgba(ASS_Track *track);
+int ass_frame_needs_rgba(ASS_Renderer *priv);
 
 
 /*

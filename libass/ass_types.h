@@ -302,6 +302,8 @@ typedef struct ass_track {
     int LayoutResX;  // overrides values from ass_set_storage_size and
     int LayoutResY;  // also takes precedence over ass_set_pixel_aspect
 
+    int has_rgba;            // track contains features needing RGBA output
+
     // New fields can be added here in new ABI-compatible library releases.
 } ASS_Track;
 

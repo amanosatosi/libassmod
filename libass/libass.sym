@@ -19,6 +19,8 @@ ass_set_fonts
 ass_render_frame
 ass_render_frame_rgba
 ass_free_images_rgba
+ass_track_has_rgba
+ass_frame_needs_rgba
 ass_new_track
 ass_free_track
 ass_alloc_style

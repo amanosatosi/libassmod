@@ -183,6 +183,16 @@ void ass_set_selective_style_override(ASS_Renderer *priv, ASS_Style *style)
     ass_reconfigure(priv);
 }
 
+int ass_track_has_rgba(ASS_Track *track)
+{
+    return track && track->has_rgba;
+}
+
+int ass_frame_needs_rgba(ASS_Renderer *priv)
+{
+    return priv && priv->frame_needs_rgba;
+}
+
 int ass_fonts_update(ASS_Renderer *render_priv)
 {
     // This is just a stub now!

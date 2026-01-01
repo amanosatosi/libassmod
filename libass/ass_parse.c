@@ -994,6 +994,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 0, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
             }
@@ -1004,6 +1006,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 1, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
             }
@@ -1014,6 +1018,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 2, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             }
@@ -1024,6 +1030,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 3, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
             }
@@ -1034,6 +1042,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_alpha(&state->gradient, 0,
                                            _a(state->c[0]), pwr);
@@ -1045,6 +1055,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_alpha(&state->gradient, 1,
                                            _a(state->c[1]), pwr);
@@ -1056,6 +1068,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_alpha(&state->gradient, 2,
                                            _a(state->c[2]), pwr);
@@ -1067,6 +1081,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
+                state->needs_rgba = true;
+                state->renderer->track->has_rgba = 1;
             } else {
                 ass_gradient_disable_alpha(&state->gradient, 3,
                                            _a(state->c[3]), pwr);

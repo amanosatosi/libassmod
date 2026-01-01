@@ -1655,6 +1655,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->font_encoding = style->Encoding;
     state->jitter = ass_jitter_default_state();
     state->z = 0.0;
+    state->needs_rgba = false;
 }
 
 /**
@@ -3846,8 +3847,11 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
     event_images->event = event;
+    event_images->needs_rgba = state->needs_rgba;
     event_images->imgs_rgba = NULL;
-    event_images->imgs = render_text(state, rgba_out ? &event_images->imgs_rgba : NULL);
+    ASS_ImageRGBA **rgba_ptr = (rgba_out && state->needs_rgba) ?
+        &event_images->imgs_rgba : NULL;
+    event_images->imgs = render_text(state, rgba_ptr);
 
     if (state->border_style == 4)
         add_background(state, event_images,
@@ -3909,6 +3913,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
 
     render_priv->track = track;
     render_priv->time = now;
+    render_priv->frame_needs_rgba = false;
 
     ass_lazy_track_init(render_priv->library, render_priv->track);
 
@@ -4236,8 +4241,10 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                     realloc(priv->eimg,
                             priv->eimg_size * sizeof(EventImages));
             }
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt, NULL))
+            if (ass_render_event(&priv->state, event, priv->eimg + cnt, NULL)) {
+                priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
                 cnt++;
+            }
         }
     }
 

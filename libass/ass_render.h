@@ -91,6 +91,7 @@ typedef struct {
     int detect_collisions;
     int shift_direction;
     ASS_Event *event;
+    bool needs_rgba;
 } EventImages;
 
 typedef enum {
@@ -319,6 +320,7 @@ struct render_context {
     int border_style;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
+    bool needs_rgba;
     int clip_x0, clip_y0, clip_x1, clip_y1;
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
     char clip_mode;             // 1 = iclip
@@ -401,6 +403,7 @@ struct ass_renderer {
     size_t num_emfonts;
     ASS_Settings settings;
     int render_id;
+    bool frame_needs_rgba;
 
     ASS_Image *images_root;     // rendering result is stored here
     ASS_Image *prev_images_root;
