@@ -23,6 +23,7 @@
 
 #include "ass_render.h"
 #include "ass_utils.h"
+#include "ass_priv.h"
 
 ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
                                      long long now, int *detect_change)

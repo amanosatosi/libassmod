@@ -36,6 +36,8 @@
 #include "ass_priv.h"
 #include "ass_shaper.h"
 
+static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer);
+
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
 #define MAX_BITMAPS_INITIAL 16
@@ -1348,7 +1350,7 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
         tail =
             render_glyph(state, info, info->bm_s, info->x, info->y, info->c[3], 0,
                          1000000, tail, IMAGE_TYPE_SHADOW, info->image,
-                         3, 3, rgba_tail);
+                         3, 3, out_rgba ? &rgba_tail : NULL);
     }
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
@@ -1363,7 +1365,7 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
             tail =
                 render_glyph(state, info, info->bm_o, info->x, info->y, info->c[2],
                              0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
-                             2, 2, rgba_tail);
+                             2, 2, out_rgba ? &rgba_tail : NULL);
         }
     }
 
@@ -1379,24 +1381,24 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
                     render_glyph(state, info, info->bm, info->x, info->y,
                                  info->c[0], 0, 1000000, tail,
                                  IMAGE_TYPE_CHARACTER, info->image, 0, 0,
-                                 rgba_tail);
+                                 out_rgba ? &rgba_tail : NULL);
             else
                 tail =
                     render_glyph(state, info, info->bm, info->x, info->y,
                                  info->c[1], 0, 1000000, tail,
                                  IMAGE_TYPE_CHARACTER, info->image, 1, 1,
-                                 rgba_tail);
+                                 out_rgba ? &rgba_tail : NULL);
         } else if (info->effect_type == EF_KARAOKE_KF) {
             tail =
                 render_glyph(state, info, info->bm, info->x, info->y, info->c[0],
                              info->c[1], info->effect_timing, tail,
                              IMAGE_TYPE_CHARACTER, info->image, 0, 1,
-                             rgba_tail);
+                             out_rgba ? &rgba_tail : NULL);
         } else
             tail =
                 render_glyph(state, info, info->bm, info->x, info->y, info->c[0],
                              0, 1000000, tail, IMAGE_TYPE_CHARACTER, info->image,
-                             0, 0, rgba_tail);
+                             0, 0, out_rgba ? &rgba_tail : NULL);
     }
 
     *tail = 0;
@@ -3831,6 +3833,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
     event_images->event = event;
+    event_images->imgs_rgba = NULL;
     event_images->imgs = render_text(state, rgba_out ? &event_images->imgs_rgba : NULL);
 
     if (state->border_style == 4)
