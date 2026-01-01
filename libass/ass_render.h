@@ -41,6 +41,9 @@
 #include "ass_rasterizer.h"
 #include "gradient.h"
 
+#define cmp_event_layer ass_cmp_event_layer
+#define fix_collisions ass_fix_collisions
+
 #define GLYPH_CACHE_MAX 10000
 #define MEGABYTE (1024 * 1024)
 #define BITMAP_CACHE_MAX_SIZE (128 * MEGABYTE)
@@ -442,8 +445,8 @@ ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out);
 bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now);
-int cmp_event_layer(const void *p1, const void *p2);
-void fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
+int ass_cmp_event_layer(const void *p1, const void *p2);
+void ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
 int ass_detect_change(ASS_Renderer *priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on

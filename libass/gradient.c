@@ -62,7 +62,7 @@ static uint32_t mix_color(uint32_t oldc, uint32_t newc, double pwr)
            ((uint32_t) b << 8) | a;
 }
 
-void gradient_state_reset(GradientState *state, const uint32_t *base_colors)
+void ass_gradient_state_reset(GradientState *state, const uint32_t *base_colors)
 {
     memset(state, 0, sizeof(*state));
     if (!base_colors)
@@ -77,8 +77,8 @@ void gradient_state_reset(GradientState *state, const uint32_t *base_colors)
     }
 }
 
-void gradient_apply_color(GradientState *state, int layer, const uint32_t *values,
-                          int count, double pwr)
+void ass_gradient_apply_color(GradientState *state, int layer, const uint32_t *values,
+                              int count, double pwr)
 {
     if (!state || layer < 0 || layer >= 4 || count <= 0 || !values)
         return;
@@ -91,8 +91,8 @@ void gradient_apply_color(GradientState *state, int layer, const uint32_t *value
     dst->color_enabled = true;
 }
 
-void gradient_apply_alpha(GradientState *state, int layer, const uint8_t *values,
-                          int count, double pwr)
+void ass_gradient_apply_alpha(GradientState *state, int layer, const uint8_t *values,
+                              int count, double pwr)
 {
     if (!state || layer < 0 || layer >= 4 || count <= 0 || !values)
         return;
@@ -105,8 +105,8 @@ void gradient_apply_alpha(GradientState *state, int layer, const uint8_t *values
     dst->alpha_enabled = true;
 }
 
-void gradient_disable_color(GradientState *state, int layer, uint32_t fallback,
-                            double pwr)
+void ass_gradient_disable_color(GradientState *state, int layer, uint32_t fallback,
+                                double pwr)
 {
     if (!state || layer < 0 || layer >= 4)
         return;
@@ -118,8 +118,8 @@ void gradient_disable_color(GradientState *state, int layer, uint32_t fallback,
     dst->color_enabled = pwr < 1.0 ? dst->color_enabled : false;
 }
 
-void gradient_disable_alpha(GradientState *state, int layer, uint8_t fallback,
-                            double pwr)
+void ass_gradient_disable_alpha(GradientState *state, int layer, uint8_t fallback,
+                                double pwr)
 {
     if (!state || layer < 0 || layer >= 4)
         return;
@@ -131,12 +131,12 @@ void gradient_disable_alpha(GradientState *state, int layer, uint8_t fallback,
     dst->alpha_enabled = pwr < 1.0 ? dst->alpha_enabled : false;
 }
 
-bool gradient_equal(const GradientState *a, const GradientState *b)
+bool ass_gradient_equal(const GradientState *a, const GradientState *b)
 {
     return !memcmp(a, b, sizeof(*a));
 }
 
-uint32_t gradient_sample_color(const GradientValues *val, double u, double v)
+uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v)
 {
     u = clamp01(u);
     v = clamp01(v);
@@ -157,7 +157,7 @@ uint32_t gradient_sample_color(const GradientValues *val, double u, double v)
            ((uint32_t) lround(b) << 8) | a;
 }
 
-uint8_t gradient_sample_alpha(const GradientValues *val, double u, double v)
+uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v)
 {
     u = clamp01(u);
     v = clamp01(v);

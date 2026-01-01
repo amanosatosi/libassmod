@@ -22,6 +22,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define gradient_state_reset ass_gradient_state_reset
+#define gradient_apply_color ass_gradient_apply_color
+#define gradient_apply_alpha ass_gradient_apply_alpha
+#define gradient_disable_color ass_gradient_disable_color
+#define gradient_disable_alpha ass_gradient_disable_alpha
+#define gradient_equal ass_gradient_equal
+#define gradient_sample_color ass_gradient_sample_color
+#define gradient_sample_alpha ass_gradient_sample_alpha
+
 typedef struct {
     bool color_enabled;
     bool alpha_enabled;
@@ -38,18 +47,18 @@ typedef struct {
     bool valid;
 } GradientRect;
 
-void gradient_state_reset(GradientState *state, const uint32_t *base_colors);
-void gradient_apply_color(GradientState *state, int layer, const uint32_t *values,
-                          int count, double pwr);
-void gradient_apply_alpha(GradientState *state, int layer, const uint8_t *values,
-                          int count, double pwr);
-void gradient_disable_color(GradientState *state, int layer, uint32_t fallback,
-                            double pwr);
-void gradient_disable_alpha(GradientState *state, int layer, uint8_t fallback,
-                            double pwr);
-bool gradient_equal(const GradientState *a, const GradientState *b);
+void ass_gradient_state_reset(GradientState *state, const uint32_t *base_colors);
+void ass_gradient_apply_color(GradientState *state, int layer, const uint32_t *values,
+                              int count, double pwr);
+void ass_gradient_apply_alpha(GradientState *state, int layer, const uint8_t *values,
+                              int count, double pwr);
+void ass_gradient_disable_color(GradientState *state, int layer, uint32_t fallback,
+                                double pwr);
+void ass_gradient_disable_alpha(GradientState *state, int layer, uint8_t fallback,
+                                double pwr);
+bool ass_gradient_equal(const GradientState *a, const GradientState *b);
 
-uint32_t gradient_sample_color(const GradientValues *val, double u, double v);
-uint8_t gradient_sample_alpha(const GradientValues *val, double u, double v);
+uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v);
+uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v);
 
 #endif /* LIBASS_GRADIENT_H */

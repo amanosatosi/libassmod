@@ -378,9 +378,9 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             }
             double u = (dst_x + x + 0.5 - rect.x0) * inv_w;
             uint32_t color = (vals->color_enabled) ?
-                gradient_sample_color(vals, u, v) : base_color;
+                ass_gradient_sample_color(vals, u, v) : base_color;
             uint8_t alpha = (vals->alpha_enabled) ?
-                gradient_sample_alpha(vals, u, v) : base_alpha;
+                ass_gradient_sample_alpha(vals, u, v) : base_alpha;
             if (fade > 0)
                 alpha = mult_alpha(alpha, fade);
             uint8_t A = (uint8_t) ((cov * (255 - alpha) + 127) / 255);
@@ -1614,7 +1614,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->c[1] = style->SecondaryColour;
     state->c[2] = style->OutlineColour;
     state->c[3] = style->BackColour;
-    gradient_state_reset(&state->gradient, state->c);
+    ass_gradient_state_reset(&state->gradient, state->c);
     state->flags =
         (style->Underline ? DECO_UNDERLINE : 0) |
         (style->StrikeOut ? DECO_STRIKETHROUGH : 0);
@@ -2610,7 +2610,7 @@ static void split_style_runs(RenderContext *state)
             last->c[1] != info->c[1] ||
             last->c[2] != info->c[2] ||
             last->c[3] != info->c[3] ||
-            !gradient_equal(&last->gradient, &info->gradient) ||
+            !ass_gradient_equal(&last->gradient, &info->gradient) ||
             last->be != info->be ||
             last->blur_x != info->blur_x ||
             last->blur_y != info->blur_y ||
@@ -3936,7 +3936,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     return true;
 }
 
-int cmp_event_layer(const void *p1, const void *p2)
+int ass_cmp_event_layer(const void *p1, const void *p2)
 {
     ASS_Event *e1 = ((EventImages *) p1)->event;
     ASS_Event *e2 = ((EventImages *) p2)->event;
@@ -4057,7 +4057,7 @@ static int fit_rect(Rect *s, Rect *fixed, int *cnt, int dir)
 }
 
 void
-fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
+ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
 {
     Rect *used = ass_realloc_array(NULL, cnt, sizeof(*used));
     int cnt_used = 0;
@@ -4235,17 +4235,17 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
 
     // sort by layer
     if (cnt > 0)
-        qsort(priv->eimg, cnt, sizeof(EventImages), cmp_event_layer);
+        qsort(priv->eimg, cnt, sizeof(EventImages), ass_cmp_event_layer);
 
     // call fix_collisions for each group of events with the same layer
     EventImages *last = priv->eimg;
     for (int i = 1; i < cnt; i++)
         if (last->event->Layer != priv->eimg[i].event->Layer) {
-            fix_collisions(priv, last, priv->eimg + i - last);
+            ass_fix_collisions(priv, last, priv->eimg + i - last);
             last = priv->eimg + i;
         }
     if (cnt > 0)
-        fix_collisions(priv, last, priv->eimg + cnt - last);
+        ass_fix_collisions(priv, last, priv->eimg + cnt - last);
 
     // concat lists
     ASS_Image **tail = &priv->images_root;

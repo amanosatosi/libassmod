@@ -53,16 +53,16 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
     }
 
     if (cnt > 0)
-        qsort(priv->eimg, cnt, sizeof(EventImages), cmp_event_layer);
+        qsort(priv->eimg, cnt, sizeof(EventImages), ass_cmp_event_layer);
 
     EventImages *last = priv->eimg;
     for (int i = 1; i < cnt; i++)
         if (last->event->Layer != priv->eimg[i].event->Layer) {
-            fix_collisions(priv, last, priv->eimg + i - last);
+            ass_fix_collisions(priv, last, priv->eimg + i - last);
             last = priv->eimg + i;
         }
     if (cnt > 0)
-        fix_collisions(priv, last, priv->eimg + cnt - last);
+        ass_fix_collisions(priv, last, priv->eimg + cnt - last);
 
     ASS_Image **tail = &priv->images_root;
     for (int i = 0; i < cnt; i++) {

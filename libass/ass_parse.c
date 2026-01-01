@@ -798,8 +798,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->style->BackColour), 1);
             }
             for (i = 0; i < 4; ++i)
-                gradient_disable_alpha(&state->gradient, i,
-                                       _a(state->c[i]), pwr);
+                ass_gradient_disable_alpha(&state->gradient, i,
+                                           _a(state->c[i]), pwr);
             // FIXME: simplify
         } else if (tag("an")) {
             int32_t val = argtoi32(*args);
@@ -993,9 +993,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
-                gradient_apply_color(&state->gradient, 0, vals, cnt, pwr);
+                ass_gradient_apply_color(&state->gradient, 0, vals, cnt, pwr);
             } else {
-                gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
+                ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
             }
         } else if (tag("2vc")) {
             if (nargs) {
@@ -1003,9 +1003,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
-                gradient_apply_color(&state->gradient, 1, vals, cnt, pwr);
+                ass_gradient_apply_color(&state->gradient, 1, vals, cnt, pwr);
             } else {
-                gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
+                ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
             }
         } else if (tag("3vc")) {
             if (nargs) {
@@ -1013,9 +1013,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
-                gradient_apply_color(&state->gradient, 2, vals, cnt, pwr);
+                ass_gradient_apply_color(&state->gradient, 2, vals, cnt, pwr);
             } else {
-                gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
+                ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             }
         } else if (tag("4vc")) {
             if (nargs) {
@@ -1023,9 +1023,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
-                gradient_apply_color(&state->gradient, 3, vals, cnt, pwr);
+                ass_gradient_apply_color(&state->gradient, 3, vals, cnt, pwr);
             } else {
-                gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
+                ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
             }
         } else if (tag("1va")) {
             if (nargs) {
@@ -1033,10 +1033,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
-                gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
             } else {
-                gradient_disable_alpha(&state->gradient, 0,
-                                       _a(state->c[0]), pwr);
+                ass_gradient_disable_alpha(&state->gradient, 0,
+                                           _a(state->c[0]), pwr);
             }
         } else if (tag("2va")) {
             if (nargs) {
@@ -1044,10 +1044,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
-                gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
             } else {
-                gradient_disable_alpha(&state->gradient, 1,
-                                       _a(state->c[1]), pwr);
+                ass_gradient_disable_alpha(&state->gradient, 1,
+                                           _a(state->c[1]), pwr);
             }
         } else if (tag("3va")) {
             if (nargs) {
@@ -1055,10 +1055,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
-                gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
             } else {
-                gradient_disable_alpha(&state->gradient, 2,
-                                       _a(state->c[2]), pwr);
+                ass_gradient_disable_alpha(&state->gradient, 2,
+                                           _a(state->c[2]), pwr);
             }
         } else if (tag("4va")) {
             if (nargs) {
@@ -1066,10 +1066,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int cnt = FFMIN(nargs, 4);
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
-                gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
             } else {
-                gradient_disable_alpha(&state->gradient, 3,
-                                       _a(state->c[3]), pwr);
+                ass_gradient_disable_alpha(&state->gradient, 3,
+                                           _a(state->c[3]), pwr);
             }
         } else if (tag("c") || tag("1c")) {
             if (nargs) {
@@ -1078,7 +1078,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[0],
                              state->style->PrimaryColour, 1);
-            gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
+            ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
         } else if (tag("2c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1086,7 +1086,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[1],
                              state->style->SecondaryColour, 1);
-            gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
+            ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
         } else if (tag("3c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1094,7 +1094,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[2],
                              state->style->OutlineColour, 1);
-            gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
+            ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1102,7 +1102,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[3],
                              state->style->BackColour, 1);
-            gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
+            ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
         } else if (tag("1a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1110,8 +1110,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[0],
                              _a(state->style->PrimaryColour), 1);
-            gradient_disable_alpha(&state->gradient, 0,
-                                   _a(state->c[0]), pwr);
+            ass_gradient_disable_alpha(&state->gradient, 0,
+                                       _a(state->c[0]), pwr);
         } else if (tag("2a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1119,8 +1119,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[1],
                              _a(state->style->SecondaryColour), 1);
-            gradient_disable_alpha(&state->gradient, 1,
-                                   _a(state->c[1]), pwr);
+            ass_gradient_disable_alpha(&state->gradient, 1,
+                                       _a(state->c[1]), pwr);
         } else if (tag("3a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1128,8 +1128,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[2],
                              _a(state->style->OutlineColour), 1);
-            gradient_disable_alpha(&state->gradient, 2,
-                                   _a(state->c[2]), pwr);
+            ass_gradient_disable_alpha(&state->gradient, 2,
+                                       _a(state->c[2]), pwr);
         } else if (tag("4a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -1137,8 +1137,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_alpha(&state->c[3],
                              _a(state->style->BackColour), 1);
-            gradient_disable_alpha(&state->gradient, 3,
-                                   _a(state->c[3]), pwr);
+            ass_gradient_disable_alpha(&state->gradient, 3,
+                                       _a(state->c[3]), pwr);
         } else if (tag("r")) {
             if (nargs) {
                 int len = args->end - args->start;
