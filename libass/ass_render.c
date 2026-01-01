@@ -500,12 +500,14 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             img->type = type;
             *tail = img;
             tail = &img->next;
-            append_rgba_tail(rgba_tail,
-                             render_bitmap_rgba(state, combined,
-                                 bm->buffer + r[j].y0 * bm->stride + r[j].x0,
-                                 lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
-                                 dst_x + r[j].x0, dst_y + r[j].y0,
-                                 layer1, type));
+            if (rgba_tail) {
+                append_rgba_tail(rgba_tail,
+                                 render_bitmap_rgba(state, combined,
+                                     bm->buffer + r[j].y0 * bm->stride + r[j].x0,
+                                     lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
+                                     dst_x + r[j].x0, dst_y + r[j].y0,
+                                     layer1, type));
+            }
         }
         if (lbrk < r[j].x1) {
             if (lbrk < r[j].x0) lbrk = r[j].x0;
@@ -516,12 +518,14 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             img->type = type;
             *tail = img;
             tail = &img->next;
-            append_rgba_tail(rgba_tail,
-                             render_bitmap_rgba(state, combined,
-                                 bm->buffer + r[j].y0 * bm->stride + lbrk,
-                                 r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
-                                 dst_x + lbrk, dst_y + r[j].y0,
-                                 layer2, type));
+            if (rgba_tail) {
+                append_rgba_tail(rgba_tail,
+                                 render_bitmap_rgba(state, combined,
+                                     bm->buffer + r[j].y0 * bm->stride + lbrk,
+                                     r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
+                                     dst_x + lbrk, dst_y + r[j].y0,
+                                     layer2, type));
+            }
         }
     }
 
@@ -602,11 +606,13 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
         img->type = type;
         *tail = img;
         tail = &img->next;
-        append_rgba_tail(rgba_tail,
-                         render_bitmap_rgba(state, combined,
-                             bm->buffer + bm->stride * b_y0 + b_x0,
-                             brk - b_x0, b_y1 - b_y0, bm->stride,
-                             dst_x + b_x0, dst_y + b_y0, layer1, type));
+        if (rgba_tail) {
+            append_rgba_tail(rgba_tail,
+                             render_bitmap_rgba(state, combined,
+                                 bm->buffer + bm->stride * b_y0 + b_x0,
+                                 brk - b_x0, b_y1 - b_y0, bm->stride,
+                                 dst_x + b_x0, dst_y + b_y0, layer1, type));
+        }
     }
     if (brk < b_x1) {           // draw right part
         if (brk < b_x0)
@@ -618,11 +624,13 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
         img->type = type;
         *tail = img;
         tail = &img->next;
-        append_rgba_tail(rgba_tail,
-                         render_bitmap_rgba(state, combined,
-                             bm->buffer + bm->stride * b_y0 + brk,
-                             b_x1 - brk, b_y1 - b_y0, bm->stride,
-                             dst_x + brk, dst_y + b_y0, layer2, type));
+        if (rgba_tail) {
+            append_rgba_tail(rgba_tail,
+                             render_bitmap_rgba(state, combined,
+                                 bm->buffer + bm->stride * b_y0 + brk,
+                                 b_x1 - brk, b_y1 - b_y0, bm->stride,
+                                 dst_x + brk, dst_y + b_y0, layer2, type));
+        }
     }
     return tail;
 }
