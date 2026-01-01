@@ -348,10 +348,15 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         return NULL;
 
     GradientRect rect = gradient_rect_for_layer(state, info->line, layer);
-    double inv_w = rect.valid && rect.x1 != rect.x0 ?
-        1.0 / (rect.x1 - rect.x0) : 0.0;
-    double inv_h = rect.valid && rect.y1 != rect.y0 ?
-        1.0 / (rect.y1 - rect.y0) : 0.0;
+    if (!rect.valid) {
+        rect.x0 = dst_x;
+        rect.y0 = dst_y;
+        rect.x1 = dst_x + w;
+        rect.y1 = dst_y + h;
+        rect.valid = true;
+    }
+    double inv_w = rect.x1 != rect.x0 ? 1.0 / (rect.x1 - rect.x0) : 0.0;
+    double inv_h = rect.y1 != rect.y0 ? 1.0 / (rect.y1 - rect.y0) : 0.0;
 
     const GradientValues *vals = &info->gradient.layer[layer];
     uint32_t base_color = info->base_c[layer];
@@ -359,7 +364,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     uint8_t fade = info->fade;
 
     for (int y = 0; y < h; y++) {
-        double v = rect.valid ? (dst_y + y + 0.5 - rect.y0) * inv_h : 0.0;
+        double v = (dst_y + y + 0.5 - rect.y0) * inv_h;
         uint8_t *row = rgba + y * rgba_stride;
         const uint8_t *src = mask + y * stride;
         for (int x = 0; x < w; x++) {
@@ -371,10 +376,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 3] = 0;
                 continue;
             }
-            double u = rect.valid ? (dst_x + x + 0.5 - rect.x0) * inv_w : 0.0;
-            uint32_t color = (vals->color_enabled && rect.valid) ?
+            double u = (dst_x + x + 0.5 - rect.x0) * inv_w;
+            uint32_t color = (vals->color_enabled) ?
                 gradient_sample_color(vals, u, v) : base_color;
-            uint8_t alpha = (vals->alpha_enabled && rect.valid) ?
+            uint8_t alpha = (vals->alpha_enabled) ?
                 gradient_sample_alpha(vals, u, v) : base_alpha;
             if (fade > 0)
                 alpha = mult_alpha(alpha, fade);
