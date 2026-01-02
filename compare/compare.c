@@ -32,8 +32,8 @@
 #define FFMAX(a,b) ((a) > (b) ? (a) : (b))
 #define FFMIN(a,b) ((a) > (b) ? (b) : (a))
 
-static void blend_image(Image8 *frame, int32_t x0, int32_t y0,
-                        const ASS_Image *img)
+static void blend_image_rgba(Image8 *frame, int32_t x0, int32_t y0,
+                             const ASS_ImageRGBA *img)
 {
     int32_t x1 = img->dst_x, x_min = FFMAX(x0, x1);
     int32_t y1 = img->dst_y, y_min = FFMAX(y0, y1);
@@ -45,32 +45,29 @@ static void blend_image(Image8 *frame, int32_t x0, int32_t y0,
     if (w <= 0 || h <= 0)
         return;
 
-    uint8_t r = img->color >> 24;
-    uint8_t g = img->color >> 16;
-    uint8_t b = img->color >>  8;
-    uint8_t a = img->color >>  0;
-
-    int32_t mul = 129 * (255 - a);
-    const int32_t offs = (int32_t) 1 << 22;
-
     int32_t stride = 4 * frame->width;
     uint8_t *dst = frame->buffer + y0 * stride + 4 * x0;
-    const uint8_t *src = img->bitmap + y1 * img->stride + x1;
+    const uint8_t *src = img->rgba + y1 * img->stride + 4 * x1;
     for (int32_t y = 0; y < h; y++) {
         for (int32_t x = 0; x < w; x++) {
-            int32_t k = src[x] * mul;
-            dst[4 * x + 0] -= ((dst[4 * x + 0] - r) * k + offs) >> 23;
-            dst[4 * x + 1] -= ((dst[4 * x + 1] - g) * k + offs) >> 23;
-            dst[4 * x + 2] -= ((dst[4 * x + 2] - b) * k + offs) >> 23;
-            dst[4 * x + 3] -= ((dst[4 * x + 3] - 0) * k + offs) >> 23;
+            const uint8_t *s = src + 4 * x;
+            uint8_t *d = dst + 4 * x;
+            uint8_t src_a = s[3];
+            uint8_t inv_src_a = 255 - src_a;
+            uint8_t dst_a = 255 - d[3]; // stored alpha is inverted
+            d[0] = (uint8_t) (s[0] + (d[0] * inv_src_a + 127) / 255);
+            d[1] = (uint8_t) (s[1] + (d[1] * inv_src_a + 127) / 255);
+            d[2] = (uint8_t) (s[2] + (d[2] * inv_src_a + 127) / 255);
+            uint8_t out_a = (uint8_t) (src_a + (dst_a * inv_src_a + 127) / 255);
+            d[3] = 255 - out_a;
         }
         dst += stride;
         src += img->stride;
     }
 }
 
-static void blend_all(Image8 *frame, int32_t x0, int32_t y0,
-                      const ASS_Image *img)
+static void blend_all_rgba(Image8 *frame, int32_t x0, int32_t y0,
+                           const ASS_ImageRGBA *img)
 {
     uint8_t *dst = frame->buffer;
     size_t size = (size_t) frame->width * frame->height;
@@ -80,7 +77,7 @@ static void blend_all(Image8 *frame, int32_t x0, int32_t y0,
         dst += 4;
     }
     for (; img; img = img->next)
-        blend_image(frame, x0, y0, img);
+        blend_image_rgba(frame, x0, y0, img);
 }
 
 inline static uint16_t abs_diff(uint16_t a, uint16_t b)
@@ -138,7 +135,7 @@ static void calc_grad(const Image16 *target, uint16_t *grad)
 }
 
 static int compare1(const Image16 *target, const uint16_t *grad,
-                    const ASS_Image *img, const char *path, double *result)
+                    const ASS_ImageRGBA *img, const char *path, double *result)
 {
     Image8 frame;
     frame.width  = target->width;
@@ -148,7 +145,7 @@ static int compare1(const Image16 *target, const uint16_t *grad,
     if (!frame.buffer)
         return 0;
 
-    blend_all(&frame, 0, 0, img);
+    blend_all_rgba(&frame, 0, 0, img);
 
     double max_err = 0;
     const uint8_t *ptr = frame.buffer;
@@ -170,7 +167,7 @@ static int compare1(const Image16 *target, const uint16_t *grad,
 }
 
 static int compare(const Image16 *target, const uint16_t *grad,
-                   const ASS_Image *img, const char *path,
+                   const ASS_ImageRGBA *img, const char *path,
                    double *result, int scale_x, int scale_y)
 {
     if (scale_x == 1 && scale_y == 1)
@@ -193,7 +190,7 @@ static int compare(const Image16 *target, const uint16_t *grad,
         free(frame.buffer);
         return 0;
     }
-    blend_all(&temp, 0, 0, img);
+    blend_all_rgba(&temp, 0, 0, img);
 
     uint16_t *dst = frame.buffer;
     const uint8_t *src = temp.buffer;
@@ -351,7 +348,7 @@ static Result process_image(ASS_Renderer *renderer, ASS_Track *track,
 
     ass_set_storage_size(renderer, target.width, target.height);
     ass_set_frame_size(renderer, scale_x * target.width, scale_y * target.height);
-    ASS_Image *img = ass_render_frame(renderer, track, time, NULL);
+    ASS_ImageRGBA *img = ass_render_frame_rgba(renderer, track, time, NULL);
 
     const char *out_file = NULL;
     if (output) {
@@ -360,6 +357,7 @@ static Result process_image(ASS_Renderer *renderer, ASS_Track *track,
     }
     double max_err;
     int res = compare(&target, grad, img, out_file, &max_err, scale_x, scale_y);
+    ass_free_images_rgba(img);
     free(target.buffer);
     free(grad);
     if (!res) {
