@@ -94,6 +94,12 @@ typedef struct ass_image_rgba {
     struct ass_image_rgba *next;
 } ASS_ImageRGBA;
 
+typedef struct ass_render_result {
+    ASS_Image *imgs;            // Legacy bitmap list
+    ASS_ImageRGBA *imgs_rgba;   // RGBA list (premultiplied)
+    int use_rgba;               // 1 if imgs_rgba should be used for display
+} ASS_RenderResult;
+
 /*
  * Hinting type. (see ass_set_hinting below)
  *
@@ -627,6 +633,8 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
 ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
                                      long long now, int *detect_change);
+ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
+                                       long long now, int *detect_change);
 void ass_free_images_rgba(ASS_ImageRGBA *img);
 int ass_track_has_rgba(ASS_Track *track);
 int ass_frame_needs_rgba(ASS_Renderer *priv);

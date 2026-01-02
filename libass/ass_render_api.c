@@ -188,6 +188,26 @@ int ass_track_has_rgba(ASS_Track *track)
     return track && track->has_rgba;
 }
 
+ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
+                                       long long now, int *detect_change)
+{
+    ASS_RenderResult res = {0};
+
+    ASS_ImageRGBA *rgba = ass_render_frame_rgba(priv, track, now, detect_change);
+    res.imgs = priv ? priv->images_root : NULL;
+    res.imgs_rgba = NULL;
+    res.use_rgba = 0;
+
+    if (priv && priv->frame_needs_rgba) {
+        res.use_rgba = 1;
+        res.imgs_rgba = rgba;
+    } else {
+        ass_free_images_rgba(rgba);
+    }
+
+    return res;
+}
+
 int ass_frame_needs_rgba(ASS_Renderer *priv)
 {
     return priv && priv->frame_needs_rgba;
