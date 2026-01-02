@@ -3215,6 +3215,22 @@ static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int 
     return rect_from_line(rect, valid);
 }
 
+static bool text_has_gradients(const TextInfo *text_info)
+{
+    for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        const CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
+        if (!info->bitmap_count || (!info->bm && !info->bm_o && !info->bm_s))
+            continue;
+        for (int layer = 0; layer < 4; layer++) {
+            const GradientValues *vals = &info->gradient.layer[layer];
+            if (vals->color_enabled || vals->alpha_enabled)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
 static void render_and_combine_glyphs(RenderContext *state,
                                       double device_x, double device_y)
@@ -3832,6 +3848,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);
+    state->needs_rgba = text_has_gradients(text_info);
 
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the
@@ -3848,7 +3865,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
     event_images->event = event;
     bool want_rgba = rgba_out != NULL;
-    event_images->needs_rgba = state->needs_rgba || want_rgba;
+    event_images->needs_rgba = state->needs_rgba;
     event_images->imgs_rgba = NULL;
     ASS_ImageRGBA **rgba_ptr = want_rgba ? &event_images->imgs_rgba : NULL;
     event_images->imgs = render_text(state, rgba_ptr);
