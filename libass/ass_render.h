@@ -230,11 +230,9 @@ typedef struct {
     ASS_Rect grad_char;
     ASS_Rect grad_outline;
     ASS_Rect grad_shadow;
-    ASS_Rect grad_union;
     bool grad_char_valid;
     bool grad_outline_valid;
     bool grad_shadow_valid;
-    bool grad_union_valid;
 } LineInfo;
 
 typedef struct {

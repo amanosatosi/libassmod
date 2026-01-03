@@ -3105,11 +3105,9 @@ static void reset_gradient_rects(TextInfo *text_info)
         rectangle_reset(&ln->grad_char);
         rectangle_reset(&ln->grad_outline);
         rectangle_reset(&ln->grad_shadow);
-        rectangle_reset(&ln->grad_union);
         ln->grad_char_valid = false;
         ln->grad_outline_valid = false;
         ln->grad_shadow_valid = false;
-        ln->grad_union_valid = false;
     }
 }
 
@@ -3118,8 +3116,6 @@ static void update_line_rect(LineInfo *ln, ASS_Rect *rect, bool *valid,
 {
     rectangle_update(rect, x0, y0, x1, y1);
     *valid = true;
-    rectangle_update(&ln->grad_union, x0, y0, x1, y1);
-    ln->grad_union_valid = true;
 }
 
 static void compute_line_gradient_rects(RenderContext *state)
@@ -3137,17 +3133,15 @@ static void compute_line_gradient_rects(RenderContext *state)
             update_line_rect(ln, &ln->grad_char, &ln->grad_char_valid,
                              x0, y0, x0 + info->bm->w, y0 + info->bm->h);
         }
-        if (info->bm_o) {
-            int x0 = info->x + info->bm_o->left;
-            int y0 = info->y + info->bm_o->top;
-            update_line_rect(ln, &ln->grad_outline, &ln->grad_outline_valid,
-                             x0, y0, x0 + info->bm_o->w, y0 + info->bm_o->h);
+        // Use character box as fallback for outline/shadow to keep gradient
+        // anchoring tied to the text layout (closer to VSFilterMod).
+        if (!ln->grad_outline_valid && ln->grad_char_valid) {
+            ln->grad_outline = ln->grad_char;
+            ln->grad_outline_valid = true;
         }
-        if (info->bm_s) {
-            int x0 = info->x + info->bm_s->left;
-            int y0 = info->y + info->bm_s->top;
-            update_line_rect(ln, &ln->grad_shadow, &ln->grad_shadow_valid,
-                             x0, y0, x0 + info->bm_s->w, y0 + info->bm_s->h);
+        if (!ln->grad_shadow_valid && ln->grad_char_valid) {
+            ln->grad_shadow = ln->grad_char;
+            ln->grad_shadow_valid = true;
         }
     }
 }
@@ -3176,29 +3170,19 @@ static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int 
     LineInfo *ln = &text_info->lines[line];
     const ASS_Rect *rect = NULL;
     bool valid = false;
-    if (ln->grad_union_valid) {
-        rect = &ln->grad_union;
-        valid = true;
-    }
     switch (layer) {
     case 0:
     case 1:
-        if (!valid) {
-            rect = &ln->grad_char;
-            valid = ln->grad_char_valid;
-        }
+        rect = &ln->grad_char;
+        valid = ln->grad_char_valid;
         break;
     case 2:
-        if (!valid) {
-            rect = &ln->grad_outline;
-            valid = ln->grad_outline_valid;
-        }
+        rect = &ln->grad_outline;
+        valid = ln->grad_outline_valid;
         break;
     default:
-        if (!valid) {
-            rect = &ln->grad_shadow;
-            valid = ln->grad_shadow_valid;
-        }
+        rect = &ln->grad_shadow;
+        valid = ln->grad_shadow_valid;
         break;
     }
 
