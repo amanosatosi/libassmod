@@ -3144,6 +3144,19 @@ static void compute_line_gradient_rects(RenderContext *state)
             ln->grad_shadow_valid = true;
         }
     }
+
+    // For BorderStyle=4, the "shadow" is the opaque background box. If there
+    // is no separate shadow bitmap, anchor its gradient to the character box
+    // so the box uses the same line-space rectangle.
+    if (state->border_style == 4) {
+        for (int i = 0; i < text_info->n_lines; i++) {
+            LineInfo *ln = &text_info->lines[i];
+            if (!ln->grad_shadow_valid && ln->grad_char_valid) {
+                ln->grad_shadow = ln->grad_char;
+                ln->grad_shadow_valid = true;
+            }
+        }
+    }
 }
 
 static GradientRect rect_from_line(const ASS_Rect *rect, bool valid)
