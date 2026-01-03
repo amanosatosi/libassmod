@@ -57,7 +57,7 @@ static uint32_t mix_color(uint32_t oldc, uint32_t newc, double pwr)
     uint8_t r = mix_byte(CR(oldc), CR(newc), pwr);
     uint8_t g = mix_byte(CG(oldc), CG(newc), pwr);
     uint8_t b = mix_byte(CB(oldc), CB(newc), pwr);
-    uint8_t a = CA(oldc);
+    uint8_t a = mix_byte(CA(oldc), CA(newc), pwr);
     return ((uint32_t) r << 24) | ((uint32_t) g << 16) |
            ((uint32_t) b << 8) | a;
 }
