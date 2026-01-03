@@ -338,6 +338,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          CombinedBitmapInfo *info,
                                          const uint8_t *mask, int w, int h,
                                          int stride, int dst_x, int dst_y,
+                                         int src_x, int src_y,
+                                         int full_w, int full_h,
                                          int layer, unsigned type)
 {
     ASS_Renderer *render_priv = state->renderer;
@@ -347,16 +349,12 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     if (!rgba)
         return NULL;
 
-    GradientRect rect = gradient_rect_for_layer(state, info->line, layer);
-    if (!rect.valid) {
-        rect.x0 = dst_x;
-        rect.y0 = dst_y;
-        rect.x1 = dst_x + w;
-        rect.y1 = dst_y + h;
-        rect.valid = true;
-    }
-    double inv_w = rect.x1 != rect.x0 ? 1.0 / (rect.x1 - rect.x0) : 0.0;
-    double inv_h = rect.y1 != rect.y0 ? 1.0 / (rect.y1 - rect.y0) : 0.0;
+    if (full_w <= 0)
+        full_w = w;
+    if (full_h <= 0)
+        full_h = h;
+    double inv_w = full_w ? 1.0 / full_w : 0.0;
+    double inv_h = full_h ? 1.0 / full_h : 0.0;
 
     const GradientValues *vals = &info->gradient.layer[layer];
     uint32_t base_color = info->base_c[layer];
@@ -364,7 +362,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     uint8_t fade = info->fade;
 
     for (int y = 0; y < h; y++) {
-        double v = (dst_y + y + 0.5 - rect.y0) * inv_h;
+        double v = (src_y + y) * inv_h;
         uint8_t *row = rgba + y * rgba_stride;
         const uint8_t *src = mask + y * stride;
         for (int x = 0; x < w; x++) {
@@ -376,7 +374,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 3] = 0;
                 continue;
             }
-            double u = (dst_x + x + 0.5 - rect.x0) * inv_w;
+            double u = (src_x + x) * inv_w;
             uint32_t color = (vals->color_enabled) ?
                 ass_gradient_sample_color(vals, u, v) : base_color;
             uint8_t alpha = (vals->alpha_enabled) ?
@@ -506,6 +504,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      bm->buffer + r[j].y0 * bm->stride + r[j].x0,
                                      lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
                                      dst_x + r[j].x0, dst_y + r[j].y0,
+                                     r[j].x0, r[j].y0, bm->w, bm->h,
                                      layer1, type));
             }
         }
@@ -524,6 +523,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      bm->buffer + r[j].y0 * bm->stride + lbrk,
                                      r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
                                      dst_x + lbrk, dst_y + r[j].y0,
+                                     lbrk, r[j].y0, bm->w, bm->h,
                                      layer2, type));
             }
         }
@@ -611,7 +611,9 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                              render_bitmap_rgba(state, combined,
                                  bm->buffer + bm->stride * b_y0 + b_x0,
                                  brk - b_x0, b_y1 - b_y0, bm->stride,
-                                 dst_x + b_x0, dst_y + b_y0, layer1, type));
+                                 dst_x + b_x0, dst_y + b_y0,
+                                 b_x0, b_y0, bm->w, bm->h,
+                                 layer1, type));
         }
     }
     if (brk < b_x1) {           // draw right part
@@ -629,7 +631,9 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                              render_bitmap_rgba(state, combined,
                                  bm->buffer + bm->stride * b_y0 + brk,
                                  b_x1 - brk, b_y1 - b_y0, bm->stride,
-                                 dst_x + brk, dst_y + b_y0, layer2, type));
+                                 dst_x + brk, dst_y + b_y0,
+                                 brk, b_y0, bm->w, bm->h,
+                                 layer2, type));
         }
     }
     return tail;
