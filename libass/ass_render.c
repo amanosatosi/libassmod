@@ -3177,38 +3177,14 @@ static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int 
     case 1:
         rect = &ln->grad_char;
         valid = ln->grad_char_valid;
-        if (!valid && ln->grad_outline_valid) {
-            rect = &ln->grad_outline;
-            valid = true;
-        }
-        if (!valid && ln->grad_shadow_valid) {
-            rect = &ln->grad_shadow;
-            valid = true;
-        }
         break;
     case 2:
         rect = &ln->grad_outline;
         valid = ln->grad_outline_valid;
-        if (!valid && ln->grad_char_valid) {
-            rect = &ln->grad_char;
-            valid = true;
-        }
-        if (!valid && ln->grad_shadow_valid) {
-            rect = &ln->grad_shadow;
-            valid = true;
-        }
         break;
     default:
         rect = &ln->grad_shadow;
         valid = ln->grad_shadow_valid;
-        if (!valid && ln->grad_outline_valid) {
-            rect = &ln->grad_outline;
-            valid = true;
-        }
-        if (!valid && ln->grad_char_valid) {
-            rect = &ln->grad_char;
-            valid = true;
-        }
         break;
     }
 
