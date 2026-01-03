@@ -136,37 +136,61 @@ bool ass_gradient_equal(const GradientState *a, const GradientState *b)
     return !memcmp(a, b, sizeof(*a));
 }
 
+static inline uint32_t sample_channel(uint8_t c0, uint8_t c1,
+                                      uint8_t c2, uint8_t c3,
+                                      int32_t uf, int32_t vf)
+{
+    // uf, vf in 0..65536
+    uint32_t w0 = (uint32_t) (65536 - uf);
+    uint32_t w1 = (uint32_t) uf;
+    uint32_t h0 = (uint32_t) (65536 - vf);
+    uint32_t h1 = (uint32_t) vf;
+
+    uint64_t w00 = (uint64_t) w0 * h0;
+    uint64_t w10 = (uint64_t) w1 * h0;
+    uint64_t w01 = (uint64_t) w0 * h1;
+    uint64_t w11 = (uint64_t) w1 * h1;
+
+    uint64_t acc = w00 * c0 + w10 * c1 + w01 * c2 + w11 * c3;
+    // divide by 65536*65536 with truncation
+    uint32_t res = (uint32_t) (acc >> 32);
+    return res > 255 ? 255 : res;
+}
+
 uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v)
 {
     u = clamp01(u);
     v = clamp01(v);
-    double w00 = (1.0 - u) * (1.0 - v);
-    double w10 = u * (1.0 - v);
-    double w01 = (1.0 - u) * v;
-    double w11 = u * v;
+    int32_t uf = (int32_t) (u * 65536.0);
+    int32_t vf = (int32_t) (v * 65536.0);
+    if (uf < 0) uf = 0; else if (uf > 65536) uf = 65536;
+    if (vf < 0) vf = 0; else if (vf > 65536) vf = 65536;
 
-    double r = w00 * CR(val->color[0]) + w10 * CR(val->color[1]) +
-               w01 * CR(val->color[2]) + w11 * CR(val->color[3]);
-    double g = w00 * CG(val->color[0]) + w10 * CG(val->color[1]) +
-               w01 * CG(val->color[2]) + w11 * CG(val->color[3]);
-    double b = w00 * CB(val->color[0]) + w10 * CB(val->color[1]) +
-               w01 * CB(val->color[2]) + w11 * CB(val->color[3]);
+    uint8_t r = (uint8_t) sample_channel(CR(val->color[0]), CR(val->color[1]),
+                                         CR(val->color[2]), CR(val->color[3]),
+                                         uf, vf);
+    uint8_t g = (uint8_t) sample_channel(CG(val->color[0]), CG(val->color[1]),
+                                         CG(val->color[2]), CG(val->color[3]),
+                                         uf, vf);
+    uint8_t b = (uint8_t) sample_channel(CB(val->color[0]), CB(val->color[1]),
+                                         CB(val->color[2]), CB(val->color[3]),
+                                         uf, vf);
     uint8_t a = CA(val->color[0]);
-    return ((uint32_t) lround(r) << 24) |
-           ((uint32_t) lround(g) << 16) |
-           ((uint32_t) lround(b) << 8) | a;
+    return ((uint32_t) r << 24) | ((uint32_t) g << 16) |
+           ((uint32_t) b << 8) | a;
 }
 
 uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v)
 {
     u = clamp01(u);
     v = clamp01(v);
-    double w00 = (1.0 - u) * (1.0 - v);
-    double w10 = u * (1.0 - v);
-    double w01 = (1.0 - u) * v;
-    double w11 = u * v;
+    int32_t uf = (int32_t) (u * 65536.0);
+    int32_t vf = (int32_t) (v * 65536.0);
+    if (uf < 0) uf = 0; else if (uf > 65536) uf = 65536;
+    if (vf < 0) vf = 0; else if (vf > 65536) vf = 65536;
 
-    double a = w00 * val->alpha[0] + w10 * val->alpha[1] +
-               w01 * val->alpha[2] + w11 * val->alpha[3];
-    return (uint8_t) lround(a);
+    uint8_t a = (uint8_t) sample_channel(val->alpha[0], val->alpha[1],
+                                         val->alpha[2], val->alpha[3],
+                                         uf, vf);
+    return a;
 }

@@ -381,10 +381,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 ass_gradient_sample_alpha(vals, u, v) : base_alpha;
             if (fade > 0)
                 alpha = mult_alpha(alpha, fade);
-            uint8_t A = (uint8_t) ((cov * (255 - alpha) + 127) / 255);
-            row[4 * x + 0] = (uint8_t) ((_r(color) * A + 127) / 255);
-            row[4 * x + 1] = (uint8_t) ((_g(color) * A + 127) / 255);
-            row[4 * x + 2] = (uint8_t) ((_b(color) * A + 127) / 255);
+            uint8_t A = (uint8_t) ((cov * (255 - alpha)) / 255);
+            row[4 * x + 0] = (uint8_t) ((_r(color) * A) / 255);
+            row[4 * x + 1] = (uint8_t) ((_g(color) * A) / 255);
+            row[4 * x + 2] = (uint8_t) ((_b(color) * A) / 255);
             row[4 * x + 3] = A;
         }
     }
