@@ -353,8 +353,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         full_w = w;
     if (full_h <= 0)
         full_h = h;
-    double inv_w = full_w ? 1.0 / full_w : 0.0;
-    double inv_h = full_h ? 1.0 / full_h : 0.0;
+    double inv_w = (full_w > 1) ? 1.0 / (full_w - 1) : 0.0;
+    double inv_h = (full_h > 1) ? 1.0 / (full_h - 1) : 0.0;
 
     const GradientValues *vals = &info->gradient.layer[layer];
     uint32_t base_color = info->base_c[layer];
