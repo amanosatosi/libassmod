@@ -94,6 +94,8 @@ typedef struct ass_image_rgba {
     struct ass_image_rgba *next;
 } ASS_ImageRGBA;
 
+#define LIBASSMOD_FEATURE_RGBA 1
+
 typedef struct ass_render_result {
     ASS_Image *imgs;            // Legacy bitmap list
     ASS_ImageRGBA *imgs_rgba;   // RGBA list (premultiplied)

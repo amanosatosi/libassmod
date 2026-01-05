@@ -30,6 +30,8 @@ Windows. It is suited for static-only builds on any platform well supported by
 Meson and as a Meson subproject.
 Notably, Meson supports MSVC and generation of VS project files.
 
+- **RGBA rendering guide:** [`docs/rgba-rendering.md`](docs/rgba-rendering.md) covers the RGBA API, premultiplied textures, and how to render VSFilterMod-style vector gradients.
+
 Macro defines
 -------------
 
