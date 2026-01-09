@@ -3201,7 +3201,7 @@ static void apply_distortion(RenderContext *state)
 
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *root = text_info->glyphs + cmap[i];
-        if (glyph_is_separator(root) || !root->distort_enabled || root->linebreak)
+        if (glyph_is_separator(root) || !root->distort_enabled)
             continue;
 
         double min_x = DBL_MAX, min_y = DBL_MAX;
