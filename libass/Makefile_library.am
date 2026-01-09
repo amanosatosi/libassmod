@@ -17,6 +17,7 @@ libass_libass_internal_la_SOURCES = \
     libass/ass_font.h libass/ass_font.c \
     libass/ass_fontselect.h libass/ass_fontselect.c \
     libass/ass_parse.h libass/ass_parse.c \
+    libass/ass_distort.h libass/ass_distort.c \
     libass/ass_shaper.h libass/ass_shaper.c \
     libass/ass_outline.h libass/ass_outline.c \
     libass/ass_drawing.h libass/ass_drawing.c \

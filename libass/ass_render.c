@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <float.h>
 
 #ifdef CONFIG_UNIBREAK
 #include <linebreak.h>
@@ -34,6 +35,7 @@
 #include "ass_render.h"
 #include "ass_parse.h"
 #include "ass_priv.h"
+#include "ass_distort.h"
 #include "ass_shaper.h"
 
 static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer);
@@ -49,6 +51,7 @@ static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int 
 #define MAX_PERSP_SCALE 16.0
 #define SUBPIXEL_ORDER 3  // ~ log2(64 / POSITION_PRECISION)
 #define BLUR_PRECISION (1.0 / 256)  // blur error as fraction of full input range
+#define NBSP 0xa0   // unicode non-breaking space character
 
 
 static bool text_info_init(TextInfo* text_info)
@@ -405,6 +408,28 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     return img;
 }
 
+static unsigned char *copy_bitmap_region(const Bitmap *bm, int x0, int y0,
+                                         int w, int h, int align,
+                                         int *stride_out)
+{
+    if (w <= 0 || h <= 0)
+        return NULL;
+
+    int stride = ass_align(align, w);
+    unsigned char *buf = ass_aligned_alloc(align, stride * h + align, false);
+    if (!buf)
+        return NULL;
+
+    for (int y = 0; y < h; y++) {
+        unsigned char *dst = buf + y * stride;
+        unsigned char *src = bm->buffer + (y0 + y) * bm->stride + x0;
+        memcpy(dst, src, w);
+    }
+
+    *stride_out = stride;
+    return buf;
+}
+
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -482,51 +507,75 @@ static ASS_Image **render_glyph_i(RenderContext *state,
         r[j].y1 = (r[j].y1 + dst_y > sy) ? sy - dst_y : r[j].y1;
     }
 
-    // draw the rectangles
-    for (j = 0; j < i; j++) {
-        int lbrk = brk;
-        // kick out rectangles that are invalid now
-        if (r[j].x1 <= r[j].x0 || r[j].y1 <= r[j].y0)
-            continue;
-        // split up into left and right for karaoke, if needed
-        if (lbrk > r[j].x0) {
-            if (lbrk > r[j].x1) lbrk = r[j].x1;
-            img = my_draw_bitmap(bm->buffer + r[j].y0 * bm->stride + r[j].x0,
-                                 lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
-                                 dst_x + r[j].x0, dst_y + r[j].y0, color, source);
-            if (!img) break;
-            img->type = type;
-            *tail = img;
-            tail = &img->next;
-            if (rgba_tail) {
-                append_rgba_tail(rgba_tail,
-                                 render_bitmap_rgba(state, combined,
-                                     bm->buffer + r[j].y0 * bm->stride + r[j].x0,
-                                     lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
+        // draw the rectangles
+        for (j = 0; j < i; j++) {
+            int lbrk = brk;
+            // kick out rectangles that are invalid now
+            if (r[j].x1 <= r[j].x0 || r[j].y1 <= r[j].y0)
+                continue;
+            // split up into left and right for karaoke, if needed
+            if (lbrk > r[j].x0) {
+                if (lbrk > r[j].x1) lbrk = r[j].x1;
+                int sub_w = lbrk - r[j].x0;
+                int sub_h = r[j].y1 - r[j].y0;
+                int sub_stride = bm->stride;
+                unsigned char *sub_buf = bm->buffer + r[j].y0 * bm->stride + r[j].x0;
+                if (!source) {
+                    sub_buf = copy_bitmap_region(bm, r[j].x0, r[j].y0, sub_w, sub_h,
+                                                 1 << render_priv->engine.align_order, &sub_stride);
+                    if (!sub_buf)
+                        break;
+                }
+                img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
+                                     dst_x + r[j].x0, dst_y + r[j].y0, color, source);
+                if (!img) {
+                    if (!source)
+                        ass_aligned_free(sub_buf);
+                    break;
+                }
+                img->type = type;
+                *tail = img;
+                tail = &img->next;
+                if (rgba_tail) {
+                    append_rgba_tail(rgba_tail,
+                                     render_bitmap_rgba(state, combined,
+                                     sub_buf, sub_w, sub_h, sub_stride,
                                      dst_x + r[j].x0, dst_y + r[j].y0,
                                      r[j].x0, r[j].y0, bm->w, bm->h,
                                      layer1, type));
+                }
             }
-        }
-        if (lbrk < r[j].x1) {
-            if (lbrk < r[j].x0) lbrk = r[j].x0;
-            img = my_draw_bitmap(bm->buffer + r[j].y0 * bm->stride + lbrk,
-                                 r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
-                                 dst_x + lbrk, dst_y + r[j].y0, color2, source);
-            if (!img) break;
-            img->type = type;
-            *tail = img;
-            tail = &img->next;
-            if (rgba_tail) {
-                append_rgba_tail(rgba_tail,
-                                 render_bitmap_rgba(state, combined,
-                                     bm->buffer + r[j].y0 * bm->stride + lbrk,
-                                     r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
+            if (lbrk < r[j].x1) {
+                if (lbrk < r[j].x0) lbrk = r[j].x0;
+                int sub_w = r[j].x1 - lbrk;
+                int sub_h = r[j].y1 - r[j].y0;
+                int sub_stride = bm->stride;
+                unsigned char *sub_buf = bm->buffer + r[j].y0 * bm->stride + lbrk;
+                if (!source) {
+                    sub_buf = copy_bitmap_region(bm, lbrk, r[j].y0, sub_w, sub_h,
+                                                 1 << render_priv->engine.align_order, &sub_stride);
+                    if (!sub_buf)
+                        break;
+                }
+                img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
+                                     dst_x + lbrk, dst_y + r[j].y0, color2, source);
+                if (!img) {
+                    if (!source)
+                        ass_aligned_free(sub_buf);
+                    break;
+                }
+                img->type = type;
+                *tail = img;
+                tail = &img->next;
+                if (rgba_tail) {
+                    append_rgba_tail(rgba_tail,
+                                     render_bitmap_rgba(state, combined,
+                                     sub_buf, sub_w, sub_h, sub_stride,
                                      dst_x + lbrk, dst_y + r[j].y0,
                                      lbrk, r[j].y0, bm->w, bm->h,
                                      layer2, type));
+                }
             }
-        }
     }
 
     return tail;
@@ -599,18 +648,30 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     if (brk > b_x0) {           // draw left part
         if (brk > b_x1)
             brk = b_x1;
-        img = my_draw_bitmap(bm->buffer + bm->stride * b_y0 + b_x0,
-                             brk - b_x0, b_y1 - b_y0, bm->stride,
+        int sub_w = brk - b_x0;
+        int sub_h = b_y1 - b_y0;
+        int sub_stride = bm->stride;
+        unsigned char *sub_buf = bm->buffer + bm->stride * b_y0 + b_x0;
+        if (!source) {
+            sub_buf = copy_bitmap_region(bm, b_x0, b_y0, sub_w, sub_h,
+                                         1 << render_priv->engine.align_order, &sub_stride);
+            if (!sub_buf)
+                return tail;
+        }
+        img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
                              dst_x + b_x0, dst_y + b_y0, color, source);
-        if (!img) return tail;
+        if (!img) {
+            if (!source)
+                ass_aligned_free(sub_buf);
+            return tail;
+        }
         img->type = type;
         *tail = img;
         tail = &img->next;
         if (rgba_tail) {
             append_rgba_tail(rgba_tail,
                              render_bitmap_rgba(state, combined,
-                                 bm->buffer + bm->stride * b_y0 + b_x0,
-                                 brk - b_x0, b_y1 - b_y0, bm->stride,
+                                 sub_buf, sub_w, sub_h, sub_stride,
                                  dst_x + b_x0, dst_y + b_y0,
                                  b_x0, b_y0, bm->w, bm->h,
                                  layer1, type));
@@ -619,18 +680,30 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     if (brk < b_x1) {           // draw right part
         if (brk < b_x0)
             brk = b_x0;
-        img = my_draw_bitmap(bm->buffer + bm->stride * b_y0 + brk,
-                             b_x1 - brk, b_y1 - b_y0, bm->stride,
+        int sub_w = b_x1 - brk;
+        int sub_h = b_y1 - b_y0;
+        int sub_stride = bm->stride;
+        unsigned char *sub_buf = bm->buffer + bm->stride * b_y0 + brk;
+        if (!source) {
+            sub_buf = copy_bitmap_region(bm, brk, b_y0, sub_w, sub_h,
+                                         1 << render_priv->engine.align_order, &sub_stride);
+            if (!sub_buf)
+                return tail;
+        }
+        img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
                              dst_x + brk, dst_y + b_y0, color2, source);
-        if (!img) return tail;
+        if (!img) {
+            if (!source)
+                ass_aligned_free(sub_buf);
+            return tail;
+        }
         img->type = type;
         *tail = img;
         tail = &img->next;
         if (rgba_tail) {
             append_rgba_tail(rgba_tail,
                              render_bitmap_rgba(state, combined,
-                                 bm->buffer + bm->stride * b_y0 + brk,
-                                 b_x1 - brk, b_y1 - b_y0, bm->stride,
+                                 sub_buf, sub_w, sub_h, sub_stride,
                                  dst_x + brk, dst_y + b_y0,
                                  brk, b_y0, bm->w, bm->h,
                                  layer2, type));
@@ -1660,6 +1733,13 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->jitter = ass_jitter_default_state();
     state->z = 0.0;
     state->needs_rgba = false;
+    state->distort_enabled = false;
+    state->distort_u1 = 1.0;
+    state->distort_v1 = 0.0;
+    state->distort_u2 = 1.0;
+    state->distort_v2 = 1.0;
+    state->distort_u3 = 0.0;
+    state->distort_v3 = 1.0;
 }
 
 /**
@@ -1698,6 +1778,13 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
     state->reset_effect = false;
+    state->distort_enabled = false;
+    state->distort_u1 = 1.0;
+    state->distort_v1 = 0.0;
+    state->distort_u2 = 1.0;
+    state->distort_v2 = 1.0;
+    state->distort_u3 = 0.0;
+    state->distort_v3 = 1.0;
 
     ass_apply_transition_effects(state);
     state->explicit = state->evt_type != EVENT_NORMAL ||
@@ -1708,8 +1795,48 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->justify = state->style->Justify;
 }
 
+static void free_distortion_resources(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    for (int i = 0; i < text_info->length; i++) {
+        for (GlyphInfo *info = text_info->glyphs + i; info; info = info->next) {
+            if (info->has_distort_bitmap) {
+                ass_free_bitmap(&info->distort_bitmap);
+                ass_free_bitmap(&info->distort_bitmap_o);
+                info->bm = NULL;
+                info->bm_o = NULL;
+                info->has_distort_bitmap = false;
+            }
+            if (info->has_distort_outline && info->distorted_outline) {
+                ass_outline_free(&info->distorted_outline->outline[0]);
+                ass_outline_free(&info->distorted_outline->outline[1]);
+                free(info->distorted_outline);
+                info->distorted_outline = NULL;
+                info->has_distort_outline = false;
+            }
+        }
+    }
+
+    for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
+        if (info->temp_image) {
+            ass_free_bitmap(&info->temp_image->bm);
+            ass_free_bitmap(&info->temp_image->bm_o);
+            ass_free_bitmap(&info->temp_image->bm_s);
+            free(info->temp_image);
+            info->temp_image = NULL;
+        }
+        if (info->has_distortion && info->bitmaps) {
+            free(info->bitmaps);
+            info->bitmaps = NULL;
+        }
+        info->has_distortion = false;
+    }
+}
+
 static void free_render_context(RenderContext *state)
 {
+    free_distortion_resources(state);
     state->font = NULL;
     state->family.str = NULL;
     state->family.len = 0;
@@ -1956,7 +2083,11 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 {
     ASS_Renderer *render_priv = state->renderer;
 
-    if (!info->outline || info->symbol == '\n' || info->symbol == 0 || info->skip)
+    OutlineHashValue *outline = info->distorted_outline ? info->distorted_outline : info->outline;
+    bool distorted = info->distorted_outline && info->distort_enabled;
+    info->has_distort_bitmap = false;
+
+    if (!outline || info->symbol == '\n' || info->symbol == 0 || info->skip)
         return;
 
     double m1[3][3], m2[3][3], m[3][3];
@@ -1970,16 +2101,26 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     memcpy(m, m2, sizeof(m));
 
     if (info->effect_type == EF_KARAOKE_KF)
-        ass_outline_update_min_transformed_x(&info->outline->outline[0], m, leftmost_x);
+        ass_outline_update_min_transformed_x(&outline->outline[0], m, leftmost_x);
 
     BitmapHashKey key;
-    key.outline = info->outline;
+    key.outline = outline;
     if (!quantize_transform(m, pos, offset, first, &key))
         return;
 
-    info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-    if (!info->bm || !info->bm->buffer)
-        info->bm = NULL;
+    info->bm = NULL;
+    info->bm_o = NULL;
+    if (distorted) {
+        memset(&info->distort_bitmap, 0, sizeof(info->distort_bitmap));
+        if (ass_bitmap_construct(&key, &info->distort_bitmap, state) &&
+                info->distort_bitmap.buffer)
+            info->bm = &info->distort_bitmap;
+        info->has_distort_bitmap = info->bm != NULL;
+    } else {
+        info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+        if (!info->bm || !info->bm->buffer)
+            info->bm = NULL;
+    }
 
     *pos_o = *pos;
 
@@ -2096,17 +2237,48 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
         }
     }
 
-    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
+    OutlineHashValue temp_outline = {0};
+    OutlineHashValue *outline_border = NULL;
+    if (distorted) {
+        if (!ass_outline_construct(&ol_key, &temp_outline, render_priv) || !temp_outline.valid)
+            goto cleanup;
+        outline_border = &temp_outline;
+    } else {
+        outline_border = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
+    }
+
+    key.outline = outline_border;
     if (!key.outline || !key.outline->valid ||
             !quantize_transform(m, pos_o, offset, false, &key))
-        return;
+        goto cleanup;
 
-    info->bm_o = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-    if (!info->bm_o || !info->bm_o->buffer) {
-        info->bm_o = NULL;
-        *pos_o = *pos;
-    } else if (!info->bm)
-        *pos = *pos_o;
+    if (distorted) {
+        memset(&info->distort_bitmap_o, 0, sizeof(info->distort_bitmap_o));
+        if (ass_bitmap_construct(&key, &info->distort_bitmap_o, state) &&
+                info->distort_bitmap_o.buffer) {
+            info->bm_o = &info->distort_bitmap_o;
+            info->has_distort_bitmap = true;
+        } else if (info->bm) {
+            info->bm_o = info->bm;
+        }
+        if (!info->bm_o)
+            *pos_o = *pos;
+        else if (!info->bm)
+            *pos = *pos_o;
+    } else {
+        info->bm_o = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+        if (!info->bm_o || !info->bm_o->buffer) {
+            info->bm_o = NULL;
+            *pos_o = *pos;
+        } else if (!info->bm)
+            *pos = *pos_o;
+    }
+
+cleanup:
+    if (distorted) {
+        ass_outline_free(&temp_outline.outline[0]);
+        ass_outline_free(&temp_outline.outline[1]);
+    }
 }
 
 static inline size_t outline_size(const ASS_Outline* outline)
@@ -2763,6 +2935,16 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             info->has_jitter = true;
             info->jitter = state->jitter;
         }
+        info->distort_enabled = state->distort_enabled;
+        info->distort_u1 = state->distort_u1;
+        info->distort_v1 = state->distort_v1;
+        info->distort_u2 = state->distort_u2;
+        info->distort_v2 = state->distort_v2;
+        info->distort_u3 = state->distort_u3;
+        info->distort_v3 = state->distort_v3;
+        info->distorted_outline = NULL;
+        info->has_distort_bitmap = false;
+        info->has_distort_outline = false;
 
         info->hspacing_scaled = 0;
         info->scale_fix = 1;
@@ -2797,7 +2979,15 @@ static void retrieve_glyphs(RenderContext *state)
 
     for (i = 0; i < state->text_info.length; i++) {
         GlyphInfo *info = glyphs + i;
+        GlyphInfo *root = info;
         do {
+            info->distort_enabled = root->distort_enabled;
+            info->distort_u1 = root->distort_u1;
+            info->distort_v1 = root->distort_v1;
+            info->distort_u2 = root->distort_u2;
+            info->distort_v2 = root->distort_v2;
+            info->distort_u3 = root->distort_u3;
+            info->distort_v3 = root->distort_v3;
             get_outline_glyph(state, info);
             info = info->next;
         } while (info);
@@ -2881,6 +3071,175 @@ static void reorder_text(RenderContext *state)
             cluster_pen.y += info->advance.y;
             info = info->next;
         }
+    }
+}
+
+static bool glyph_is_separator(const GlyphInfo *info)
+{
+    return info->symbol == ' ' || info->symbol == NBSP || info->symbol == '\n';
+}
+
+static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
+{
+    if (!a->distort_enabled || !b->distort_enabled)
+        return false;
+    return a->distort_u1 == b->distort_u1 && a->distort_v1 == b->distort_v1 &&
+           a->distort_u2 == b->distort_u2 && a->distort_v2 == b->distort_v2 &&
+           a->distort_u3 == b->distort_u3 && a->distort_v3 == b->distort_v3;
+}
+
+static bool clone_outline(ASS_Outline *dst, const ASS_Outline *src)
+{
+    if (!ass_outline_alloc(dst, src->n_points, src->n_segments))
+        return false;
+    memcpy(dst->points, src->points, src->n_points * sizeof(ASS_Vector));
+    memcpy(dst->segments, src->segments, src->n_segments);
+    dst->n_points = src->n_points;
+    dst->n_segments = src->n_segments;
+    return true;
+}
+
+static bool distort_warp_glyph(GlyphInfo *info,
+                               double min_x, double min_y,
+                               double max_x, double max_y)
+{
+    OutlineHashValue *base = info->outline;
+    if (!base || !info->distort_enabled)
+        return false;
+
+    double w = max_x - min_x;
+    double h = max_y - min_y;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    OutlineHashValue *distorted = calloc(1, sizeof(*distorted));
+    if (!distorted)
+        return false;
+
+    if (!clone_outline(&distorted->outline[0], &base->outline[0]) ||
+        !clone_outline(&distorted->outline[1], &base->outline[1])) {
+        ass_outline_free(&distorted->outline[0]);
+        ass_outline_free(&distorted->outline[1]);
+        free(distorted);
+        return false;
+    }
+
+    distorted->advance = base->advance;
+    distorted->asc = base->asc;
+    distorted->desc = base->desc;
+    distorted->valid = true;
+
+    // Corner pins: P0 fixed at (0,0); P1=(u1,v1) top-right; P2=(u2,v2) bottom-right; P3=(u3,v3) bottom-left.
+    ASS_DistortParams params = {
+        .u1 = info->distort_u1, .v1 = info->distort_v1,
+        .u2 = info->distort_u2, .v2 = info->distort_v2,
+        .u3 = info->distort_u3, .v3 = info->distort_v3,
+    };
+    double pos_x = info->pos.x;
+    double pos_y = info->pos.y;
+    double scale_x = info->transform.scale.x;
+    double scale_y = info->transform.scale.y;
+    double off_x = info->transform.offset.x;
+    double off_y = info->transform.offset.y;
+
+    for (int oi = 0; oi < 2; oi++) {
+        ASS_Outline *ol = &distorted->outline[oi];
+        for (size_t pi = 0; pi < ol->n_points; pi++) {
+            double x = ol->points[pi].x * scale_x + off_x + pos_x;
+            double y = ol->points[pi].y * scale_y + off_y + pos_y;
+
+            ASS_DVector mapped = ass_distort_map_point(&params, min_x, min_y,
+                                                       max_x, max_y, x, y);
+
+            double local_x = mapped.x - pos_x - off_x;
+            double local_y = mapped.y - pos_y - off_y;
+            if (scale_x != 0.0)
+                local_x /= scale_x;
+            if (scale_y != 0.0)
+                local_y /= scale_y;
+
+            ol->points[pi].x = ass_lrint(local_x);
+            ol->points[pi].y = ass_lrint(local_y);
+        }
+    }
+
+    rectangle_reset(&distorted->cbox);
+    ass_outline_update_cbox(&distorted->outline[0], &distorted->cbox);
+    ass_outline_update_cbox(&distorted->outline[1], &distorted->cbox);
+    if (distorted->cbox.x_min > distorted->cbox.x_max ||
+            distorted->cbox.y_min > distorted->cbox.y_max) {
+        distorted->cbox.x_min = distorted->cbox.y_min = 0;
+        distorted->cbox.x_max = distorted->cbox.y_max = 0;
+    }
+
+    info->distorted_outline = distorted;
+    info->has_distort_outline = true;
+    info->bbox.x_min = ass_lrint(distorted->cbox.x_min * scale_x + off_x);
+    info->bbox.y_min = ass_lrint(distorted->cbox.y_min * scale_y + off_y);
+    info->bbox.x_max = ass_lrint(distorted->cbox.x_max * scale_x + off_x);
+    info->bbox.y_max = ass_lrint(distorted->cbox.y_max * scale_y + off_y);
+
+    return true;
+}
+
+static void apply_distortion(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    FriBidiStrIndex *cmap = ass_shaper_get_reorder_map(state->shaper);
+    if (!cmap)
+        return;
+
+    for (int i = 0; i < text_info->length; i++) {
+        GlyphInfo *root = text_info->glyphs + cmap[i];
+        if (glyph_is_separator(root) || !root->distort_enabled)
+            continue;
+        if (text_info->glyphs[i].linebreak)
+            continue;
+
+        double min_x = DBL_MAX, min_y = DBL_MAX;
+        double max_x = -DBL_MAX, max_y = -DBL_MAX;
+        bool has_bbox = false;
+
+        int end = i;
+        while (end < text_info->length) {
+            if (text_info->glyphs[end].linebreak && end != i)
+                break;
+            GlyphInfo *cur = text_info->glyphs + cmap[end];
+            if (glyph_is_separator(cur))
+                break;
+            if (!distort_params_match(root, cur))
+                break;
+
+            for (GlyphInfo *g = cur; g; g = g->next) {
+                double gminx = (double) g->bbox.x_min + g->pos.x;
+                double gmaxx = (double) g->bbox.x_max + g->pos.x;
+                double gminy = (double) g->bbox.y_min + g->pos.y;
+                double gmaxy = (double) g->bbox.y_max + g->pos.y;
+                min_x = FFMIN(min_x, gminx);
+                max_x = FFMAX(max_x, gmaxx);
+                min_y = FFMIN(min_y, gminy);
+                max_y = FFMAX(max_y, gmaxy);
+                has_bbox = true;
+            }
+
+            end++;
+            if (cur->drawing_text.str)
+                break;
+        }
+
+        if (!has_bbox || min_x >= max_x || min_y >= max_y) {
+            i = end - 1;
+            continue;
+        }
+
+        for (int j = i; j < end; j++) {
+            GlyphInfo *cur = text_info->glyphs + cmap[j];
+            if (cur->skip || !cur->outline)
+                continue;
+            distort_warp_glyph(cur, min_x, min_y, max_x, max_y);
+        }
+
+        i = end - 1;
     }
 }
 
@@ -3316,6 +3675,8 @@ static void render_and_combine_glyphs(RenderContext *state,
                     continue;
 
                 current_info->max_bitmap_count = MAX_SUB_BITMAPS_INITIAL;
+                current_info->has_distortion = false;
+                current_info->temp_image = NULL;
 
                 nb_bitmaps++;
                 new_run = false;
@@ -3330,6 +3691,9 @@ static void render_and_combine_glyphs(RenderContext *state,
             info->pos.y = double_to_d6(device_y + jitter_dy) + info->pos.y;
             get_bitmap_glyph(state, info, &current_info->leftmost_x, &pos, &pos_o,
                              &offset, !current_info->bitmap_count, flags);
+
+            if (info->has_distort_bitmap || info->distorted_outline)
+                current_info->has_distortion = true;
 
             if (!info->bm && !info->bm_o)
                 continue;
@@ -3368,6 +3732,35 @@ static void render_and_combine_glyphs(RenderContext *state,
             info->bitmaps[j].pos.y -= info->y;
             info->bitmaps[j].pos_o.x -= info->x;
             info->bitmaps[j].pos_o.y -= info->y;
+        }
+
+        if (info->has_distortion) {
+            // Distortion depends on per-word bounding boxes, so reuse via the composite cache is unsafe.
+            CompositeHashKey key;
+            key.filter = info->filter;
+            key.bitmap_count = info->bitmap_count;
+            key.bitmaps = info->bitmaps;
+            CompositeHashValue *val = calloc(1, sizeof(*val));
+            if (!val) {
+                free(info->bitmaps);
+                info->bitmaps = NULL;
+                continue;
+            }
+            if (!ass_composite_construct(&key, val, render_priv)) {
+                free(info->bitmaps);
+                free(val);
+                info->bitmaps = NULL;
+                continue;
+            }
+            info->bm = val->bm.buffer ? &val->bm : NULL;
+            info->bm_o = val->bm_o.buffer ? &val->bm_o : NULL;
+            info->bm_s = val->bm_s.buffer ? &val->bm_s : NULL;
+            info->image = NULL;
+            info->temp_image = val;
+
+            free(info->bitmaps);
+            info->bitmaps = NULL;
+            continue;
         }
 
         CompositeHashKey key;
@@ -3691,6 +4084,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     reorder_text(state);
 
     align_lines(state, max_text_width);
+
+    apply_distortion(state);
 
     // determine text bounding box
     ASS_DRect bbox;

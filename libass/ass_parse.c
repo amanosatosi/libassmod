@@ -501,6 +501,57 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     val * pwr + state->fay * (1 - pwr);
             } else
                 state->fay = 0.;
+        } else if (complex_tag("distort")) {
+            if (*name_end != '(' || has_backslash_arg)
+                continue;
+
+            double current[6] = {
+                state->distort_u1, state->distort_v1,
+                state->distort_u2, state->distort_v2,
+                state->distort_u3, state->distort_v3,
+            };
+            double target[6];
+            char *raw_start = name_end + 1;
+            char *raw_end = q;
+            if (raw_start >= raw_end)
+                continue;
+            if (raw_end[-1] == ')')
+                raw_end--;
+
+            char *ptr = raw_start;
+            bool ok = true;
+            for (int i = 0; i < 6; i++) {
+                if (ptr < raw_end)
+                    skip_spaces(&ptr);
+                char *next = memchr(ptr, ',', raw_end - ptr);
+                if (i < 5 && !next) {
+                    ok = false;
+                    break;
+                }
+                char *tok_end = next ? next : raw_end;
+                rskip_spaces(&tok_end, ptr);
+                if (tok_end < ptr)
+                    tok_end = ptr;
+                if (tok_end == ptr)
+                    target[i] = current[i];
+                else
+                    target[i] = argtod((struct arg){ptr, tok_end});
+                ptr = next ? next + 1 : raw_end;
+            }
+            skip_spaces(&ptr);
+            if (ptr != raw_end)
+                ok = false;
+
+            if (!ok)
+                continue;
+
+            state->distort_enabled = true;
+            state->distort_u1 = calc_anim(target[0], state->distort_u1, pwr);
+            state->distort_v1 = calc_anim(target[1], state->distort_v1, pwr);
+            state->distort_u2 = calc_anim(target[2], state->distort_u2, pwr);
+            state->distort_v2 = calc_anim(target[3], state->distort_v2, pwr);
+            state->distort_u3 = calc_anim(target[4], state->distort_u3, pwr);
+            state->distort_v3 = calc_anim(target[5], state->distort_v3, pwr);
         } else if (complex_tag("iclip")) {
             if (nargs == 4) {
                 int32_t x0, y0, x1, y1;

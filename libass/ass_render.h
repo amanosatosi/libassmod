@@ -118,6 +118,8 @@ typedef struct {
     size_t bitmap_count, max_bitmap_count;
     BitmapRef *bitmaps;
 
+    bool has_distortion;
+    CompositeHashValue *temp_image;
     int x, y;
     Bitmap *bm, *bm_o, *bm_s;   // glyphs, outline, shadow bitmaps
     CompositeHashValue *image;
@@ -207,6 +209,14 @@ typedef struct glyph_info {
     double border_x, border_y;
     double hspacing;
     int hspacing_scaled;        // 26.6
+    bool distort_enabled;
+    double distort_u1, distort_v1;
+    double distort_u2, distort_v2;
+    double distort_u3, distort_v3;
+    OutlineHashValue *distorted_outline;
+    Bitmap distort_bitmap, distort_bitmap_o;
+    bool has_distort_bitmap;
+    bool has_distort_outline;
     unsigned italic;
     unsigned bold;
     int flags;
@@ -349,6 +359,10 @@ struct render_context {
     int32_t effect_timing;
     int32_t effect_skip_timing;
     bool reset_effect;
+    bool distort_enabled;
+    double distort_u1, distort_v1;
+    double distort_u2, distort_v2;
+    double distort_u3, distort_v3;
 
     enum {
         SCROLL_LR,              // left-to-right
