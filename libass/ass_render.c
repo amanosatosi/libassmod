@@ -3221,10 +3221,20 @@ static void apply_distortion(RenderContext *state)
             for (GlyphInfo *g = cur; g; g = g->next) {
                 if (!g->outline || !g->outline->outline[0].n_points)
                     continue;
-                double gminx = (double) g->bbox.x_min + g->pos.x;
-                double gmaxx = (double) g->bbox.x_max + g->pos.x;
-                double gminy = (double) g->bbox.y_min + g->pos.y;
-                double gmaxy = (double) g->bbox.y_max + g->pos.y;
+                double pen_x = g->pos.x;
+                double pen_y = g->pos.y;
+                double gminx = (double) g->bbox.x_min + pen_x;
+                double gmaxx = (double) g->bbox.x_max + pen_x;
+                double gminy = (double) g->bbox.y_min + pen_y;
+                double gmaxy = (double) g->bbox.y_max + pen_y;
+                // Include advance span so bounding box covers inter-glyph spacing,
+                // matching VSFilter's broader per-word box.
+                double adv_x = pen_x + g->advance.x;
+                double adv_y = pen_y + g->advance.y;
+                gminx = FFMIN(gminx, adv_x);
+                gmaxx = FFMAX(gmaxx, adv_x);
+                gminy = FFMIN(gminy, adv_y);
+                gmaxy = FFMAX(gmaxy, adv_y);
                 min_x = FFMIN(min_x, gminx);
                 max_x = FFMAX(max_x, gmaxx);
                 min_y = FFMIN(min_y, gminy);
