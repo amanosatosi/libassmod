@@ -30,6 +30,10 @@
 #include <limits.h>
 #include <math.h>
 
+#ifndef __has_builtin
+#define __has_builtin(x) 0
+#endif
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 #endif
