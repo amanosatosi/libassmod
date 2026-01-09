@@ -2172,7 +2172,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 
         ol_key.type = OUTLINE_BORDER;
         BorderHashKey *k = &ol_key.u.border;
-        k->outline = info->outline;
+        k->outline = outline;
 
         double bord_x =
             64 * state->border_scale_x * info->border_x / tr->scale.x /
@@ -2180,7 +2180,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
         double bord_y =
             64 * state->border_scale_y * info->border_y / tr->scale.y;
 
-        const ASS_Rect *bbox = &info->outline->cbox;
+        const ASS_Rect *bbox = &outline->cbox;
         // Estimate bounding box half size after stroking
         double dx = (bbox->x_max - bbox->x_min) / 2.0 + (bord_x + 64);
         double dy = (bbox->y_max - bbox->y_min) / 2.0 + (bord_y + 64);
