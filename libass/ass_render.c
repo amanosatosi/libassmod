@@ -39,6 +39,8 @@
 #include "ass_shaper.h"
 
 static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer);
+size_t ass_bitmap_construct(void *key, void *value, void *priv);
+size_t ass_composite_construct(void *key, void *value, void *priv);
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
