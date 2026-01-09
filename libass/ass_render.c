@@ -3092,6 +3092,10 @@ static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
 
 static bool clone_outline(ASS_Outline *dst, const ASS_Outline *src)
 {
+    ass_outline_clear(dst);
+    if (!src->n_points || !src->n_segments)
+        return true;
+
     if (!ass_outline_alloc(dst, src->n_points, src->n_segments))
         return false;
     memcpy(dst->points, src->points, src->n_points * sizeof(ASS_Vector));
@@ -3106,7 +3110,11 @@ static bool distort_warp_glyph(GlyphInfo *info,
                                double max_x, double max_y)
 {
     OutlineHashValue *base = info->outline;
-    if (!base || !info->distort_enabled)
+    if (!base || !info->distort_enabled ||
+            (!base->outline[0].n_points && !base->outline[1].n_points))
+        return false;
+    if ((base->outline[0].n_points && !base->outline[0].n_segments) ||
+        (base->outline[1].n_points && !base->outline[1].n_segments))
         return false;
 
     double w = max_x - min_x;
@@ -3193,9 +3201,7 @@ static void apply_distortion(RenderContext *state)
 
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *root = text_info->glyphs + cmap[i];
-        if (glyph_is_separator(root) || !root->distort_enabled)
-            continue;
-        if (text_info->glyphs[i].linebreak)
+        if (glyph_is_separator(root) || !root->distort_enabled || root->linebreak)
             continue;
 
         double min_x = DBL_MAX, min_y = DBL_MAX;
@@ -3204,15 +3210,17 @@ static void apply_distortion(RenderContext *state)
 
         int end = i;
         while (end < text_info->length) {
-            if (text_info->glyphs[end].linebreak && end != i)
-                break;
             GlyphInfo *cur = text_info->glyphs + cmap[end];
+            if (cur->linebreak && end != i)
+                break;
             if (glyph_is_separator(cur))
                 break;
             if (!distort_params_match(root, cur))
                 break;
 
             for (GlyphInfo *g = cur; g; g = g->next) {
+                if (!g->outline || !g->outline->outline[0].n_points)
+                    continue;
                 double gminx = (double) g->bbox.x_min + g->pos.x;
                 double gmaxx = (double) g->bbox.x_max + g->pos.x;
                 double gminy = (double) g->bbox.y_min + g->pos.y;
