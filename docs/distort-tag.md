@@ -19,8 +19,13 @@ This fork implements VSFilterMod’s `\distort(u1,v1,u2,v2,u3,v3)` override tag.
   - Animated: `{\t(0,1000,\distort(1,0,1.4,1,-0.4,1))}Text`
 
 ## Developer notes
+visually, tag goes like this.
+```
 0 1
 3 2
+```
+or
+↗,↘,↙
 
 ### Math
 
