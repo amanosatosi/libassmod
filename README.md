@@ -60,12 +60,13 @@ Other ASS/SSA implementations:
     - various forks focussing on internal use
   - [Threaded VSFilter](https://code.google.com/p/threaded-vsfilter/) (defunct)
   - VSFilter in [Guliverkli2](http://sourceforge.net/projects/guliverkli2/) (defunct, subsumed by all of the above)
-  - VSFilter in [guliverkli](http://sourceforge.net/projects/guliverkli/) (defunct, forked as Guliverkli2)
+- VSFilter in [guliverkli](http://sourceforge.net/projects/guliverkli/) (defunct, forked as Guliverkli2)
 - [ffdshow](http://ffdshow-tryout.sourceforge.net/) (defunct)
 - [Perian](https://github.com/MaddTheSane/perian) (defunct)
 - [asa](https://web.archive.org/web/20110906033709/http://asa.diac24.net/) (defunct)
 - [libjass](https://github.com/Arnavion/libjass) (defunct)
 - [ASS.js](https://github.com/weizhenye/ASS)
+- **VSFilterMod extensions:** See [`docs/distort-tag.md`](docs/distort-tag.md) for the VSFilterMod-compatible `\distort` override tag implemented in this fork.
 
 Packaging status
 ================

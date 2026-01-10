@@ -3,6 +3,7 @@ libass (0.17.4)
    * ass_prune_events for manual pruning
    * ass_configure_prune to set up automatic pruning
  * add ASS_OVERRIDE_BIT_BLUR flag
+ * document and implement VSFilterMod-compatible \distort(u1,v1,u2,v2,u3,v3)
  * fontconfig: fix minor memory leaks in pathological font setups
  * coretext: fix build on older compilers or Mac OS X 10.5
  * checkasm: fix build for older compilers
