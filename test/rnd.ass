@@ -1,0 +1,26 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,1,0,2,20,20,20,0
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.50,Default,,0,0,0,,{\r\rnd1}\rnd1{\r\rndx1}\rndx1{\r\rndy1}\rndy1{\r\rndz1}\rndz1
+Dialogue: 0,0:00:02.50,0:00:05.00,Default,,0,0,0,,{\r\rnd2}\rnd2{\r\rndx2}\rndx2{\r\rndy2}\rndy2{\r\rndz2}\rndz2
+Dialogue: 0,0:00:05.00,0:00:07.50,Default,,0,0,0,,{\r\rnd3}\rnd3{\r\rndx3}\rndx3{\r\rndy3}\rndy3{\r\rndz3}\rndz3
+Dialogue: 0,0:00:07.50,0:00:10.00,Default,,0,0,0,,{\r\rnd4}\rnd4{\r\rndx4}\rndx4{\r\rndy4}\rndy4{\r\rndz4}\rndz4
+Dialogue: 0,0:00:10.00,0:00:12.50,Default,,0,0,0,,{\r\rnd5}\rnd5{\r\rndx5}\rndx5{\r\rndy5}\rndy5{\r\rndz5}\rndz5
+Dialogue: 0,0:00:12.50,0:00:15.00,Default,,0,0,0,,{\r\rnd6}\rnd6{\r\rndx6}\rndx6{\r\rndy6}\rndy6{\r\rndz6}\rndz6
+Dialogue: 0,0:00:15.00,0:00:17.50,Default,,0,0,0,,{\r\rnd7}\rnd7{\r\rndx7}\rndx7{\r\rndy7}\rndy7{\r\rndz7}\rndz7
+Dialogue: 0,0:00:17.50,0:00:20.00,Default,,0,0,0,,{\bord2\shad2\r\rnd8}\rnd8{\r\rndx8}\rndx8{\r\rndy8}\rndy8{\r\rndz8}\rndz8
+Dialogue: 0,0:00:20.00,0:00:22.50,Default,,0,0,0,,{\r\rnd9}\rnd9{\r\rndx9}\rndx9{\r\rndy9}\rndy9{\r\rndz9}\rndz9
+Dialogue: 0,0:00:22.50,0:00:25.00,Default,,0,0,0,,{\r\rnd10}\rnd10{\r\rndx10}\rndx10{\r\rndy10}\rndy10{\r\rndz10}\rndz10
+Dialogue: 0,0:00:25.00,0:00:27.50,Default,,0,0,0,,{\r\rnd11}\rnd11{\r\rndx11}\rndx11{\r\rndy11}\rndy11{\r\rndz11}\rndz11
+Dialogue: 0,0:00:27.50,0:00:30.00,Default,,0,0,0,,{\r\rnd12}\rnd12{\r\rndx12}\rndx12{\r\rndy12}\rndy12{\r\rndz12}\rndz12
+Dialogue: 0,0:00:30.00,0:00:32.50,Default,,0,0,0,,{\r\rnd13}\rnd13{\r\rndx13}\rndx13{\r\rndy13}\rndy13{\r\rndz13}\rndz13
+Dialogue: 0,0:00:32.50,0:00:35.00,Default,,0,0,0,,{\r\rnd14}\rnd14{\r\rndx14}\rndx14{\r\rndy14}\rndy14{\r\rndz14}\rndz14
+Dialogue: 0,0:00:35.00,0:00:37.50,Default,,0,0,0,,{\r\rnd15}\rnd15{\r\rndx15}\rndx15{\r\rndy15}\rndy15{\r\frx20\fry20\rndz15}\rndz15

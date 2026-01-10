@@ -77,6 +77,11 @@ static inline int mystrcmp(char **p, const char *sample)
     return 0;
 }
 
+static inline bool rnd_numeric_start(char c)
+{
+    return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+}
+
 /**
  * \brief Change current font, using setting from render_priv->state.
  */
@@ -501,6 +506,28 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     val * pwr + state->fay * (1 - pwr);
             } else
                 state->fay = 0.;
+        } else if (complex_tag("rndx")) {
+            // Match axis-specific rnd* first so \rnd does not swallow them
+            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            state->rnd_x = calc_anim(val, state->rnd_x, pwr);
+        } else if (complex_tag("rndy")) {
+            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            state->rnd_y = calc_anim(val, state->rnd_y, pwr);
+        } else if (complex_tag("rndz")) {
+            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            state->rnd_z = calc_anim(val, state->rnd_z, pwr);
+        } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
+            char next = (name_len > 3) ? p[3] : '\0';
+            if (!rnd_numeric_start(next))
+                continue;
+            if (!mystrcmp(&p, "rnd"))
+                continue;
+
+            push_arg(args, &nargs, p, name_end);
+            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            state->rnd_x = calc_anim(val, state->rnd_x, pwr);
+            state->rnd_y = calc_anim(val, state->rnd_y, pwr);
+            state->rnd_z = calc_anim(val, state->rnd_z, pwr);
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;

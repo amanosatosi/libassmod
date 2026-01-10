@@ -200,6 +200,7 @@ typedef struct glyph_info {
     double frx, fry, frz;       // rotation
     double frs;                 // baseline rotation
     double z;                   // 3D translation along camera Z
+    double rnd_x, rnd_y, rnd_z; // VSFilterMod random offsets (screen px)
     double fax, fay;            // text shearing
     double scale_x, scale_y;
     // amount of scale_x,y change due to fix_glyph_scaling
@@ -229,6 +230,9 @@ typedef struct glyph_info {
     JitterState jitter;
     double jitter_dx;
     double jitter_dy;
+    double rnd_x, rnd_y, rnd_z;
+    uint64_t rnd_seed;          // event/glyph seed for rnd* noise
+    bool has_rnd;
 
     // next glyph in this cluster
     struct glyph_info *next;
@@ -347,6 +351,8 @@ struct render_context {
     MotionState motion;
     JitterState jitter;
     double z;                   // 3D translation along camera Z
+    double rnd_x, rnd_y, rnd_z;
+    uint64_t rnd_seed_base;     // per-event seed for rnd* offsets
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;

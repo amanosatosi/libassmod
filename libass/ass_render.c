@@ -1203,7 +1203,7 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
     }
 
     ASS_Vector pos;
-    BitmapHashKey key;
+    BitmapHashKey key = {0};
     key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
     if (!key.outline || !key.outline->valid ||
             !quantize_transform(m, &pos, NULL, true, &key))
@@ -1324,7 +1324,7 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
     }
 
     ASS_Vector pos;
-    BitmapHashKey key;
+    BitmapHashKey key = {0};
     key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
     if (!key.outline || !key.outline->valid ||
             !quantize_transform(m, &pos, NULL, true, &key))
@@ -1734,6 +1734,9 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->font_encoding = style->Encoding;
     state->jitter = ass_jitter_default_state();
     state->z = 0.0;
+    state->rnd_x = 0.0;
+    state->rnd_y = 0.0;
+    state->rnd_z = 0.0;
     state->needs_rgba = false;
     state->distort_enabled = false;
     state->distort_u1 = 1.0;
@@ -1776,6 +1779,8 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->motion = (MotionState) {0};
     state->motion.type = MOTION_NONE;
     state->jitter = ass_jitter_default_state();
+    state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
+    state->rnd_seed_base = (uint64_t) event->ReadOrder;
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2105,7 +2110,11 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     if (info->effect_type == EF_KARAOKE_KF)
         ass_outline_update_min_transformed_x(&outline->outline[0], m, leftmost_x);
 
-    BitmapHashKey key;
+    BitmapHashKey key = {0};
+    key.rnd_x = info->rnd_x;
+    key.rnd_y = info->rnd_y;
+    key.rnd_z = info->rnd_z;
+    key.rnd_seed = info->rnd_seed;
     key.outline = outline;
     if (!quantize_transform(m, pos, offset, first, &key))
         return;
@@ -2288,6 +2297,47 @@ static inline size_t outline_size(const ASS_Outline* outline)
     return sizeof(ASS_Vector) * outline->n_points + outline->n_segments;
 }
 
+static inline uint64_t rnd_mix64(uint64_t x)
+{
+    // SplitMix64 scramble for deterministic, per-point seeds
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static inline double rnd_pm1(uint64_t seed)
+{
+    // Generate uniform [-1, 1] from 53 random bits
+    double u01 = (rnd_mix64(seed) >> 11) * (1.0 / 9007199254740992.0);
+    return u01 * 2.0 - 1.0;
+}
+
+static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline outlines[2])
+{
+    double mag_x = fabs(k->rnd_x);
+    double mag_y = fabs(k->rnd_y);
+    double mag_z = fabs(k->rnd_z);
+    if (!(mag_x || mag_y || mag_z))
+        return;
+
+    bool has_perspective = k->matrix_z.x || k->matrix_z.y;
+    for (int ol = 0; ol < 2; ol++) {
+        ASS_Outline *outline = &outlines[ol];
+        for (size_t i = 0; i < outline->n_points; i++) {
+            uint64_t seed = k->rnd_seed ^ (uint64_t) i;
+            double dx = mag_x ? rnd_pm1(seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
+            double dy = mag_y ? rnd_pm1(seed ^ 0x14057b7ef767814fULL) * mag_y : 0.0;
+            if (mag_z && has_perspective)  // best-effort depth wobble when perspective is active
+                dy += rnd_pm1(seed ^ 0x94d049bb133111ebULL) * mag_z;
+
+            // Outline points are 26.6 units; multiply pixel offsets by 64
+            outline->points[i].x = ass_lrint(outline->points[i].x + dx * 64.0);
+            outline->points[i].y = ass_lrint(outline->points[i].y + dy * 64.0);
+        }
+    }
+}
+
 size_t ass_bitmap_construct(void *key, void *value, void *priv)
 {
     RenderContext *state = priv;
@@ -2305,6 +2355,8 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
         ass_outline_transform_2d(&outline[0], &k->outline->outline[0], m);
         ass_outline_transform_2d(&outline[1], &k->outline->outline[1], m);
     }
+
+    apply_rnd_offsets(k, outline);
 
     if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
         memset(bm, 0, sizeof(*bm));
@@ -2937,6 +2989,12 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             info->has_jitter = true;
             info->jitter = state->jitter;
         }
+        info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
+        // Keep rnd pattern stable per event/glyph instance
+        info->rnd_seed = state->rnd_seed_base ^ (uint64_t) text_info->length;
+        info->rnd_x = x2scr_offset(state, state->rnd_x);
+        info->rnd_y = y2scr_offset(state, state->rnd_y);
+        info->rnd_z = y2scr_offset(state, state->rnd_z);
         info->distort_enabled = state->distort_enabled;
         info->distort_u1 = state->distort_u1;
         info->distort_v1 = state->distort_v1;
@@ -2991,6 +3049,20 @@ static void retrieve_glyphs(RenderContext *state)
             info->distort_u3 = root->distort_u3;
             info->distort_v3 = root->distort_v3;
             get_outline_glyph(state, info);
+            if (info->has_rnd) {
+                // Pad metrics so bbox/collision/clipping include rnd jitter
+                double rnd_pad = FFMAX(fabs(info->rnd_x), fabs(info->rnd_y));
+                if ((info->frx != 0.0 || info->fry != 0.0))
+                    rnd_pad = FFMAX(rnd_pad, fabs(info->rnd_z));
+                rnd_pad = ceil(rnd_pad);
+                int32_t rnd_pad_d6 = double_to_d6(rnd_pad);
+                info->bbox.x_min -= rnd_pad_d6;
+                info->bbox.x_max += rnd_pad_d6;
+                info->bbox.y_min -= rnd_pad_d6;
+                info->bbox.y_max += rnd_pad_d6;
+                info->asc += rnd_pad_d6;
+                info->desc += rnd_pad_d6;
+            }
             info = info->next;
         } while (info);
         info = glyphs + i;
