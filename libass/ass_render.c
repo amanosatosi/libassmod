@@ -2996,9 +2996,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             info->jitter = state->jitter;
         }
         info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
-        // Keep rnd pattern stable per event/glyph instance
-        uint64_t glyph_index = (uint64_t) text_info->length;
-        info->rnd_seed = state->rnd_seed_base ^ glyph_index;
+        // Keep rnd pattern stable per event (all glyphs share the same jitter)
+        info->rnd_seed = state->rnd_seed_base;
         info->rnd_x = x2scr_offset(state, state->rnd_x);
         info->rnd_y = y2scr_offset(state, state->rnd_y);
         info->rnd_z = y2scr_offset(state, state->rnd_z);
