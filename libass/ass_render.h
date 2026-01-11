@@ -44,6 +44,8 @@
 #define cmp_event_layer ass_cmp_event_layer
 #define fix_collisions ass_fix_collisions
 
+#define ASS_RND_MAX_PX 41.0  // VSFilterMod effectively tops out near this due to RAND_MAX
+
 #define GLYPH_CACHE_MAX 10000
 #define MEGABYTE (1024 * 1024)
 #define BITMAP_CACHE_MAX_SIZE (128 * MEGABYTE)

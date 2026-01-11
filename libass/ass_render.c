@@ -55,6 +55,10 @@ size_t ass_composite_construct(void *key, void *value, void *priv);
 #define BLUR_PRECISION (1.0 / 256)  // blur error as fraction of full input range
 #define NBSP 0xa0   // unicode non-breaking space character
 
+/* Define ASS_RND_DEBUG to enable verbose rnd* logging for debugging.
+ * Disabled by default to avoid noisy builds. */
+/* #define ASS_RND_DEBUG */
+
 
 static bool text_info_init(TextInfo* text_info)
 {
@@ -2355,6 +2359,13 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
         ass_outline_transform_2d(&outline[1], &k->outline->outline[1], m);
     }
 
+#ifdef ASS_RND_DEBUG
+    if (k->rnd_x || k->rnd_y || k->rnd_z)
+        ass_msg(state->renderer->library, MSGL_V,
+                "rnd debug: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
+                k->rnd_x, k->rnd_y, k->rnd_z,
+                (unsigned long long) k->rnd_seed);
+#endif
     apply_rnd_offsets(k, outline);
 
     if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
@@ -3071,6 +3082,11 @@ static void retrieve_glyphs(RenderContext *state)
                 info->bbox.y_max += rnd_pad_d6;
                 info->asc += rnd_pad_d6;
                 info->desc += rnd_pad_d6;
+#ifdef ASS_RND_DEBUG
+                ass_msg(state->renderer->library, MSGL_V,
+                        "rnd pad: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f pad_px=%.3f",
+                        info->rnd_x, info->rnd_y, info->rnd_z, rnd_pad);
+#endif
             }
             info = info->next;
         } while (info);

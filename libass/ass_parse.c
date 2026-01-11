@@ -509,13 +509,28 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("rndx")) {
             // Match axis-specific rnd* first so \rnd does not swallow them
             double val = nargs ? fabs(argtod(*args)) : 0.0;
+            if (val > ASS_RND_MAX_PX)
+                val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
+#ifdef ASS_RND_DEBUG
+            ass_msg(state->renderer->library, MSGL_V, "rndx parsed=%.3f", state->rnd_x);
+#endif
         } else if (complex_tag("rndy")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
+            if (val > ASS_RND_MAX_PX)
+                val = ASS_RND_MAX_PX;
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
+#ifdef ASS_RND_DEBUG
+            ass_msg(state->renderer->library, MSGL_V, "rndy parsed=%.3f", state->rnd_y);
+#endif
         } else if (complex_tag("rndz")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
+            if (val > ASS_RND_MAX_PX)
+                val = ASS_RND_MAX_PX;
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
+#ifdef ASS_RND_DEBUG
+            ass_msg(state->renderer->library, MSGL_V, "rndz parsed=%.3f", state->rnd_z);
+#endif
         } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
             char next = (name_len > 3) ? p[3] : '\0';
             if (!rnd_numeric_start(next))
@@ -525,9 +540,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 
             push_arg(args, &nargs, p, name_end);
             double val = nargs ? fabs(argtod(*args)) : 0.0;
+            if (val > ASS_RND_MAX_PX)
+                val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
+#ifdef ASS_RND_DEBUG
+            ass_msg(state->renderer->library, MSGL_V, "rnd parsed=%.3f", val);
+#endif
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;
