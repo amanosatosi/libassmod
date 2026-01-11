@@ -2123,6 +2123,22 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     if (!quantize_transform(m, pos, offset, first, &key))
         return;
 
+    *pos_o = *pos;
+
+    if (info->has_rnd && !(flags & FILTER_BORDER_STYLE_3)) {
+#ifdef ASS_RND_DEBUG
+        ass_msg(render_priv->library, MSGL_V,
+                "rnd before deform: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
+                info->rnd_x, info->rnd_y, info->rnd_z,
+                (unsigned long long) info->rnd_seed);
+#endif
+        bool ok = build_rnd_bitmaps(state, info, outline, m, pos, pos_o,
+                                    (flags & FILTER_NONZERO_BORDER), flags);
+        if (ok)
+            return;
+        // Fall through to cached path if rnd build failed
+    }
+
     info->bm = NULL;
     info->bm_o = NULL;
     if (distorted) {
@@ -2301,6 +2317,90 @@ static inline size_t outline_size(const ASS_Outline* outline)
     return sizeof(ASS_Vector) * outline->n_points + outline->n_segments;
 }
 
+static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
+                              OutlineHashValue *outline_src,
+                              const double m[3][3],
+                              ASS_Vector *pos, ASS_Vector *pos_o,
+                              bool need_border, int flags)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    Bitmap *bm_fill = &info->distort_bitmap;
+    Bitmap *bm_border = &info->distort_bitmap_o;
+    memset(bm_fill, 0, sizeof(*bm_fill));
+    memset(bm_border, 0, sizeof(*bm_border));
+
+    ASS_Outline outline_fill[2] = {{0}};
+    ASS_Outline outline_border[2] = {{0}};
+    bool ok = false;
+
+    // Transform base outline to screen space
+    if (m[2][0] || m[2][1]) {
+        if (!ass_outline_transform_3d(&outline_fill[0], &outline_src->outline[0], m) ||
+            !ass_outline_transform_3d(&outline_fill[1], &outline_src->outline[1], m))
+            goto done;
+    } else {
+        if (!ass_outline_transform_2d(&outline_fill[0], &outline_src->outline[0], m) ||
+            !ass_outline_transform_2d(&outline_fill[1], &outline_src->outline[1], m))
+            goto done;
+    }
+
+    BitmapHashKey temp_key = {0};
+    temp_key.rnd_x = info->rnd_x;
+    temp_key.rnd_y = info->rnd_y;
+    temp_key.rnd_z = info->rnd_z;
+    temp_key.rnd_seed = info->rnd_seed;
+    temp_key.matrix_z.x = m[2][0];
+    temp_key.matrix_z.y = m[2][1];
+
+#ifdef ASS_RND_DEBUG
+    ass_msg(render_priv->library, MSGL_V,
+            "rnd apply: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
+            temp_key.rnd_x, temp_key.rnd_y, temp_key.rnd_z,
+            (unsigned long long) temp_key.rnd_seed);
+#endif
+
+    apply_rnd_offsets(&temp_key, &outline_fill[0]);
+    apply_rnd_offsets(&temp_key, &outline_fill[1]);
+
+    if (!ass_outline_to_bitmap(state, bm_fill, &outline_fill[0], &outline_fill[1]))
+        goto done;
+    info->bm = bm_fill;
+    info->bm_o = NULL;
+
+    if (need_border) {
+        double bord_x =
+            64 * state->border_scale_x * info->border_x / info->transform.scale.x /
+                render_priv->par_scale_x;
+        double bord_y =
+            64 * state->border_scale_y * info->border_y / info->transform.scale.y;
+
+        if (bord_x > 0 || bord_y > 0) {
+            if (!ass_outline_stroke(&outline_border[0], &outline_border[1],
+                                    &outline_fill[0],
+                                    bord_x * STROKER_PRECISION,
+                                    bord_y * STROKER_PRECISION,
+                                    STROKER_PRECISION))
+                goto done;
+
+            if (!ass_outline_to_bitmap(state, bm_border, &outline_border[0], &outline_border[1]))
+                goto done;
+            info->bm_o = bm_border;
+        } else {
+            info->bm_o = info->bm;
+        }
+    }
+
+    info->has_distort_bitmap = true;
+    ok = true;
+
+done:
+    ass_outline_free(&outline_fill[0]);
+    ass_outline_free(&outline_fill[1]);
+    ass_outline_free(&outline_border[0]);
+    ass_outline_free(&outline_border[1]);
+    return ok;
+}
+
 static inline uint64_t rnd_mix64(uint64_t x)
 {
     // SplitMix64 scramble for deterministic, per-point seeds
@@ -2317,7 +2417,7 @@ static inline double rnd_pm1(uint64_t seed)
     return u01 * 2.0 - 1.0;
 }
 
-static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline outlines[2])
+static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline)
 {
     double mag_x = fabs(k->rnd_x);
     double mag_y = fabs(k->rnd_y);
@@ -2326,19 +2426,22 @@ static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline outlines[2])
     if (!(mag_x || mag_y || (mag_z && has_perspective)))
         return;
 
-    for (int ol = 0; ol < 2; ol++) {
-        ASS_Outline *outline = &outlines[ol];
-        for (size_t i = 0; i < outline->n_points; i++) {
-            uint64_t seed = k->rnd_seed ^ (uint64_t) i;
-            double dx = mag_x ? rnd_pm1(seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
-            double dy = mag_y ? rnd_pm1(seed ^ 0x14057b7ef767814fULL) * mag_y : 0.0;
-            if (mag_z && has_perspective)
-                dy += rnd_pm1(seed ^ 0x94d049bb133111ebULL) * mag_z;
+    double max_dx = 0.0, max_dy = 0.0;
+    for (size_t i = 0; i < outline->n_points; i++) {
+        uint64_t seed = k->rnd_seed ^ (uint64_t) i;
+        double dx = mag_x ? rnd_pm1(seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
+        double dy = mag_y ? rnd_pm1(seed ^ 0x14057b7ef767814fULL) * mag_y : 0.0;
+        if (mag_z && has_perspective)
+            dy += rnd_pm1(seed ^ 0x94d049bb133111ebULL) * mag_z;
 
-            outline->points[i].x = ass_lrint(outline->points[i].x + dx * 64.0);
-            outline->points[i].y = ass_lrint(outline->points[i].y + dy * 64.0);
-        }
+        max_dx = FFMAX(max_dx, fabs(dx));
+        max_dy = FFMAX(max_dy, fabs(dy));
+
+        outline->points[i].x = ass_lrint(outline->points[i].x + dx * 64.0);
+        outline->points[i].y = ass_lrint(outline->points[i].y + dy * 64.0);
     }
+    if (mag_x) assert(max_dx <= mag_x + 0.5);
+    if (mag_y) assert(max_dy <= mag_y + 0.5);
 }
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv)
@@ -2359,14 +2462,10 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
         ass_outline_transform_2d(&outline[1], &k->outline->outline[1], m);
     }
 
-#ifdef ASS_RND_DEBUG
-    if (k->rnd_x || k->rnd_y || k->rnd_z)
-        ass_msg(state->renderer->library, MSGL_V,
-                "rnd debug: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
-                k->rnd_x, k->rnd_y, k->rnd_z,
-                (unsigned long long) k->rnd_seed);
-#endif
-    apply_rnd_offsets(k, outline);
+    if (k->rnd_x || k->rnd_y || k->rnd_z) {
+        apply_rnd_offsets(k, &outline[0]);
+        apply_rnd_offsets(k, &outline[1]);
+    }
 
     if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
         memset(bm, 0, sizeof(*bm));
