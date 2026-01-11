@@ -41,6 +41,12 @@
 static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer);
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
 size_t ass_composite_construct(void *key, void *value, void *priv);
+static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline);
+static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
+                              OutlineHashValue *outline_src,
+                              const double m[3][3],
+                              ASS_Vector *pos, ASS_Vector *pos_o,
+                              bool need_border, int flags);
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
