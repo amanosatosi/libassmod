@@ -1,0 +1,15 @@
+[Script Info]
+Title=libass rnd* test (clamp)
+ScriptType=v4.00+
+PlayResX=1280
+PlayResY=720
+ScaledBorderAndShadow=yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,2,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:12.00,Default,,0,0,0,,{\bord0\shad0}{\r\rnd1}\rnd1 {\r\rndx1}\rndx1 {\r\rndy1}\rndy1 {\r\rndz1}\rndz1 {\r\rnd5}\rnd5 {\r\rndx5}\rndx5 {\r\rndy5}\rndy5 {\r\rndz5}\rndz5 {\r\rnd10}\rnd10 {\r\rndx10}\rndx10 {\r\rndy10}\rndy10 {\r\rndz10}\rndz10 {\r\rnd15}\rnd15 {\r\rndx15}\rndx15 {\r\rndy15}\rndy15 {\r\rndz15}\rndz15 {\r\rnd21}\rnd21 {\r\rnd150}\rnd150(clamps)
+Dialogue: 0,0:00:12.50,0:00:25.00,Default,,0,0,0,,{\bord2\shad2}{\r\rnd1}\rnd1 {\r\rndx1}\rndx1 {\r\rndy1}\rndy1 {\r\rndz1}\rndz1 {\r\rnd5}\rnd5 {\r\rndx5}\rndx5 {\r\rndy5}\rndy5 {\r\rndz5}\rndz5 {\r\rnd10}\rnd10 {\r\rndx10}\rndx10 {\r\rndy10}\rndy10 {\r\rndz10}\rndz10 {\r\rnd15}\rnd15 {\r\rndx15}\rndx15 {\r\rndy15}\rndy15 {\r\rndz15}\rndz15 {\r\rnd21}\rnd21 {\r\rnd150}\rnd150(clamps)
