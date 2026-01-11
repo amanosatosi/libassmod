@@ -1780,7 +1780,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->motion.type = MOTION_NONE;
     state->jitter = ass_jitter_default_state();
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
-    state->rnd_seed_base = (uint64_t) event->ReadOrder ^ (uint64_t) render_priv->time;
+    state->rnd_seed_base = (uint64_t) event->ReadOrder;
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2322,24 +2322,17 @@ static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline outlines[2])
     if (!(mag_x || mag_y || (mag_z && has_perspective)))
         return;
 
-    double dx = mag_x ? rnd_pm1(k->rnd_seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
-    double dy = mag_y ? rnd_pm1(k->rnd_seed ^ 0x14057b7ef767814fULL) * mag_y : 0.0;
-    if (mag_z && has_perspective)
-        dy += rnd_pm1(k->rnd_seed ^ 0x94d049bb133111ebULL) * mag_z;
-
-    ASS_Vector delta = {
-        ass_lrint(dx * 64.0),
-        ass_lrint(dy * 64.0),
-    };
-
-    if (!(delta.x || delta.y))
-        return;
-
     for (int ol = 0; ol < 2; ol++) {
         ASS_Outline *outline = &outlines[ol];
         for (size_t i = 0; i < outline->n_points; i++) {
-            outline->points[i].x += delta.x;
-            outline->points[i].y += delta.y;
+            uint64_t seed = k->rnd_seed ^ (uint64_t) i;
+            double dx = mag_x ? rnd_pm1(seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
+            double dy = mag_y ? rnd_pm1(seed ^ 0x14057b7ef767814fULL) * mag_y : 0.0;
+            if (mag_z && has_perspective)
+                dy += rnd_pm1(seed ^ 0x94d049bb133111ebULL) * mag_z;
+
+            outline->points[i].x = ass_lrint(outline->points[i].x + dx * 64.0);
+            outline->points[i].y = ass_lrint(outline->points[i].y + dy * 64.0);
         }
     }
 }
@@ -2996,8 +2989,9 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             info->jitter = state->jitter;
         }
         info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
-        // Keep rnd pattern stable per event (all glyphs share the same jitter)
-        info->rnd_seed = state->rnd_seed_base;
+        // Keep rnd pattern stable per event/glyph instance
+        uint64_t glyph_index = (uint64_t) text_info->length;
+        info->rnd_seed = state->rnd_seed_base ^ glyph_index;
         info->rnd_x = x2scr_offset(state, state->rnd_x);
         info->rnd_y = y2scr_offset(state, state->rnd_y);
         info->rnd_z = y2scr_offset(state, state->rnd_z);
