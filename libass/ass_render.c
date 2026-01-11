@@ -2989,9 +2989,9 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             info->jitter = state->jitter;
         }
         info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
-        // Keep rnd pattern stable per event/glyph instance
+        // Keep rnd pattern stable per event/glyph instance; mix glyph id and order
         uint64_t glyph_index = (uint64_t) text_info->length;
-        info->rnd_seed = state->rnd_seed_base ^ glyph_index;
+        info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
         info->rnd_x = x2scr_offset(state, state->rnd_x);
         info->rnd_y = y2scr_offset(state, state->rnd_y);
         info->rnd_z = y2scr_offset(state, state->rnd_z);
@@ -3050,11 +3050,20 @@ static void retrieve_glyphs(RenderContext *state)
             info->distort_v3 = root->distort_v3;
             get_outline_glyph(state, info);
             if (info->has_rnd) {
-                // Pad metrics so bbox/collision/clipping include rnd jitter
+                // Pad metrics so bbox/collision/clipping include rnd jitter plus stroke/shadow
                 double rnd_pad = FFMAX(fabs(info->rnd_x), fabs(info->rnd_y));
-                if ((info->frx != 0.0 || info->fry != 0.0))
+                if (info->frx != 0.0 || info->fry != 0.0)
                     rnd_pad = FFMAX(rnd_pad, fabs(info->rnd_z));
-                rnd_pad = ceil(rnd_pad);
+
+                double border_pad_x =
+                    info->border_x * state->border_scale_x / state->renderer->par_scale_x;
+                double border_pad_y = info->border_y * state->border_scale_y;
+                double border_pad = FFMAX(border_pad_x, border_pad_y);
+
+                double shadow_pad =
+                    FFMAX(fabs(info->shadow_x), fabs(info->shadow_y));
+
+                rnd_pad = ceil(rnd_pad + border_pad + shadow_pad);
                 int32_t rnd_pad_d6 = double_to_d6(rnd_pad);
                 info->bbox.x_min -= rnd_pad_d6;
                 info->bbox.x_max += rnd_pad_d6;
