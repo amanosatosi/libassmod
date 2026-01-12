@@ -1753,6 +1753,10 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->rnd_x = 0.0;
     state->rnd_y = 0.0;
     state->rnd_z = 0.0;
+#ifdef ASS_RND_DEBUG
+    ass_msg(state->renderer->library, MSGL_V,
+            "\\r reset rnd: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+#endif
     state->needs_rgba = false;
     state->distort_enabled = false;
     state->distort_u1 = 1.0;
@@ -1797,6 +1801,10 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->jitter = ass_jitter_default_state();
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
+#ifdef ASS_RND_DEBUG
+    ass_msg(state->renderer->library, MSGL_V,
+            "init_render_context rnd reset: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+#endif
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2137,15 +2145,15 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 
     *pos_o = *pos;
 
-    if (info->has_rnd && (info->rnd_x || info->rnd_y || info->rnd_z) &&
-            !(flags & FILTER_BORDER_STYLE_3)) {
+    bool rnd_active = (info->rnd_x != 0.0) || (info->rnd_y != 0.0) || (info->rnd_z != 0.0);
+    if (rnd_active && !(flags & FILTER_BORDER_STYLE_3)) {
 #ifdef ASS_RND_DEBUG
         double eff_x = FFMIN(fabs(info->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
         double eff_y = FFMIN(fabs(info->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
         double eff_z = FFMIN(fabs(info->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
         ass_msg(render_priv->library, MSGL_V,
-                "rnd before deform: has_rnd=%d rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f eff_x=%.3f eff_y=%.3f eff_z=%.3f seed=%llu",
-                info->has_rnd,
+                "rnd before deform: has_rnd=%d rnd_active=%d rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f eff_x=%.3f eff_y=%.3f eff_z=%.3f seed=%llu",
+                info->has_rnd, rnd_active,
                 info->rnd_x, info->rnd_y, info->rnd_z,
                 eff_x, eff_y, eff_z,
                 (unsigned long long) info->rnd_seed);
@@ -3154,6 +3162,13 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->rnd_x = x2scr_offset(state, state->rnd_x);
         info->rnd_y = y2scr_offset(state, state->rnd_y);
         info->rnd_z = y2scr_offset(state, state->rnd_z);
+#ifdef ASS_RND_DEBUG
+        if (info->has_rnd) {
+            ass_msg(render_priv->library, MSGL_V,
+                    "glyph rnd (screen units): x=%.3f y=%.3f z=%.3f has_rnd=%d",
+                    info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
+        }
+#endif
         info->distort_enabled = state->distort_enabled;
         info->distort_u1 = state->distort_u1;
         info->distort_v1 = state->distort_v1;

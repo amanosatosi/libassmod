@@ -513,7 +513,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
 #ifdef ASS_RND_DEBUG
-            ass_msg(state->renderer->library, MSGL_V, "rndx parsed=%.3f", state->rnd_x);
+            ass_msg(state->renderer->library, MSGL_V,
+                    "rndx parsed: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (complex_tag("rndy")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
@@ -521,7 +522,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = ASS_RND_MAX_PX;
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
 #ifdef ASS_RND_DEBUG
-            ass_msg(state->renderer->library, MSGL_V, "rndy parsed=%.3f", state->rnd_y);
+            ass_msg(state->renderer->library, MSGL_V,
+                    "rndy parsed: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (complex_tag("rndz")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
@@ -529,7 +531,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = ASS_RND_MAX_PX;
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
 #ifdef ASS_RND_DEBUG
-            ass_msg(state->renderer->library, MSGL_V, "rndz parsed=%.3f", state->rnd_z);
+            ass_msg(state->renderer->library, MSGL_V,
+                    "rndz parsed: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
             char next = (name_len > 3) ? p[3] : '\0';
@@ -546,7 +549,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
 #ifdef ASS_RND_DEBUG
-            ass_msg(state->renderer->library, MSGL_V, "rnd parsed=%.3f", val);
+            ass_msg(state->renderer->library, MSGL_V,
+                    "rnd parsed: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
