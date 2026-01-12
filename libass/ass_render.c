@@ -41,7 +41,8 @@
 static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer);
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
 size_t ass_composite_construct(void *key, void *value, void *priv);
-static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline);
+static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
+                              ASS_Library *lib);
 static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
                               OutlineHashValue *outline_src,
                               const double m[3][3],
@@ -2365,8 +2366,8 @@ static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
             (unsigned long long) temp_key.rnd_seed);
 #endif
 
-    apply_rnd_offsets(&temp_key, &outline_fill[0]);
-    apply_rnd_offsets(&temp_key, &outline_fill[1]);
+        apply_rnd_offsets(&temp_key, &outline_fill[0], render_priv->library);
+        apply_rnd_offsets(&temp_key, &outline_fill[1], render_priv->library);
 
     if (!ass_outline_to_bitmap(state, bm_fill, &outline_fill[0], &outline_fill[1]))
         goto done;
@@ -2423,7 +2424,8 @@ static inline double rnd_pm1(uint64_t seed)
     return u01 * 2.0 - 1.0;
 }
 
-static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline)
+static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
+                              ASS_Library *lib)
 {
     double mag_x = fabs(k->rnd_x);
     double mag_y = fabs(k->rnd_y);
@@ -2432,7 +2434,10 @@ static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline)
     if (!(mag_x || mag_y || (mag_z && has_perspective)))
         return;
 
-    double max_dx = 0.0, max_dy = 0.0;
+    double max_dx_px = 0.0, max_dy_px = 0.0;
+    double max_dx_raw = 0.0, max_dy_raw = 0.0;
+    int32_t min_x = INT32_MAX, min_y = INT32_MAX;
+    int32_t max_x = INT32_MIN, max_y = INT32_MIN;
     for (size_t i = 0; i < outline->n_points; i++) {
         uint64_t seed = k->rnd_seed ^ (uint64_t) i;
         double dx = mag_x ? rnd_pm1(seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
@@ -2440,14 +2445,34 @@ static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline)
         if (mag_z && has_perspective)
             dy += rnd_pm1(seed ^ 0x94d049bb133111ebULL) * mag_z;
 
-        max_dx = FFMAX(max_dx, fabs(dx));
-        max_dy = FFMAX(max_dy, fabs(dy));
+        double raw_dx = dx * 64.0;
+        double raw_dy = dy * 64.0;
+        max_dx_px = FFMAX(max_dx_px, fabs(dx));
+        max_dy_px = FFMAX(max_dy_px, fabs(dy));
+        max_dx_raw = FFMAX(max_dx_raw, fabs(raw_dx));
+        max_dy_raw = FFMAX(max_dy_raw, fabs(raw_dy));
 
-        outline->points[i].x = ass_lrint(outline->points[i].x + dx * 64.0);
-        outline->points[i].y = ass_lrint(outline->points[i].y + dy * 64.0);
+        outline->points[i].x = ass_lrint(outline->points[i].x + raw_dx);
+        outline->points[i].y = ass_lrint(outline->points[i].y + raw_dy);
+        min_x = FFMIN(min_x, outline->points[i].x);
+        min_y = FFMIN(min_y, outline->points[i].y);
+        max_x = FFMAX(max_x, outline->points[i].x);
+        max_y = FFMAX(max_y, outline->points[i].y);
     }
-    if (mag_x) assert(max_dx <= mag_x + 0.5);
-    if (mag_y) assert(max_dy <= mag_y + 0.5);
+    if (lib) {
+#ifdef ASS_RND_DEBUG
+        double w_raw = (max_x > min_x) ? (max_x - min_x) : 0;
+        double h_raw = (max_y > min_y) ? (max_y - min_y) : 0;
+        ass_msg(lib, MSGL_V,
+                "rnd apply: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f max_raw_dx=%.2f max_raw_dy=%.2f max_px_dx=%.2f max_px_dy=%.2f bbox_raw=%.2fx%.2f px=%.2fx%.2f",
+                k->rnd_x, k->rnd_y, k->rnd_z,
+                max_dx_raw, max_dy_raw,
+                max_dx_px, max_dy_px,
+                w_raw, h_raw, w_raw / 64.0, h_raw / 64.0);
+#endif
+    }
+    if (mag_x) assert(max_dx_px <= mag_x + 0.5);
+    if (mag_y) assert(max_dy_px <= mag_y + 0.5);
 }
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv)
@@ -2469,8 +2494,8 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
     }
 
     if (k->rnd_x || k->rnd_y || k->rnd_z) {
-        apply_rnd_offsets(k, &outline[0]);
-        apply_rnd_offsets(k, &outline[1]);
+        apply_rnd_offsets(k, &outline[0], state->renderer->library);
+        apply_rnd_offsets(k, &outline[1], state->renderer->library);
     }
 
     if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
