@@ -2452,14 +2452,14 @@ static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
     bool has_perspective = k->matrix_z.x || k->matrix_z.y;
     if (!(mag_x || mag_y || (mag_z && has_perspective)))
         return;
-
-    static bool eff_logged = false;
-    if (lib && !eff_logged) {
-        eff_logged = true;
-        ass_msg(lib, MSGL_V, "rnd eff (scaled): eff_x=%.3f eff_y=%.3f eff_z=%.3f",
-                mag_x, mag_y, mag_z);
-    }
-
+    
+        static bool eff_logged = false;
+        if (lib && !eff_logged) {
+            eff_logged = true;
+            ass_msg(lib, MSGL_V, "rnd eff (scaled): eff_x=%.3f eff_y=%.3f eff_z=%.3f",
+                    mag_x, mag_y, mag_z);
+        }
+    
     double max_dx_px = 0.0, max_dy_px = 0.0;
     double max_dx_raw = 0.0, max_dy_raw = 0.0;
     int32_t min_x = INT32_MAX, min_y = INT32_MAX;
@@ -3158,16 +3158,16 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
         // Keep rnd pattern stable per event/glyph instance; mix glyph id and order
         uint64_t glyph_index = (uint64_t) text_info->length;
-        info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
-        info->rnd_x = x2scr_offset(state, state->rnd_x);
-        info->rnd_y = y2scr_offset(state, state->rnd_y);
-        info->rnd_z = y2scr_offset(state, state->rnd_z);
+    info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
+    info->rnd_x = x2scr_offset(state, state->rnd_x);
+    info->rnd_y = y2scr_offset(state, state->rnd_y);
+    info->rnd_z = y2scr_offset(state, state->rnd_z);
 #ifdef ASS_RND_DEBUG
-        if (info->has_rnd) {
-            ass_msg(render_priv->library, MSGL_V,
-                    "glyph rnd (screen units): x=%.3f y=%.3f z=%.3f has_rnd=%d",
-                    info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
-        }
+    if (info->has_rnd) {
+        ass_msg(render_priv->library, MSGL_V,
+                "glyph rnd (screen units): x=%.3f y=%.3f z=%.3f has_rnd=%d",
+                info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
+    }
 #endif
         info->distort_enabled = state->distort_enabled;
         info->distort_u1 = state->distort_u1;

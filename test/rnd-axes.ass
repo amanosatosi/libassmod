@@ -1,0 +1,17 @@
+[Script Info]
+Title=rnd axes sanity
+ScriptType=v4.00+
+PlayResX=1280
+PlayResY=720
+ScaledBorderAndShadow=yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,2,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\bord0\shad0\rndx10}rndx10
+Dialogue: 0,0:00:10.50,0:00:20.50,Default,,0,0,0,,{\bord0\shad0\rndy10}rndy10
+Dialogue: 0,0:00:21.00,0:00:31.00,Default,,0,0,0,,{\bord0\shad0\rndz10}rndz10
+Dialogue: 0,0:00:31.50,0:00:41.50,Default,,0,0,0,,{\bord0\shad0\rnd10}rnd10
