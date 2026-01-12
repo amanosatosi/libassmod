@@ -2140,9 +2140,14 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     if (info->has_rnd && (info->rnd_x || info->rnd_y || info->rnd_z) &&
             !(flags & FILTER_BORDER_STYLE_3)) {
 #ifdef ASS_RND_DEBUG
+        double eff_x = FFMIN(fabs(info->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+        double eff_y = FFMIN(fabs(info->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+        double eff_z = FFMIN(fabs(info->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
         ass_msg(render_priv->library, MSGL_V,
-                "rnd before deform: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
+                "rnd before deform: has_rnd=%d rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f eff_x=%.3f eff_y=%.3f eff_z=%.3f seed=%llu",
+                info->has_rnd,
                 info->rnd_x, info->rnd_y, info->rnd_z,
+                eff_x, eff_y, eff_z,
                 (unsigned long long) info->rnd_seed);
 #endif
         bool ok = build_rnd_bitmaps(state, info, outline, m, pos, pos_o,
