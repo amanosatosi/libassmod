@@ -62,6 +62,11 @@ static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
 #define BLUR_PRECISION (1.0 / 256)  // blur error as fraction of full input range
 #define NBSP 0xa0   // unicode non-breaking space character
 
+// Temporary scale for debugging / visual calibration of rnd* magnitude.
+#ifndef ASS_RND_SCALE
+#define ASS_RND_SCALE 0.1
+#endif
+
 /* Define ASS_RND_DEBUG to enable verbose rnd* logging for debugging.
  * Disabled by default to avoid noisy builds. */
 /* #define ASS_RND_DEBUG */
@@ -2132,7 +2137,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 
     *pos_o = *pos;
 
-    if (info->has_rnd && !(flags & FILTER_BORDER_STYLE_3)) {
+    if (info->has_rnd && (info->rnd_x || info->rnd_y || info->rnd_z) &&
+            !(flags & FILTER_BORDER_STYLE_3)) {
 #ifdef ASS_RND_DEBUG
         ass_msg(render_priv->library, MSGL_V,
                 "rnd before deform: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
@@ -2427,12 +2433,19 @@ static inline double rnd_pm1(uint64_t seed)
 static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
                               ASS_Library *lib)
 {
-    double mag_x = fabs(k->rnd_x);
-    double mag_y = fabs(k->rnd_y);
-    double mag_z = fabs(k->rnd_z);
+    double mag_x = FFMIN(fabs(k->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+    double mag_y = FFMIN(fabs(k->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+    double mag_z = FFMIN(fabs(k->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
     bool has_perspective = k->matrix_z.x || k->matrix_z.y;
     if (!(mag_x || mag_y || (mag_z && has_perspective)))
         return;
+
+    static bool eff_logged = false;
+    if (lib && !eff_logged) {
+        eff_logged = true;
+        ass_msg(lib, MSGL_V, "rnd eff (scaled): eff_x=%.3f eff_y=%.3f eff_z=%.3f",
+                mag_x, mag_y, mag_z);
+    }
 
     double max_dx_px = 0.0, max_dy_px = 0.0;
     double max_dx_raw = 0.0, max_dy_raw = 0.0;
@@ -3192,9 +3205,12 @@ static void retrieve_glyphs(RenderContext *state)
             get_outline_glyph(state, info);
             if (info->has_rnd) {
                 // Pad metrics so bbox/collision/clipping include rnd jitter plus stroke/shadow
-                double rnd_pad = FFMAX(fabs(info->rnd_x), fabs(info->rnd_y));
+                double rnd_pad_x = FFMIN(fabs(info->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+                double rnd_pad_y = FFMIN(fabs(info->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+                double rnd_pad_z = FFMIN(fabs(info->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
+                double rnd_pad = FFMAX(rnd_pad_x, rnd_pad_y);
                 if (info->frx != 0.0 || info->fry != 0.0)
-                    rnd_pad = FFMAX(rnd_pad, fabs(info->rnd_z));
+                    rnd_pad = FFMAX(rnd_pad, rnd_pad_z);
 
                 double border_pad_x =
                     info->border_x * state->border_scale_x / state->renderer->par_scale_x;
