@@ -1754,8 +1754,8 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->rnd_y = 0.0;
     state->rnd_z = 0.0;
 #ifdef ASS_RND_DEBUG
-    ass_msg(state->renderer->library, MSGL_V,
-            "\\r reset rnd: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+    ass_msg(state->renderer->library, MSGL_WARN,
+            "AFTER \\r: state rnd: x=%g y=%g z=%g", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
     state->needs_rgba = false;
     state->distort_enabled = false;
@@ -1802,8 +1802,8 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
 #ifdef ASS_RND_DEBUG
-    ass_msg(state->renderer->library, MSGL_V,
-            "init_render_context rnd reset: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+    ass_msg(state->renderer->library, MSGL_WARN,
+            "init_render_context rnd reset: x=%g y=%g z=%g", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
@@ -3164,8 +3164,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
     info->rnd_z = y2scr_offset(state, state->rnd_z);
 #ifdef ASS_RND_DEBUG
     if (info->has_rnd) {
-        ass_msg(render_priv->library, MSGL_V,
-                "glyph rnd (screen units): x=%.3f y=%.3f z=%.3f has_rnd=%d",
+        ass_msg(render_priv->library, MSGL_WARN,
+                "glyph rnd (screen units): x=%g y=%g z=%g has_rnd=%d",
                 info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
     }
 #endif
