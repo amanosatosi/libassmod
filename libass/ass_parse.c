@@ -512,31 +512,25 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
-#ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_WARN,
-                    "PARSE rndx=%g => state rnd: x=%g y=%g z=%g",
+                    "PARSE tag=rndx arg=%g => state rnd: x=%g y=%g z=%g",
                     val, state->rnd_x, state->rnd_y, state->rnd_z);
-#endif
         } else if (complex_tag("rndy")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
-#ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_WARN,
-                    "PARSE rndy=%g => state rnd: x=%g y=%g z=%g",
+                    "PARSE tag=rndy arg=%g => state rnd: x=%g y=%g z=%g",
                     val, state->rnd_x, state->rnd_y, state->rnd_z);
-#endif
         } else if (complex_tag("rndz")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
-#ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_WARN,
-                    "PARSE rndz=%g => state rnd: x=%g y=%g z=%g",
+                    "PARSE tag=rndz arg=%g => state rnd: x=%g y=%g z=%g",
                     val, state->rnd_x, state->rnd_y, state->rnd_z);
-#endif
         } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
             char next = (name_len > 3) ? p[3] : '\0';
             if (!rnd_numeric_start(next))
@@ -551,11 +545,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
-#ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_WARN,
-                    "PARSE rnd=%g => state rnd: x=%g y=%g z=%g",
+                    "PARSE tag=rnd arg=%g => state rnd: x=%g y=%g z=%g",
                     val, state->rnd_x, state->rnd_y, state->rnd_z);
-#endif
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;

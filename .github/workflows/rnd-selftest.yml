@@ -1,0 +1,37 @@
+name: rnd selftest
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rnd-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev
+
+      - name: Configure
+        run: meson setup build --buildtype=debug
+
+      - name: Build libass
+        run: meson compile -C build
+
+      - name: Build rnd selftest
+        run: |
+          cc -I./libass -o rnd_selftest test/rnd_selftest.c build/libass/libass.a \
+            $(pkg-config --cflags --libs freetype2 fribidi harfbuzz fontconfig libpng) -lm
+
+      - name: Run selftest
+        run: ./rnd_selftest > rnd-selftest.log 2>&1
+
+      - name: Upload log
+        uses: actions/upload-artifact@v4
+        with:
+          name: rnd-selftest-log
+          path: rnd-selftest.log
