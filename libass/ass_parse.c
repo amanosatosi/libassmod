@@ -508,7 +508,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->fay = 0.;
         } else if (complex_tag("rndx")) {
             // Match axis-specific rnd* first so \rnd does not swallow them
-            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            double val = 0.0;
+            if (nargs) {
+                val = fabs(argtod(*args));
+            } else {
+                char *tmp = p;
+                if (rnd_numeric_start(*tmp))
+                    mystrtod(&tmp, &val);
+                val = fabs(val);
+                p = tmp;
+            }
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
@@ -516,7 +525,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     "PARSE tag=rndx arg=%g => state rnd: x=%g y=%g z=%g",
                     val, state->rnd_x, state->rnd_y, state->rnd_z);
         } else if (complex_tag("rndy")) {
-            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            double val = 0.0;
+            if (nargs) {
+                val = fabs(argtod(*args));
+            } else {
+                char *tmp = p;
+                if (rnd_numeric_start(*tmp))
+                    mystrtod(&tmp, &val);
+                val = fabs(val);
+                p = tmp;
+            }
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
@@ -524,7 +542,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     "PARSE tag=rndy arg=%g => state rnd: x=%g y=%g z=%g",
                     val, state->rnd_x, state->rnd_y, state->rnd_z);
         } else if (complex_tag("rndz")) {
-            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            double val = 0.0;
+            if (nargs) {
+                val = fabs(argtod(*args));
+            } else {
+                char *tmp = p;
+                if (rnd_numeric_start(*tmp))
+                    mystrtod(&tmp, &val);
+                val = fabs(val);
+                p = tmp;
+            }
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
@@ -539,7 +566,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 continue;
 
             push_arg(args, &nargs, p, name_end);
-            double val = nargs ? fabs(argtod(*args)) : 0.0;
+            double val = 0.0;
+            if (nargs) {
+                val = fabs(argtod(*args));
+            } else {
+                char *tmp = p;
+                if (rnd_numeric_start(*tmp))
+                    mystrtod(&tmp, &val);
+                val = fabs(val);
+                p = tmp;
+            }
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
