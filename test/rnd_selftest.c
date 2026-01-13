@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <string.h>
-#include <ass/ass.h>
+#include "ass.h"
 
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
 {
