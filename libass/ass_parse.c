@@ -514,7 +514,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
 #ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_V,
-                    "parsed rnd: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+                    "parsed rnd raw: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (complex_tag("rndy")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
@@ -523,7 +523,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
 #ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_V,
-                    "parsed rnd: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+                    "parsed rnd raw: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (complex_tag("rndz")) {
             double val = nargs ? fabs(argtod(*args)) : 0.0;
@@ -532,7 +532,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
 #ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_V,
-                    "parsed rnd: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+                    "parsed rnd raw: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
             char next = (name_len > 3) ? p[3] : '\0';
@@ -550,7 +550,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
 #ifdef ASS_RND_DEBUG
             ass_msg(state->renderer->library, MSGL_V,
-                    "parsed rnd: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
+                    "parsed rnd raw: x=%.3f y=%.3f z=%.3f", state->rnd_x, state->rnd_y, state->rnd_z);
 #endif
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)

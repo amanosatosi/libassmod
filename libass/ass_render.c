@@ -2152,8 +2152,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
         double eff_y = FFMIN(fabs(info->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
         double eff_z = FFMIN(fabs(info->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
         ass_msg(render_priv->library, MSGL_V,
-                "rnd before deform: has_rnd=%d rnd_active=%d rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f eff_x=%.3f eff_y=%.3f eff_z=%.3f seed=%llu",
-                info->has_rnd, rnd_active,
+                "render rnd raw: x=%.3f y=%.3f z=%.3f has_rnd=%d rnd_active=%d eff_x=%.3f eff_y=%.3f eff_z=%.3f seed=%llu",
+                info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd, rnd_active,
                 info->rnd_x, info->rnd_y, info->rnd_z,
                 eff_x, eff_y, eff_z,
                 (unsigned long long) info->rnd_seed);
