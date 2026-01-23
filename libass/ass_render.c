@@ -567,7 +567,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      render_bitmap_rgba(state, combined,
                                      sub_buf, sub_w, sub_h, sub_stride,
                                      dst_x + r[j].x0, dst_y + r[j].y0,
-                                     r[j].x0, r[j].y0, bm->w, bm->h,
+                                     r[j].x0, r[j].y0,
+                                     bm->logical_w, bm->logical_h,
                                      layer1, type));
                 }
             }
@@ -598,7 +599,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      render_bitmap_rgba(state, combined,
                                      sub_buf, sub_w, sub_h, sub_stride,
                                      dst_x + lbrk, dst_y + r[j].y0,
-                                     lbrk, r[j].y0, bm->w, bm->h,
+                                     lbrk, r[j].y0,
+                                     bm->logical_w, bm->logical_h,
                                      layer2, type));
                 }
             }
@@ -699,7 +701,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                              render_bitmap_rgba(state, combined,
                                  sub_buf, sub_w, sub_h, sub_stride,
                                  dst_x + b_x0, dst_y + b_y0,
-                                 b_x0, b_y0, bm->w, bm->h,
+                                 b_x0, b_y0,
+                                 bm->logical_w, bm->logical_h,
                                  layer1, type));
         }
     }
@@ -731,7 +734,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                              render_bitmap_rgba(state, combined,
                                  sub_buf, sub_w, sub_h, sub_stride,
                                  dst_x + brk, dst_y + b_y0,
-                                 brk, b_y0, bm->w, bm->h,
+                                 brk, b_y0,
+                                 bm->logical_w, bm->logical_h,
                                  layer2, type));
         }
     }
@@ -4112,8 +4116,11 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
     memset(v, 0, sizeof(*v));
 
     ASS_Rect rect, rect_o;
+    ASS_Rect rect_l, rect_o_l;
     rectangle_reset(&rect);
     rectangle_reset(&rect_o);
+    rectangle_reset(&rect_l);
+    rectangle_reset(&rect_o_l);
 
     size_t n_bm = 0, n_bm_o = 0;
     BitmapRef *last = NULL, *last_o = NULL;
@@ -4121,11 +4128,25 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         BitmapRef *ref = &k->bitmaps[i];
         if (ref->bm) {
             rectangle_combine(&rect, ref->bm, ref->pos);
+            int32_t lw = ref->bm->logical_w > 0 ? ref->bm->logical_w : ref->bm->w;
+            int32_t lh = ref->bm->logical_h > 0 ? ref->bm->logical_h : ref->bm->h;
+            rectangle_update(&rect_l,
+                             ref->pos.x + ref->bm->left,
+                             ref->pos.y + ref->bm->top,
+                             ref->pos.x + ref->bm->left + lw,
+                             ref->pos.y + ref->bm->top + lh);
             last = ref;
             n_bm++;
         }
         if (ref->bm_o) {
             rectangle_combine(&rect_o, ref->bm_o, ref->pos_o);
+            int32_t lw = ref->bm_o->logical_w > 0 ? ref->bm_o->logical_w : ref->bm_o->w;
+            int32_t lh = ref->bm_o->logical_h > 0 ? ref->bm_o->logical_h : ref->bm_o->h;
+            rectangle_update(&rect_o_l,
+                             ref->pos_o.x + ref->bm_o->left,
+                             ref->pos_o.y + ref->bm_o->top,
+                             ref->pos_o.x + ref->bm_o->left + lw,
+                             ref->pos_o.y + ref->bm_o->top + lh);
             last_o = ref;
             n_bm_o++;
         }
@@ -4143,6 +4164,8 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         Bitmap *dst = &v->bm;
         dst->left = rect.x_min - bord;
         dst->top  = rect.y_min - bord;
+        dst->logical_w = rect_l.x_max - rect_l.x_min + 2 * bord;
+        dst->logical_h = rect_l.y_max - rect_l.y_min + 2 * bord;
         for (int i = 0; i < k->bitmap_count; i++) {
             Bitmap *src = k->bitmaps[i].bm;
             if (!src)
@@ -4168,6 +4191,8 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         Bitmap *dst = &v->bm_o;
         dst->left = rect_o.x_min - bord;
         dst->top  = rect_o.y_min - bord;
+        dst->logical_w = rect_o_l.x_max - rect_o_l.x_min + 2 * bord;
+        dst->logical_h = rect_o_l.y_max - rect_o_l.y_min + 2 * bord;
         for (int i = 0; i < k->bitmap_count; i++) {
             Bitmap *src = k->bitmaps[i].bm_o;
             if (!src)

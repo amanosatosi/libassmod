@@ -30,6 +30,7 @@
 typedef struct {
     int32_t left, top;
     int32_t w, h;         // width, height
+    int32_t logical_w, logical_h; // width/height without cache tile padding
     ptrdiff_t stride;
     uint8_t *buffer;      // h * stride buffer
 } Bitmap;

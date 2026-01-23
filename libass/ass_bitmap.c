@@ -113,6 +113,8 @@ bool ass_alloc_bitmap(const BitmapEngine *engine, Bitmap *bm,
         return false;
     bm->w = w;
     bm->h = h;
+    bm->logical_w = w;
+    bm->logical_h = h;
     bm->stride = s;
     bm->buffer = buf;
     return true;
@@ -123,6 +125,8 @@ bool ass_realloc_bitmap(const BitmapEngine *engine, Bitmap *bm, int32_t w, int32
     uint8_t *old = bm->buffer;
     if (!ass_alloc_bitmap(engine, bm, w, h, false))
         return false;
+    bm->logical_w = w;
+    bm->logical_h = h;
     ass_aligned_free(old);
     return true;
 }
@@ -142,6 +146,8 @@ bool ass_copy_bitmap(const BitmapEngine *engine, Bitmap *dst, const Bitmap *src)
         return false;
     dst->left = src->left;
     dst->top  = src->top;
+    dst->logical_w = src->logical_w;
+    dst->logical_h = src->logical_h;
     memcpy(dst->buffer, src->buffer, src->stride * src->h);
     return true;
 }
@@ -169,6 +175,8 @@ bool ass_outline_to_bitmap(RenderContext *state, Bitmap *bm,
     int32_t y_max = (rst->bbox.y_max + 127) >> 6;
     int32_t w = x_max - x_min;
     int32_t h = y_max - y_min;
+    int32_t logical_w = w;
+    int32_t logical_h = h;
 
     int mask = (1 << render_priv->engine.tile_order) - 1;
 
@@ -185,6 +193,8 @@ bool ass_outline_to_bitmap(RenderContext *state, Bitmap *bm,
         return false;
     bm->left = x_min;
     bm->top  = y_min;
+    bm->logical_w = logical_w;
+    bm->logical_h = logical_h;
 
     if (!ass_rasterizer_fill(&render_priv->engine, rst, bm->buffer,
                              x_min, y_min, bm->stride, tile_h, bm->stride)) {
