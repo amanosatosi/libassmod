@@ -157,12 +157,8 @@ static inline uint32_t sample_channel(uint8_t c0, uint8_t c1,
     return res > 255 ? 255 : res;
 }
 
-uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v)
+uint32_t ass_gradient_sample_color_fixed(const GradientValues *val, int32_t uf, int32_t vf)
 {
-    u = clamp01(u);
-    v = clamp01(v);
-    int32_t uf = (int32_t) (u * 65536.0);
-    int32_t vf = (int32_t) (v * 65536.0);
     if (uf < 0) uf = 0; else if (uf > 65536) uf = 65536;
     if (vf < 0) vf = 0; else if (vf > 65536) vf = 65536;
 
@@ -180,12 +176,8 @@ uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v
            ((uint32_t) b << 8) | a;
 }
 
-uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v)
+uint8_t ass_gradient_sample_alpha_fixed(const GradientValues *val, int32_t uf, int32_t vf)
 {
-    u = clamp01(u);
-    v = clamp01(v);
-    int32_t uf = (int32_t) (u * 65536.0);
-    int32_t vf = (int32_t) (v * 65536.0);
     if (uf < 0) uf = 0; else if (uf > 65536) uf = 65536;
     if (vf < 0) vf = 0; else if (vf > 65536) vf = 65536;
 
@@ -193,4 +185,22 @@ uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v)
                                          val->alpha[2], val->alpha[3],
                                          uf, vf);
     return a;
+}
+
+uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v)
+{
+    u = clamp01(u);
+    v = clamp01(v);
+    int32_t uf = (int32_t) (u * 65536.0);
+    int32_t vf = (int32_t) (v * 65536.0);
+    return ass_gradient_sample_color_fixed(val, uf, vf);
+}
+
+uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v)
+{
+    u = clamp01(u);
+    v = clamp01(v);
+    int32_t uf = (int32_t) (u * 65536.0);
+    int32_t vf = (int32_t) (v * 65536.0);
+    return ass_gradient_sample_alpha_fixed(val, uf, vf);
 }

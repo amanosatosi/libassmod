@@ -374,8 +374,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         full_w = w;
     if (full_h <= 0)
         full_h = h;
-    double inv_w = (full_w > 1) ? 1.0 / (full_w - 1) : 0.0;
-    double inv_h = (full_h > 1) ? 1.0 / (full_h - 1) : 0.0;
+    int64_t denom_w = (full_w > 1) ? (int64_t) (full_w - 1) : 0;
+    int64_t denom_h = (full_h > 1) ? (int64_t) (full_h - 1) : 0;
 
     const GradientValues *vals = &info->gradient.layer[layer];
     uint32_t base_color = info->base_c[layer];
@@ -383,7 +383,11 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     uint8_t fade = info->fade;
 
     for (int y = 0; y < h; y++) {
-        double v = (src_y + y) * inv_h;
+        int32_t vf = 0;
+        if (denom_h > 0) {
+            int64_t num_v = ((int64_t) (src_y + y)) << 16;
+            vf = (int32_t) (num_v / denom_h);
+        }
         uint8_t *row = rgba + y * rgba_stride;
         const uint8_t *src = mask + y * stride;
         for (int x = 0; x < w; x++) {
@@ -395,11 +399,15 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 3] = 0;
                 continue;
             }
-            double u = (src_x + x) * inv_w;
+            int32_t uf = 0;
+            if (denom_w > 0) {
+                int64_t num_u = ((int64_t) (src_x + x)) << 16;
+                uf = (int32_t) (num_u / denom_w);
+            }
             uint32_t color = (vals->color_enabled) ?
-                ass_gradient_sample_color(vals, u, v) : base_color;
+                ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
             uint8_t alpha = (vals->alpha_enabled) ?
-                ass_gradient_sample_alpha(vals, u, v) : base_alpha;
+                ass_gradient_sample_alpha_fixed(vals, uf, vf) : base_alpha;
             if (fade > 0)
                 alpha = mult_alpha(alpha, fade);
             uint8_t A = (uint8_t) ((cov * (255 - alpha)) / 255);

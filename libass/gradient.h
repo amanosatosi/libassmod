@@ -60,5 +60,7 @@ bool ass_gradient_equal(const GradientState *a, const GradientState *b);
 
 uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v);
 uint8_t ass_gradient_sample_alpha(const GradientValues *val, double u, double v);
+uint32_t ass_gradient_sample_color_fixed(const GradientValues *val, int32_t uf, int32_t vf);
+uint8_t ass_gradient_sample_alpha_fixed(const GradientValues *val, int32_t uf, int32_t vf);
 
 #endif /* LIBASS_GRADIENT_H */
