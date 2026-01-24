@@ -98,6 +98,7 @@ ass_free_images_rgba(rgba);
 - Always call `ass_render_frame_rgba` and composite the premultiplied tiles in-order; the routine will still populate the legacy `ASS_Image` list (so you can keep both for compatibility).
 - Alternatively, inspect the subtitle text for `\1vc…`/`\4vc`/`\1va…`/`\4va` before rendering and only use RGBA when present.
 - If your app already calls `ass_render_frame`, use `ass_frame_needs_rgba(renderer)` or the new `ASS_RenderResult` wrapper to decide whether to render again with `ass_render_frame_rgba`.
+- For a single-call path, use `ass_render_frame_compat()` and then `ass_render_result_free()` to free any RGBA list. This keeps legacy output intact while enabling gradients when needed.
 
 ## Gradient tags at a glance
 

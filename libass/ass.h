@@ -641,6 +641,32 @@ void ass_free_images_rgba(ASS_ImageRGBA *img);
 int ass_track_has_rgba(ASS_Track *track);
 int ass_frame_needs_rgba(ASS_Renderer *priv);
 
+/*
+ * Compatibility helper for apps that want a single render call but still
+ * preserve the legacy API for non-RGBA content.
+ */
+static inline ASS_RenderResult ass_render_frame_compat(ASS_Renderer *priv,
+                                                       ASS_Track *track,
+                                                       long long now,
+                                                       int *detect_change)
+{
+    return ass_render_frame_auto(priv, track, now, detect_change);
+}
+
+/*
+ * Free RGBA output when used. Legacy ASS_Image lists are owned by libass.
+ */
+static inline void ass_render_result_free(ASS_RenderResult *res)
+{
+    if (!res)
+        return;
+    if (res->use_rgba && res->imgs_rgba) {
+        ass_free_images_rgba(res->imgs_rgba);
+        res->imgs_rgba = NULL;
+    }
+    res->use_rgba = 0;
+}
+
 
 /*
  * The following functions operate on track objects and do not need
