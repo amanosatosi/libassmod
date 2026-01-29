@@ -1,74 +1,179 @@
-libass [![Coverity scan build status](https://scan.coverity.com/projects/3531/badge.svg)](https://scan.coverity.com/projects/3531) [![Build status](https://github.com/libass/libass/actions/workflows/ghci.yml/badge.svg?branch=master&event=push)](https://github.com/libass/libass/actions/workflows/ghci.yml?query=branch%3Amaster+event%3Apush)
-======
-libass is a portable subtitle renderer for the ASS/SSA (Advanced Substation Alpha/Substation Alpha) subtitle format. It is mostly compatible with VSFilter.
+# libassmod
 
-Get it
-======
-See [GitHub releases](https://github.com/libass/libass/releases) for the latest release 0.17.4 (released 2025-06-07).
-See the [changelog](https://github.com/libass/libass/blob/master/Changelog) for a detailed list of changes.
+⚠️ **Important notice**
 
-Source code is available from our [GitHub repository](https://github.com/libass/libass).
+This project is partially **vibecoded** and experimental.
+Behavior may be incomplete, incorrect, or change without notice.
 
-Contact
-=======
-Please use the [issue tracker](https://github.com/libass/libass/issues?state=open) to report bugs or feature requests.
+If you require exact VSFilterMod rendering accuracy, do **not** rely on
+libassmod.
 
-We have an IRC channel, too. Talk to us on [irc.libera.chat/#libass](https://web.libera.chat/#libass). Note that we cannot be online all the time and we cannot answer IRC questions if you leave the channel. Even if you do not get an immediate response, keep your IRC client open, and we will eventually get back to you.
+---
 
-Building
-========
+libassmod is a modified fork of **libass** that adds support for a selected
+subset of VSFilterMod-style ASS extensions commonly used in advanced subtitle
+typesetting.
 
-libass offers two build systems to choose from: Autotools and Meson.
+It is intended as an **optional renderer**, not a replacement for libass.
 
-Autotools is preferred for development since it integrates with our testing
-infrastructure and is feature-complete on all platforms supported by Autotools.  
-If you are packaging libass for distribution, Autotools is recommended;
-when packaging for Windows Meson should work equally well.
+---
 
-Meson lacks integration with testing infrastructure, but works otherwise well on
-Windows. It is suited for static-only builds on any platform well supported by
-Meson and as a Meson subproject.
-Notably, Meson supports MSVC and generation of VS project files.
+## Why libassmod?
 
-- **RGBA rendering guide:** [`docs/rgba-rendering.md`](docs/rgba-rendering.md) covers the RGBA API, premultiplied textures, and how to render VSFilterMod-style vector gradients.
+libass intentionally avoids supporting many non-standard ASS tags introduced by
+VSFilterMod. While this keeps libass portable and maintainable, it also prevents
+previewing or rendering modern anime typesetting that relies on those extensions.
 
-Macro defines
--------------
+libassmod exists to partially bridge that gap.
 
-Unless developing libass there’s usually no need to manually define macros
-and there are no stability guarantees for these manual defines.
+The goal is **practical usability**, not perfect compatibility.
 
-- `DEBUG_LEVEL=0..3`
-  - `0` use the default set of asserts; implied if macro is not defined at all
-  - `1`, `2` *unused*
-  - `3` additionally assert assumptions usually pledged to the compiler for optimization purposes
+---
 
-Information about the ASS format:
-=================================
-- [ASS format overview](https://github.com/libass/libass/wiki/ASS-File-Format-Guide)
-- [ASS override tags (Aegisub manual)](http://docs.aegisub.org/latest/ASS_Tags/)
-- [VSFilter source code (Guliverkli2)](http://sourceforge.net/p/guliverkli2/code/HEAD/tree/src/subtitles/)
+## Scope and philosophy
 
-Other ASS/SSA implementations:
-==============================
-- VSFilter:
-  - [xy-VSFilter/XySubFilter](https://github.com/Cyberbeing/xy-VSFilter/)
-    - [pfmod](https://github.com/pinterf/xy-VSFilter/)
-  - VSFilter in [MPC-HC](https://github.com/clsid2/mpc-hc/tree/develop/src/filters/transform/VSFilter/)
-  - [VSFilterMod](https://code.google.com/archive/p/vsfiltermod/) with custom format extensions (defunct, subsumed by forks)
-    - [sorayuki fork](https://github.com/sorayuki/VSFilterMod/) with some bugfixes (defunct)
-    - various forks focussing on internal use
-  - [Threaded VSFilter](https://code.google.com/p/threaded-vsfilter/) (defunct)
-  - VSFilter in [Guliverkli2](http://sourceforge.net/projects/guliverkli2/) (defunct, subsumed by all of the above)
-- VSFilter in [guliverkli](http://sourceforge.net/projects/guliverkli/) (defunct, forked as Guliverkli2)
-- [ffdshow](http://ffdshow-tryout.sourceforge.net/) (defunct)
-- [Perian](https://github.com/MaddTheSane/perian) (defunct)
-- [asa](https://web.archive.org/web/20110906033709/http://asa.diac24.net/) (defunct)
-- [libjass](https://github.com/Arnavion/libjass) (defunct)
-- [ASS.js](https://github.com/weizhenye/ASS)
-- **VSFilterMod extensions:** See [`docs/distort-tag.md`](docs/distort-tag.md) for the VSFilterMod-compatible `\distort` override tag implemented in this fork.
+- Renderer-side extensions only
+- Support commonly used VSFilterMod-style tags
+- Compatibility with standard ASS scripts is prioritized
+- Graceful degradation for unsupported behavior
+- **No attempt to fully replicate VSFilterMod**
+- Accuracy may differ intentionally
 
-Packaging status
-================
+This project favors **working previews** over exact matching.
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/libass.svg?columns=3&header=libass&exclude_unsupported=1)](https://repology.org/project/libass/versions)
+---
+
+## Supported VSFilterMod-style tags
+
+### Typography & text attributes
+
+- `\fsc<scale>`  
+  Unified font scaling (equivalent to `\fscx` + `\fscy`)
+
+- `\fsvp<spacing>`  
+  Vertical spacing (leading)
+
+- `\frs<angle>`  
+  Baseline skew (shear)
+
+  **Note:**  
+  libassmod applies `\frs` behavior assuming **`\an5` anchoring**.
+  This intentionally differs from VSFilterMod due to known inconsistencies and
+  visual issues observed in VSFilterMod implementations.
+
+- `\z<depth>`  
+  Z-axis coordinate / pseudo depth
+
+All of the above are animatable via `\t`.
+
+---
+
+### Transform & movement
+
+- `\distort(u1,v1,u2,v2,u3,v3)`  
+  Corner-pin distortion
+
+- `\rnd<value>`  
+- `\rndx<value>`  
+- `\rndy<value>`  
+- `\rndz<value>`  
+
+  Randomized boundary deformation.
+
+  **Note:**  
+  `\rnd` behavior does **not** currently match VSFilterMod.
+  Exact VSFilterMod-style randomness is difficult to reproduce and remains
+  imperfect.
+
+- `\jitter(left,right,up,down,period[,seed])`  
+  Position jitter / shaking effect
+
+- `\mover(x1,y1,x2,y2,angle1,angle2,radius1,radius2[,t1,t2])`  
+  Polar / arc-based movement
+
+- `\moves3(...)`  
+- `\moves4(...)`  
+  Spline-based movement
+
+---
+
+### Vector & clip control
+
+- `\movevc(x1,y1[,x2,y2[,t1,t2]])`  
+  Movable vector clip independent of main motion
+
+---
+### Color & transparency
+
+- `\$vc(c1,c2,c3,c4)`  
+  Per-vertex color gradients
+
+- `\$va(a1,a2,a3,a4)`  
+  Per-vertex alpha gradients
+
+Both are animatable via `\t`.
+
+Gradient rendering is implemented via a custom RGBA pipeline.
+For implementation details and API notes, see:
+
+https://github.com/amanosatosi/libassmod/blob/master/docs/rgba-rendering.md
+
+---
+
+## Unsupported / not yet implemented
+
+The following VSFilterMod-related features are **not supported**:
+
+- Lua extensions  
+  - `\lua(...)`
+  - Inline Lua calls
+
+- Image fill tags  
+  - `\$img(...)` and variants
+
+- Projection & blur  
+  - `\ortho0`, `\ortho1`
+  - `\xblur`
+  - `\yblur`
+
+- Blend modes  
+  - `\blend` and related variants
+
+---
+
+## Usage
+
+libassmod is designed as a **drop-in alternative to libass**.
+
+It can be built as a **separate shared library** (DLL / SO), allowing applications
+to switch renderers without rebuilding.
+
+---
+
+## Aegisub integration
+
+libassmod is bundled and tested with:
+
+**Aegisub Toshi-ban v1.1**  
+https://github.com/amanosatosi/Aegisub_Toshi-ban
+
+This fork allows switching between upstream libass and libassmod for previewing
+VSFilterMod-style effects.
+
+---
+
+## Compatibility notes
+
+- Standard ASS scripts supported by libass should continue to work
+- VSFilterMod-only scripts may render differently
+- Visual output is **not guaranteed** to match VSFilterMod
+
+---
+
+## Status
+
+⚠️ **Work in progress**
+
+- APIs may change
+- Features may be incomplete or incorrect
+- Not recommended for production pipelines
