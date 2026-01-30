@@ -1,0 +1,64 @@
+name: Windows DLL Artifact
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-dll:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          pacboy: >-
+            cc
+            fontconfig
+            freetype
+            fribidi
+            harfbuzz
+            libpng
+            meson
+            nasm
+            ninja
+
+      - name: Configure
+        run: |
+          meson setup build \
+            -Ddefault_library=shared \
+            -Dtest=disabled \
+            -Dcompare=disabled \
+            -Dprofile=disabled \
+            -Dfuzz=disabled \
+            -Dcheckasm=disabled
+
+      - name: Build
+        run: |
+          meson compile -C build
+
+      - name: Install
+        run: |
+          meson install -C build --destdir dist
+
+      - name: Collect DLL
+        run: |
+          mkdir -p artifact
+          dll="$(find dist -type f \( -iname 'libass*.dll' -o -iname 'ass.dll' \) | head -n 1)"
+          if [ -z "$dll" ]; then
+            echo "libass DLL not found in dist" >&2
+            exit 1
+          fi
+          cp "$dll" artifact/libass.dll
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: libass-dll
+          path: artifact/libass.dll
+          if-no-files-found: error

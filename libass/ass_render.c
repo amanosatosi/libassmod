@@ -4621,9 +4621,6 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     if (render_priv->library != track->library)
         return false;
 
-    if (track->n_events == 0)
-        return false;               // nothing to do
-
     render_priv->track = track;
     render_priv->time = now;
     render_priv->frame_needs_rgba = false;
