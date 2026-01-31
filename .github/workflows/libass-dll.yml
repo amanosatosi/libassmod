@@ -1,64 +1,136 @@
 name: Windows DLL Artifact
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
   build-dll:
     runs-on: windows-latest
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      BUILD_DIR: build-ci
     defaults:
       run:
-        shell: msys2 {0}
+        shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          msystem: MINGW64
-          pacboy: >-
-            cc
-            fontconfig
-            freetype
-            fribidi
-            harfbuzz
-            libpng
-            meson
-            nasm
-            ninja
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install meson ninja
+          choco install nasm -y
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Use classic vcpkg
+        run: |
+          if (-not (Test-Path C:\vcpkg\vcpkg.exe)) {
+            git clone https://github.com/microsoft/vcpkg C:\vcpkg
+            & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+          "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_TRIPLET=x64-windows-static" >> $env:GITHUB_ENV
+
+      - name: Install vcpkg deps (static)
+        run: |
+          & "$env:VCPKG_ROOT\\vcpkg.exe" install freetype fribidi harfbuzz pkgconf --triplet $env:VCPKG_DEFAULT_TRIPLET
 
       - name: Configure
         run: |
-          meson setup build \
-            -Ddefault_library=shared \
-            -Dtest=disabled \
-            -Dcompare=disabled \
-            -Dprofile=disabled \
-            -Dfuzz=disabled \
-            -Dcheckasm=disabled
+          $prefix = "$env:VCPKG_ROOT\\installed\\$env:VCPKG_DEFAULT_TRIPLET"
+          $install = (Join-Path $PWD 'dist')
+          $pkgconf = "$prefix\\tools\\pkgconf\\pkgconf.exe"
+          $env:PKG_CONFIG = $pkgconf
+          $env:PKG_CONFIG_PATH = "$prefix\\lib\\pkgconfig;$prefix\\share\\pkgconfig"
+          $env:PKG_CONFIG_LIBDIR = "$prefix\\lib\\pkgconfig;$prefix\\share\\pkgconfig"
+          $inc = @(
+            "/I$prefix\\include",
+            "/I$prefix\\include\\freetype2",
+            "/I$prefix\\include\\fribidi",
+            "/I$prefix\\include\\harfbuzz",
+            "/I$prefix\\include\\libpng16"
+          ) -join ' '
+          $link = "/LIBPATH:$prefix\\lib"
+          meson setup $env:BUILD_DIR `
+            --prefix="$install" `
+            -Ddefault_library=shared `
+            -Db_vscrt=mt `
+            -Dfontconfig=disabled `
+            -Dtest=disabled `
+            -Dcompare=disabled `
+            -Dprofile=disabled `
+            -Dfuzz=disabled `
+            -Dcheckasm=disabled `
+            -Dc_args="$inc" `
+            -Dc_link_args="$link"
 
       - name: Build
         run: |
-          meson compile -C build
+          meson compile -C $env:BUILD_DIR
 
       - name: Install
         run: |
-          meson install -C build --destdir dist
+          New-Item -ItemType Directory -Force dist | Out-Null
+          meson install -C $env:BUILD_DIR
 
-      - name: Collect DLL
+      - name: Collect DLLs
         run: |
-          mkdir -p artifact
-          dll="$(find dist -type f \( -iname 'libass*.dll' -o -iname 'ass.dll' \) | head -n 1)"
-          if [ -z "$dll" ]; then
-            echo "libass DLL not found in dist" >&2
-            exit 1
-          fi
-          cp "$dll" artifact/libass.dll
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          $searchRoots = @('dist', $env:BUILD_DIR)
+          $dllPattern = '^(ass|libass)([-.].+)?\.dll$'
+          $dll = $null
+          foreach ($root in $searchRoots) {
+            if (-not (Test-Path $root)) {
+              continue
+            }
+            $dll = Get-ChildItem -Path $root -Recurse -Filter *.dll -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match $dllPattern } |
+              Select-Object -First 1
+            if ($dll) {
+              break
+            }
+          }
+          if (-not $dll) {
+            $available = foreach ($root in $searchRoots) {
+              if (Test-Path $root) {
+                Get-ChildItem -Path $root -Recurse -Filter *.dll -ErrorAction SilentlyContinue |
+                  ForEach-Object { $_.FullName }
+              }
+            }
+            if ($available) {
+              Write-Host ("DLLs found:`n{0}" -f ($available -join [Environment]::NewLine))
+            }
+            throw "libass DLL not found in dist or build"
+          }
+          Copy-Item $dll.FullName artifact\\ass.dll -Force
+          Copy-Item $dll.FullName artifact\\libassmod.dll -Force
+          Copy-Item $dll.FullName artifact\\assmod.dll -Force
+          Copy-Item $dll.FullName artifact\\libass.dll -Force
+
+          $info = @(
+            "repo: $env:GITHUB_REPOSITORY"
+            "commit: $(git rev-parse HEAD)"
+            "ref: $env:GITHUB_REF"
+            "build_time_utc: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+            "toolchain: msvc-static"
+          )
+          $info | Set-Content -Path artifact\\libassmod-build.txt -Encoding ASCII
 
       - name: Upload DLL
         uses: actions/upload-artifact@v4
         with:
           name: libass-dll
-          path: artifact/libass.dll
+          path: artifact/*
           if-no-files-found: error
