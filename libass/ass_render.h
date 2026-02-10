@@ -103,6 +103,27 @@ typedef enum {
     EF_KARAOKE_KO
 } Effect;
 
+typedef struct {
+    bool enabled;
+    ASS_StringView path;
+    int32_t xoffset;
+    int32_t yoffset;
+} ImageFillLayer;
+
+typedef struct {
+    ImageFillLayer layer[4];
+} ImageFillState;
+
+typedef struct ass_tag_image_entry {
+    char *key;
+    ASS_TagImageFormat format;
+    int width;
+    int height;
+    int stride;
+    uint8_t *rgba;
+    struct ass_tag_image_entry *next;
+} ASS_TagImageEntry;
+
 // describes a combined bitmap
 typedef struct {
     FilterDesc filter;
@@ -126,6 +147,7 @@ typedef struct {
     Bitmap *bm, *bm_o, *bm_s;   // glyphs, outline, shadow bitmaps
     CompositeHashValue *image;
     GradientState gradient;
+    ImageFillState image_fill;
     uint32_t base_c[4];
     int fade;
     int line;
@@ -183,6 +205,7 @@ typedef struct glyph_info {
     bool starts_new_run;
     uint32_t c[4];              // colors
     GradientState gradient;
+    ImageFillState image_fill;
     int line;
     ASS_Vector advance;         // 26.6
     ASS_Vector cluster_advance;
@@ -335,6 +358,7 @@ struct render_context {
     int border_style;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
+    ImageFillState image_fill;
     bool needs_rgba;
     int clip_x0, clip_y0, clip_x1, clip_y1;
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
@@ -428,6 +452,7 @@ struct ass_renderer {
 
     ASS_Image *images_root;     // rendering result is stored here
     ASS_Image *prev_images_root;
+    ASS_TagImageEntry *tag_images;
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
@@ -472,6 +497,10 @@ bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now)
 int ass_cmp_event_layer(const void *p1, const void *p2);
 void ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
 int ass_detect_change(ASS_Renderer *priv);
+const ASS_TagImageEntry *ass_lookup_tag_image(ASS_Renderer *priv,
+                                              ASS_Track *track,
+                                              ASS_StringView path);
+void ass_clear_tag_images_internal(ASS_Renderer *priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on
 void ass_lazy_track_init(ASS_Library *lib, ASS_Track *track);

@@ -22,6 +22,8 @@ ass_render_frame_rgba
 ass_free_images_rgba
 ass_track_has_rgba
 ass_frame_needs_rgba
+ass_set_tag_image_rgba
+ass_clear_tag_images
 ass_new_track
 ass_free_track
 ass_alloc_style

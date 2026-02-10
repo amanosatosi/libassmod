@@ -216,6 +216,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (render_priv->ftlibrary)
         FT_Done_FreeType(render_priv->ftlibrary);
     free(render_priv->eimg);
+    ass_clear_tag_images_internal(render_priv);
 
     render_context_done(&render_priv->state);
 
@@ -355,6 +356,48 @@ static void append_rgba_tail(ASS_ImageRGBA ***tail, ASS_ImageRGBA *img)
     *tail = &img->next;
 }
 
+static inline void clear_image_fill_layer(ImageFillLayer *layer)
+{
+    layer->enabled = false;
+    layer->path = (ASS_StringView) {NULL, 0};
+    layer->xoffset = 0;
+    layer->yoffset = 0;
+}
+
+static bool image_fill_state_equal(const ImageFillState *a,
+                                   const ImageFillState *b)
+{
+    for (int i = 0; i < 4; i++) {
+        const ImageFillLayer *la = &a->layer[i];
+        const ImageFillLayer *lb = &b->layer[i];
+        if (la->enabled != lb->enabled ||
+            la->xoffset != lb->xoffset ||
+            la->yoffset != lb->yoffset)
+            return false;
+        if (la->enabled && !ass_string_equal(la->path, lb->path))
+            return false;
+    }
+    return true;
+}
+
+static inline void sample_tag_image(const ASS_TagImageEntry *img, int x, int y,
+                                    uint8_t *r, uint8_t *g, uint8_t *b, uint8_t *a)
+{
+    int tx = x % img->width;
+    int ty = y % img->height;
+    if (tx < 0)
+        tx += img->width;
+    if (ty < 0)
+        ty += img->height;
+    ty = img->height - 1 - ty;
+
+    const uint8_t *p = img->rgba + (size_t) ty * img->stride + tx * 4;
+    *r = p[0];
+    *g = p[1];
+    *b = p[2];
+    *a = p[3];
+}
+
 static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          CombinedBitmapInfo *info,
                                          const uint8_t *mask, int w, int h,
@@ -378,9 +421,20 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     int64_t denom_h = (full_h > 1) ? (int64_t) (full_h - 1) : 0;
 
     const GradientValues *vals = &info->gradient.layer[layer];
+    const ImageFillLayer *image_fill = &info->image_fill.layer[layer];
+    const ASS_TagImageEntry *tag_image = NULL;
+    if (image_fill->enabled)
+        tag_image = ass_lookup_tag_image(render_priv, render_priv->track,
+                                         image_fill->path);
+    bool use_tag_image = tag_image != NULL;
+
     uint32_t base_color = info->base_c[layer];
     uint8_t base_alpha = _a(base_color);
     uint8_t fade = info->fade;
+    uint8_t style_alpha = base_alpha;
+    if (fade > 0)
+        style_alpha = mult_alpha(style_alpha, fade);
+    uint8_t style_opacity = 255 - style_alpha;
 
     for (int y = 0; y < h; y++) {
         int32_t vf = 0;
@@ -397,6 +451,20 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 1] = 0;
                 row[4 * x + 2] = 0;
                 row[4 * x + 3] = 0;
+                continue;
+            }
+            if (use_tag_image) {
+                uint8_t sr, sg, sb, sa;
+                sample_tag_image(tag_image,
+                                 src_x + x + image_fill->xoffset,
+                                 src_y + y + image_fill->yoffset,
+                                 &sr, &sg, &sb, &sa);
+                uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
+                uint8_t A = (uint8_t) ((cov * layer_opacity + 127) / 255);
+                row[4 * x + 0] = (uint8_t) ((sr * A + 127) / 255);
+                row[4 * x + 1] = (uint8_t) ((sg * A + 127) / 255);
+                row[4 * x + 2] = (uint8_t) ((sb * A + 127) / 255);
+                row[4 * x + 3] = A;
                 continue;
             }
             int32_t uf = 0;
@@ -1730,6 +1798,8 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->c[2] = style->OutlineColour;
     state->c[3] = style->BackColour;
     ass_gradient_state_reset(&state->gradient, state->c);
+    for (int i = 0; i < 4; i++)
+        clear_image_fill_layer(&state->image_fill.layer[i]);
     state->flags =
         (style->Underline ? DECO_UNDERLINE : 0) |
         (style->StrikeOut ? DECO_STRIKETHROUGH : 0);
@@ -3022,6 +3092,7 @@ static void split_style_runs(RenderContext *state)
             last->c[2] != info->c[2] ||
             last->c[3] != info->c[3] ||
             !ass_gradient_equal(&last->gradient, &info->gradient) ||
+            !image_fill_state_equal(&last->image_fill, &info->image_fill) ||
             last->be != info->be ||
             last->blur_x != info->blur_x ||
             last->blur_y != info->blur_y ||
@@ -3123,6 +3194,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         for (int i = 0; i < 4; i++)
             info->c[i] = state->c[i];
         info->gradient = state->gradient;
+        info->image_fill = state->image_fill;
         info->line = 0;
 
         info->effect_type = state->effect_type;
@@ -3854,13 +3926,15 @@ static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int 
     return rect_from_line(rect, valid);
 }
 
-static bool text_has_gradients(const TextInfo *text_info)
+static bool text_needs_rgba(const TextInfo *text_info)
 {
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
         const CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
         if (!info->bitmap_count || (!info->bm && !info->bm_o && !info->bm_s))
             continue;
         for (int layer = 0; layer < 4; layer++) {
+            if (info->image_fill.layer[layer].enabled)
+                return true;
             const GradientValues *vals = &info->gradient.layer[layer];
             if (vals->color_enabled || vals->alpha_enabled)
                 return true;
@@ -3927,6 +4001,7 @@ static void render_and_combine_glyphs(RenderContext *state,
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
                 current_info->gradient = info->gradient;
+                current_info->image_fill = info->image_fill;
                 current_info->fade = info->fade;
                 current_info->line = info->line;
                 for (int i = 0; i < 4; i++)
@@ -4544,7 +4619,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);
-    state->needs_rgba = text_has_gradients(text_info);
+    state->needs_rgba = text_needs_rgba(text_info);
 
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the

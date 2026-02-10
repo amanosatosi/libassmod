@@ -253,6 +253,44 @@ void ass_apply_fade(uint32_t *clr, int fade)
         change_alpha(clr, mult_alpha(_a(*clr), fade), 1);
 }
 
+static void disable_image_fill_layer(RenderContext *state, int layer)
+{
+    if (layer < 0 || layer > 3)
+        return;
+    state->image_fill.layer[layer].enabled = false;
+    state->image_fill.layer[layer].path = (ASS_StringView) {NULL, 0};
+    state->image_fill.layer[layer].xoffset = 0;
+    state->image_fill.layer[layer].yoffset = 0;
+}
+
+static void apply_img_tag(RenderContext *state, int layer,
+                          const struct arg *args, int nargs, double pwr)
+{
+    if (layer < 0 || layer > 3 || nargs < 1)
+        return;
+
+    if (args[0].end > args[0].start)
+        state->renderer->track->has_rgba = 1;
+
+    if (pwr >= 1.0 && args[0].end > args[0].start) {
+        state->image_fill.layer[layer].enabled = true;
+        state->image_fill.layer[layer].path.str = args[0].start;
+        state->image_fill.layer[layer].path.len = args[0].end - args[0].start;
+        state->image_fill.layer[layer].xoffset = 0;
+        state->image_fill.layer[layer].yoffset = 0;
+        state->needs_rgba = true;
+    }
+
+    if (nargs >= 3) {
+        state->image_fill.layer[layer].xoffset =
+            dtoi32(calc_anim(argtoi32(args[1]),
+                             state->image_fill.layer[layer].xoffset, pwr));
+        state->image_fill.layer[layer].yoffset =
+            dtoi32(calc_anim(argtoi32(args[2]),
+                             state->image_fill.layer[layer].yoffset, pwr));
+    }
+}
+
 /**
  * \brief Calculate alpha value by piecewise linear function
  * Used for \fad, \fade implementation.
@@ -1121,6 +1159,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 if (parse_vector_clip(state, args, nargs))
                     state->clip_drawing_mode = 0;
             }
+        } else if (tag("img") || tag("1img")) {
+            apply_img_tag(state, 0, args, nargs, pwr);
+        } else if (tag("2img")) {
+            apply_img_tag(state, 1, args, nargs, pwr);
+        } else if (tag("3img")) {
+            apply_img_tag(state, 2, args, nargs, pwr);
+        } else if (tag("4img")) {
+            apply_img_tag(state, 3, args, nargs, pwr);
         } else if (tag("1vc")) {
             if (nargs) {
                 uint32_t vals[4];
@@ -1128,6 +1174,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 0, vals, cnt, pwr);
+                disable_image_fill_layer(state, 0);
+                disable_image_fill_layer(state, 1);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1140,6 +1188,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 1, vals, cnt, pwr);
+                disable_image_fill_layer(state, 0);
+                disable_image_fill_layer(state, 1);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1152,6 +1202,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 2, vals, cnt, pwr);
+                disable_image_fill_layer(state, 2);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1164,6 +1215,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = parse_color_tag(args[i].start);
                 ass_gradient_apply_color(&state->gradient, 3, vals, cnt, pwr);
+                disable_image_fill_layer(state, 3);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1176,6 +1228,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
+                disable_image_fill_layer(state, 0);
+                disable_image_fill_layer(state, 1);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1189,6 +1243,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
+                disable_image_fill_layer(state, 0);
+                disable_image_fill_layer(state, 1);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1202,6 +1258,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+                disable_image_fill_layer(state, 2);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1215,6 +1272,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 for (int i = 0; i < cnt; i++)
                     vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
                 ass_gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
+                disable_image_fill_layer(state, 3);
                 state->needs_rgba = true;
                 state->renderer->track->has_rgba = 1;
             } else {
@@ -1229,6 +1287,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[0],
                              state->style->PrimaryColour, 1);
             ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
+            if (pwr >= 1.0)
+                disable_image_fill_layer(state, 0);
         } else if (tag("2c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1237,6 +1297,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[1],
                              state->style->SecondaryColour, 1);
             ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
+            if (pwr >= 1.0)
+                disable_image_fill_layer(state, 1);
         } else if (tag("3c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1245,6 +1307,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[2],
                              state->style->OutlineColour, 1);
             ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
+            if (pwr >= 1.0)
+                disable_image_fill_layer(state, 2);
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1253,6 +1317,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[3],
                              state->style->BackColour, 1);
             ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
+            if (pwr >= 1.0)
+                disable_image_fill_layer(state, 3);
         } else if (tag("1a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);

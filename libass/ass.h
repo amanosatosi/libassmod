@@ -95,6 +95,13 @@ typedef struct ass_image_rgba {
 } ASS_ImageRGBA;
 
 #define LIBASSMOD_FEATURE_RGBA 1
+#define LIBASSMOD_FEATURE_TAG_IMAGE 1
+
+typedef enum {
+    ASS_TAG_IMAGE_FORMAT_PNG = 1,
+    ASS_TAG_IMAGE_FORMAT_JPEG = 2,
+    ASS_TAG_IMAGE_FORMAT_WEBP = 3,
+} ASS_TagImageFormat;
 
 typedef struct ass_render_result {
     ASS_Image *imgs;            // Legacy bitmap list
@@ -640,6 +647,10 @@ ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
 void ass_free_images_rgba(ASS_ImageRGBA *img);
 int ass_track_has_rgba(ASS_Track *track);
 int ass_frame_needs_rgba(ASS_Renderer *priv);
+int ass_set_tag_image_rgba(ASS_Renderer *priv, const char *path,
+                           ASS_TagImageFormat format, int width, int height,
+                           int stride, const uint8_t *rgba);
+void ass_clear_tag_images(ASS_Renderer *priv);
 
 /*
  * Compatibility helper for apps that want a single render call but still

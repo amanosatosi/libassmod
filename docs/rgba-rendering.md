@@ -31,7 +31,12 @@ typedef struct {
 } ASS_RenderResult;
 ```
 
-Macro: `#define LIBASSMOD_FEATURE_RGBA 1` guards the newer API additions (declare this before including `ass.h` if you need to probe for availability).
+Macros:
+
+- `#define LIBASSMOD_FEATURE_RGBA 1`
+- `#define LIBASSMOD_FEATURE_TAG_IMAGE 1`
+
+Use these to probe for RGBA/image-fill API availability in host code.
 
 ### Key functions
 
@@ -40,6 +45,8 @@ Macro: `#define LIBASSMOD_FEATURE_RGBA 1` guards the newer API additions (declar
 - `void ass_free_images_rgba(ASS_ImageRGBA *img);`
   - Free the linked list returned by `ass_render_frame_rgba`.
 - `ASS_RenderResult ass_render_frame_auto(...)` (or check `ass_frame_needs_rgba`) is the convenience wrapper added in libassmod to fetch both `ASS_Image` and `ASS_ImageRGBA` without losing the legacy behavior.
+- `int ass_set_tag_image_rgba(...)` / `void ass_clear_tag_images(...)`
+  - Register or clear host-decoded image buffers used by `\img` tags.
 
 ## Pixel format & blending
 
@@ -108,3 +115,13 @@ ass_free_images_rgba(rgba);
 - Uniform color tags like `\c`, `\1c`/`\2c`/… reset the gradient for that layer.
 
 Use the RGBA API to preserve the bilinear interpolation VSFilterMod renders.
+
+## `\img` tags
+
+`\img` / `\1img`..`\4img` are also RGBA-only features in this fork.
+They require host-provided decoded image buffers (libassmod does not decode
+image files on its own for these tags).
+
+See:
+
+`docs/img-tags-host-api.md`

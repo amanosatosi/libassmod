@@ -22,6 +22,9 @@
 
 #include <limits.h>
 #include <stdint.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "ass_render.h"
 #include "ass_utils.h"
@@ -51,6 +54,216 @@ static void ass_reconfigure(ASS_Renderer *priv)
         (long long) priv->frame_content_height * priv->width ?
             priv->height :
             (double) priv->frame_content_height * priv->width / priv->frame_content_width;
+}
+
+static bool ass_tag_image_format_supported(ASS_TagImageFormat format)
+{
+    return format == ASS_TAG_IMAGE_FORMAT_PNG ||
+           format == ASS_TAG_IMAGE_FORMAT_JPEG ||
+           format == ASS_TAG_IMAGE_FORMAT_WEBP;
+}
+
+static char *ass_normalize_tag_image_path(const char *path)
+{
+    if (!path || !*path)
+        return NULL;
+
+    size_t len = strlen(path);
+    char *norm = malloc(len + 1);
+    if (!norm)
+        return NULL;
+
+    for (size_t i = 0; i <= len; i++) {
+        char c = path[i];
+        norm[i] = (c == '\\') ? '/' : c;
+    }
+
+    while (norm[0] == '.' && norm[1] == '/')
+        memmove(norm, norm + 2, strlen(norm + 2) + 1);
+
+    if (!norm[0]) {
+        free(norm);
+        return NULL;
+    }
+
+    return norm;
+}
+
+static bool ass_tag_image_path_absolute(const char *path)
+{
+    if (!path || !*path)
+        return false;
+    if (path[0] == '/')
+        return true;
+    size_t len = strlen(path);
+    if (len >= 3 && isalpha((unsigned char) path[0]) &&
+        path[1] == ':' && path[2] == '/')
+        return true;
+    return false;
+}
+
+static ASS_TagImageEntry *ass_find_tag_image_mutable(ASS_Renderer *priv,
+                                                     const char *norm_path)
+{
+    for (ASS_TagImageEntry *cur = priv ? priv->tag_images : NULL; cur; cur = cur->next) {
+        if (!strcmp(cur->key, norm_path))
+            return cur;
+    }
+    return NULL;
+}
+
+static const ASS_TagImageEntry *ass_find_tag_image(const ASS_Renderer *priv,
+                                                   const char *norm_path)
+{
+    for (const ASS_TagImageEntry *cur = priv ? priv->tag_images : NULL; cur; cur = cur->next) {
+        if (!strcmp(cur->key, norm_path))
+            return cur;
+    }
+    return NULL;
+}
+
+static char *ass_track_base_dir(const ASS_Track *track)
+{
+    if (!track || !track->name)
+        return NULL;
+
+    char *norm = ass_normalize_tag_image_path(track->name);
+    if (!norm)
+        return NULL;
+
+    char *last_sep = strrchr(norm, '/');
+    if (!last_sep) {
+        free(norm);
+        return NULL;
+    }
+
+    last_sep[1] = '\0';
+    return norm;
+}
+
+void ass_clear_tag_images_internal(ASS_Renderer *priv)
+{
+    if (!priv)
+        return;
+
+    ASS_TagImageEntry *cur = priv->tag_images;
+    while (cur) {
+        ASS_TagImageEntry *next = cur->next;
+        free(cur->key);
+        free(cur->rgba);
+        free(cur);
+        cur = next;
+    }
+    priv->tag_images = NULL;
+}
+
+void ass_clear_tag_images(ASS_Renderer *priv)
+{
+    ass_clear_tag_images_internal(priv);
+}
+
+int ass_set_tag_image_rgba(ASS_Renderer *priv, const char *path,
+                           ASS_TagImageFormat format, int width, int height,
+                           int stride, const uint8_t *rgba)
+{
+    if (!priv || !path || !rgba || width <= 0 || height <= 0 ||
+        width > INT_MAX / 4 ||
+        !ass_tag_image_format_supported(format))
+        return -1;
+    if (stride < width * 4)
+        return -1;
+
+    if (height > SIZE_MAX / (size_t) stride)
+        return -1;
+    size_t size = (size_t) stride * height;
+    if (!size)
+        return -1;
+
+    char *norm_path = ass_normalize_tag_image_path(path);
+    if (!norm_path)
+        return -1;
+
+    uint8_t *copy = malloc(size);
+    if (!copy) {
+        free(norm_path);
+        return -1;
+    }
+    memcpy(copy, rgba, size);
+
+    ASS_TagImageEntry *entry = ass_find_tag_image_mutable(priv, norm_path);
+    if (!entry) {
+        entry = calloc(1, sizeof(*entry));
+        if (!entry) {
+            free(copy);
+            free(norm_path);
+            return -1;
+        }
+        entry->key = norm_path;
+        entry->next = priv->tag_images;
+        priv->tag_images = entry;
+    } else {
+        free(norm_path);
+        free(entry->rgba);
+    }
+
+    entry->format = format;
+    entry->width = width;
+    entry->height = height;
+    entry->stride = stride;
+    entry->rgba = copy;
+    return 0;
+}
+
+const ASS_TagImageEntry *ass_lookup_tag_image(ASS_Renderer *priv,
+                                              ASS_Track *track,
+                                              ASS_StringView path)
+{
+    if (!priv || !path.str || !path.len)
+        return NULL;
+
+    char *raw = ass_copy_string(path);
+    if (!raw)
+        return NULL;
+
+    char *norm = ass_normalize_tag_image_path(raw);
+    free(raw);
+    if (!norm)
+        return NULL;
+
+    const ASS_TagImageEntry *entry = ass_find_tag_image(priv, norm);
+    if (!entry && !ass_tag_image_path_absolute(norm)) {
+        char *base = ass_track_base_dir(track);
+        if (base) {
+            size_t len_base = strlen(base);
+            size_t len_norm = strlen(norm);
+            if (len_norm <= SIZE_MAX - len_base - 1) {
+                char *joined = malloc(len_base + len_norm + 1);
+                if (joined) {
+                    memcpy(joined, base, len_base);
+                    memcpy(joined + len_base, norm, len_norm + 1);
+                    entry = ass_find_tag_image(priv, joined);
+                    free(joined);
+                }
+            }
+            free(base);
+        }
+    }
+
+    if (!entry) {
+        free(norm);
+        return NULL;
+    }
+
+    if (track && (entry->width > track->PlayResX || entry->height > track->PlayResY)) {
+        ass_msg(priv->library, MSGL_WARN,
+                "Ignoring \\img '%s': %dx%d exceeds script resolution %dx%d",
+                norm, entry->width, entry->height, track->PlayResX, track->PlayResY);
+        free(norm);
+        return NULL;
+    }
+
+    free(norm);
+    return entry;
 }
 
 void ass_set_frame_size(ASS_Renderer *priv, int w, int h)

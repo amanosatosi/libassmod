@@ -120,6 +120,24 @@ https://github.com/amanosatosi/libassmod/blob/master/docs/rgba-rendering.md
 
 ---
 
+### Image fill (RGBA pipeline)
+
+- `\img(path[,xoffset,yoffset])` (alias of `\1img`)
+- `\1img(path[,xoffset,yoffset])`
+- `\2img(path[,xoffset,yoffset])`
+- `\3img(path[,xoffset,yoffset])`
+- `\4img(path[,xoffset,yoffset])`
+
+Image fill is host-supplied: libassmod does not decode files by itself.
+Applications register decoded RGBA images by path through the API, then `\img`
+tags sample those images during rendering.
+
+See integration details:
+
+`docs/img-tags-host-api.md`
+
+---
+
 ## Unsupported / not yet implemented
 
 The following VSFilterMod-related features are **not supported**:
@@ -127,9 +145,6 @@ The following VSFilterMod-related features are **not supported**:
 - Lua extensions  
   - `\lua(...)`
   - Inline Lua calls
-
-- Image fill tags  
-  - `\$img(...)` and variants
 
 - Projection & blur  
   - `\ortho0`, `\ortho1`
