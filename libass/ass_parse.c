@@ -263,6 +263,90 @@ static void disable_image_fill_layer(RenderContext *state, int layer)
     state->image_fill.layer[layer].yoffset = 0;
 }
 
+static inline bool ass_inline_isspace(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+           c == '\f' || c == '\v';
+}
+
+static inline void trim_arg_inline(struct arg *arg)
+{
+    while (arg->start < arg->end && ass_inline_isspace(*arg->start))
+        arg->start++;
+    while (arg->end > arg->start && ass_inline_isspace(arg->end[-1]))
+        arg->end--;
+}
+
+static bool split_img_inline_args(struct arg raw, struct arg *path_arg,
+                                  struct arg *x_arg, struct arg *y_arg)
+{
+    *path_arg = raw;
+    x_arg->start = x_arg->end = NULL;
+    y_arg->start = y_arg->end = NULL;
+    trim_arg_inline(path_arg);
+    if (path_arg->end <= path_arg->start)
+        return false;
+
+    char *start = path_arg->start;
+    char *end = path_arg->end;
+
+    if (*start == '"' || *start == '\'') {
+        char quote = *start;
+        char *q = start + 1;
+        while (q < end && *q != quote)
+            q++;
+        if (q < end) {
+            path_arg->start = start + 1;
+            path_arg->end = q;
+            trim_arg_inline(path_arg);
+
+            char *rest = q + 1;
+            while (rest < end && ass_inline_isspace(*rest))
+                rest++;
+            if (rest < end && *rest == ',') {
+                rest++;
+                char *mid = rest;
+                while (mid < end && *mid != ',')
+                    mid++;
+                x_arg->start = rest;
+                x_arg->end = mid;
+                trim_arg_inline(x_arg);
+                if (mid < end && *mid == ',') {
+                    y_arg->start = mid + 1;
+                    y_arg->end = end;
+                    trim_arg_inline(y_arg);
+                    return y_arg->end > y_arg->start;
+                }
+            }
+            return false;
+        }
+    }
+
+    char *comma = start;
+    while (comma < end && *comma != ',')
+        comma++;
+    path_arg->start = start;
+    path_arg->end = comma;
+    trim_arg_inline(path_arg);
+
+    if (comma < end && *comma == ',') {
+        char *mid = comma + 1;
+        while (mid < end && *mid != ',')
+            mid++;
+        x_arg->start = comma + 1;
+        x_arg->end = mid;
+        trim_arg_inline(x_arg);
+        if (mid < end && *mid == ',') {
+            y_arg->start = mid + 1;
+            y_arg->end = end;
+            trim_arg_inline(y_arg);
+            return y_arg->end > y_arg->start;
+        }
+    }
+
+    return false;
+}
+
 static void apply_img_tag(RenderContext *state, int layer,
                           const struct arg *args, int nargs, double pwr)
 {
@@ -270,13 +354,27 @@ static void apply_img_tag(RenderContext *state, int layer,
         return;
 
     struct arg path_arg = args[0];
-    if (path_arg.end - path_arg.start >= 2) {
-        char first = path_arg.start[0];
-        char last = path_arg.end[-1];
-        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-            path_arg.start++;
-            path_arg.end--;
+    struct arg x_arg = {NULL, NULL};
+    struct arg y_arg = {NULL, NULL};
+    bool have_offsets = false;
+
+    if (nargs >= 3) {
+        x_arg = args[1];
+        y_arg = args[2];
+        trim_arg_inline(&path_arg);
+        trim_arg_inline(&x_arg);
+        trim_arg_inline(&y_arg);
+        if (path_arg.end - path_arg.start >= 2) {
+            char first = path_arg.start[0];
+            char last = path_arg.end[-1];
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                path_arg.start++;
+                path_arg.end--;
+            }
         }
+        have_offsets = true;
+    } else {
+        have_offsets = split_img_inline_args(args[0], &path_arg, &x_arg, &y_arg);
     }
 
     if (path_arg.end > path_arg.start)
@@ -291,12 +389,12 @@ static void apply_img_tag(RenderContext *state, int layer,
         state->needs_rgba = true;
     }
 
-    if (nargs >= 3) {
+    if (have_offsets) {
         state->image_fill.layer[layer].xoffset =
-            dtoi32(calc_anim(argtoi32(args[1]),
+            dtoi32(calc_anim(argtoi32(x_arg),
                              state->image_fill.layer[layer].xoffset, pwr));
         state->image_fill.layer[layer].yoffset =
-            dtoi32(calc_anim(argtoi32(args[2]),
+            dtoi32(calc_anim(argtoi32(y_arg),
                              state->image_fill.layer[layer].yoffset, pwr));
     }
 }
