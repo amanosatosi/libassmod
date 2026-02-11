@@ -68,15 +68,41 @@ static char *ass_normalize_tag_image_path(const char *path)
     if (!path || !*path)
         return NULL;
 
-    size_t len = strlen(path);
+    const char *start = path;
+    const char *end = path + strlen(path);
+
+    while (start < end && isspace((unsigned char) *start))
+        start++;
+    while (end > start && isspace((unsigned char) end[-1]))
+        end--;
+
+    if (end - start >= 2) {
+        char first = start[0];
+        char last = end[-1];
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            start++;
+            end--;
+        }
+    }
+
+    while (start < end && isspace((unsigned char) *start))
+        start++;
+    while (end > start && isspace((unsigned char) end[-1]))
+        end--;
+
+    size_t len = end - start;
+    if (!len)
+        return NULL;
+
     char *norm = malloc(len + 1);
     if (!norm)
         return NULL;
 
-    for (size_t i = 0; i <= len; i++) {
-        char c = path[i];
+    for (size_t i = 0; i < len; i++) {
+        char c = start[i];
         norm[i] = (c == '\\') ? '/' : c;
     }
+    norm[len] = '\0';
 
     while (norm[0] == '.' && norm[1] == '/')
         memmove(norm, norm + 2, strlen(norm + 2) + 1);

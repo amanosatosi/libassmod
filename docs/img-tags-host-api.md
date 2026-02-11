@@ -47,6 +47,7 @@ Lookup supports:
 
 - exact path key
 - subtitle-relative path key (relative to `track->name` directory)
+- quoted path forms are normalized (e.g. `"C:\path\img.png"` and `C:\path\img.png` map to the same key)
 
 Path separators are normalized (`\` and `/` are treated equivalently).
 

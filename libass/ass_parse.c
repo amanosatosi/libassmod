@@ -269,13 +269,23 @@ static void apply_img_tag(RenderContext *state, int layer,
     if (layer < 0 || layer > 3 || nargs < 1)
         return;
 
-    if (args[0].end > args[0].start)
+    struct arg path_arg = args[0];
+    if (path_arg.end - path_arg.start >= 2) {
+        char first = path_arg.start[0];
+        char last = path_arg.end[-1];
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            path_arg.start++;
+            path_arg.end--;
+        }
+    }
+
+    if (path_arg.end > path_arg.start)
         state->renderer->track->has_rgba = 1;
 
-    if (pwr >= 1.0 && args[0].end > args[0].start) {
+    if (pwr >= 1.0 && path_arg.end > path_arg.start) {
         state->image_fill.layer[layer].enabled = true;
-        state->image_fill.layer[layer].path.str = args[0].start;
-        state->image_fill.layer[layer].path.len = args[0].end - args[0].start;
+        state->image_fill.layer[layer].path.str = path_arg.start;
+        state->image_fill.layer[layer].path.len = path_arg.end - path_arg.start;
         state->image_fill.layer[layer].xoffset = 0;
         state->image_fill.layer[layer].yoffset = 0;
         state->needs_rgba = true;
