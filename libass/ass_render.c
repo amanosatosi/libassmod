@@ -476,7 +476,12 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     (void) subpix_y;
     int64_t denom_w = (full_w > 1) ? (int64_t) (full_w - 1) : 0;
     int64_t denom_h = (full_h > 1) ? (int64_t) (full_h - 1) : 0;
-    int clip_diff = full_h - (src_y + h);
+    int vis_h = full_h - src_y;
+    if (vis_h < 0)
+        vis_h = 0;
+    if (vis_h > h)
+        vis_h = h;
+    int clip_diff = full_h - (src_y + vis_h);
     if (clip_diff < 0)
         clip_diff = 0;
 
@@ -523,7 +528,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 // avoid placement regressions on some templates.
                 sample_tag_image(tag_image,
                                  src_x + x + image_fill->xoffset,
-                                 h - 1 - y + image_fill->yoffset + clip_diff,
+                                 vis_h - 1 - y + image_fill->yoffset + clip_diff,
                                  0, 0,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
