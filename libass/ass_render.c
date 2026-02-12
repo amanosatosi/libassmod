@@ -408,6 +408,13 @@ static inline void sample_tag_image(const ASS_TagImageEntry *img, int x, int y,
 
     const uint8_t *dst11 = tag_image_pixel(img, tx, ty);
     uint8_t rr = dst11[0], gg = dst11[1], bb = dst11[2], aa = dst11[3];
+    if (!subpix_x && !subpix_y) {
+        *r = rr;
+        *g = gg;
+        *b = bb;
+        *a = aa;
+        return;
+    }
 
     // VSFilterMod compatibility: mode-2 texture sampling uses 1/8 subpixel
     // interpolation against left/up neighbors without wraparound.
@@ -465,8 +472,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         full_w = w;
     if (full_h <= 0)
         full_h = h;
-    subpix_x &= 7;
-    subpix_y &= 7;
+    (void) subpix_x;
+    (void) subpix_y;
     int64_t denom_w = (full_w > 1) ? (int64_t) (full_w - 1) : 0;
     int64_t denom_h = (full_h > 1) ? (int64_t) (full_h - 1) : 0;
     int clip_diff = full_h - (src_y + h);
@@ -509,11 +516,15 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             if (use_tag_image) {
                 uint8_t sr, sg, sb, sa;
                 // VSFilterMod compatibility: use visible-height Y coordinates
-                // (top row starts from h-1), plus top/bottom clip compensation.
+                // (top row starts from h-1) plus bottom clip compensation.
+                // NOTE: VSFilter-style subpixel phase mapping depends on
+                // internal rasterizer coordinates that libass doesn't mirror
+                // exactly yet. Keep nearest-neighbor sampling for now to
+                // avoid placement regressions on some templates.
                 sample_tag_image(tag_image,
                                  src_x + x + image_fill->xoffset,
-                                 h - 1 - y + src_y + image_fill->yoffset + clip_diff,
-                                 subpix_x, subpix_y,
+                                 h - 1 - y + image_fill->yoffset + clip_diff,
+                                 0, 0,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
                 uint8_t A = (uint8_t) ((cov * layer_opacity + 127) / 255);
