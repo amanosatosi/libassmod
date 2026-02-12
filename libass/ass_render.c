@@ -455,9 +455,11 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             }
             if (use_tag_image) {
                 uint8_t sr, sg, sb, sa;
+                // VSFilterMod compatibility: map Y using the full bitmap
+                // height before wrapping into the image tile.
                 sample_tag_image(tag_image,
                                  src_x + x + image_fill->xoffset,
-                                 src_y + y + image_fill->yoffset,
+                                 full_h - 1 - y + image_fill->yoffset,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
                 uint8_t A = (uint8_t) ((cov * layer_opacity + 127) / 255);

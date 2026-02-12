@@ -148,6 +148,33 @@ static const ASS_TagImageEntry *ass_find_tag_image(const ASS_Renderer *priv,
     return NULL;
 }
 
+static bool ass_path_has_suffix(const char *path, const char *suffix)
+{
+    size_t path_len = strlen(path);
+    size_t suffix_len = strlen(suffix);
+    if (!suffix_len || path_len < suffix_len)
+        return false;
+    const char *tail = path + path_len - suffix_len;
+    if (strcmp(tail, suffix))
+        return false;
+    return path_len == suffix_len || tail[-1] == '/';
+}
+
+static const ASS_TagImageEntry *ass_find_tag_image_by_suffix_unique(
+    const ASS_Renderer *priv, const char *norm_path)
+{
+    const ASS_TagImageEntry *match = NULL;
+    for (const ASS_TagImageEntry *cur = priv ? priv->tag_images : NULL;
+         cur; cur = cur->next) {
+        if (!ass_path_has_suffix(cur->key, norm_path))
+            continue;
+        if (match)
+            return NULL;
+        match = cur;
+    }
+    return match;
+}
+
 static char *ass_track_base_dir(const ASS_Track *track)
 {
     if (!track || !track->name)
@@ -273,6 +300,8 @@ const ASS_TagImageEntry *ass_lookup_tag_image(ASS_Renderer *priv,
             }
             free(base);
         }
+        if (!entry)
+            entry = ass_find_tag_image_by_suffix_unique(priv, norm);
     }
 
     if (!entry) {
