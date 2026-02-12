@@ -115,6 +115,8 @@ bool ass_alloc_bitmap(const BitmapEngine *engine, Bitmap *bm,
     bm->h = h;
     bm->logical_w = w;
     bm->logical_h = h;
+    bm->sub_x = 0;
+    bm->sub_y = 0;
     bm->stride = s;
     bm->buffer = buf;
     return true;
@@ -148,6 +150,8 @@ bool ass_copy_bitmap(const BitmapEngine *engine, Bitmap *dst, const Bitmap *src)
     dst->top  = src->top;
     dst->logical_w = src->logical_w;
     dst->logical_h = src->logical_h;
+    dst->sub_x = src->sub_x;
+    dst->sub_y = src->sub_y;
     memcpy(dst->buffer, src->buffer, src->stride * src->h);
     return true;
 }

@@ -380,22 +380,69 @@ static bool image_fill_state_equal(const ImageFillState *a,
     return true;
 }
 
+static inline int wrap_image_coord(int c, int size)
+{
+    int out = c % size;
+    if (out < 0)
+        out += size;
+    return out;
+}
+
+static inline const uint8_t *tag_image_pixel(const ASS_TagImageEntry *img, int tx, int ty)
+{
+    // VSFilter stores rows upside-down in this lookup path.
+    int row = img->height - 1 - ty;
+    return img->rgba + (size_t) row * img->stride + (size_t) tx * 4;
+}
+
 static inline void sample_tag_image(const ASS_TagImageEntry *img, int x, int y,
+                                    int subpix_x, int subpix_y,
                                     uint8_t *r, uint8_t *g, uint8_t *b, uint8_t *a)
 {
-    int tx = x % img->width;
-    int ty = y % img->height;
-    if (tx < 0)
-        tx += img->width;
-    if (ty < 0)
-        ty += img->height;
-    ty = img->height - 1 - ty;
+    if (img->width <= 0 || img->height <= 0) {
+        *r = *g = *b = *a = 0;
+        return;
+    }
+    int tx = wrap_image_coord(x, img->width);
+    int ty = wrap_image_coord(y, img->height);
 
-    const uint8_t *p = img->rgba + (size_t) ty * img->stride + tx * 4;
-    *r = p[0];
-    *g = p[1];
-    *b = p[2];
-    *a = p[3];
+    const uint8_t *dst11 = tag_image_pixel(img, tx, ty);
+    uint8_t rr = dst11[0], gg = dst11[1], bb = dst11[2], aa = dst11[3];
+
+    // VSFilterMod compatibility: mode-2 texture sampling uses 1/8 subpixel
+    // interpolation against left/up neighbors without wraparound.
+    bool has_left = tx > 0;
+    bool has_up = ty < img->height - 1;
+    if (has_left && !has_up) {
+        const uint8_t *dst12 = tag_image_pixel(img, tx - 1, ty);
+        rr = (uint8_t) ((rr * (8 - subpix_x) + dst12[0] * subpix_x) >> 3);
+        gg = (uint8_t) ((gg * (8 - subpix_x) + dst12[1] * subpix_x) >> 3);
+        bb = (uint8_t) ((bb * (8 - subpix_x) + dst12[2] * subpix_x) >> 3);
+        aa = (uint8_t) ((aa * (8 - subpix_x) + dst12[3] * subpix_x) >> 3);
+    } else if (has_up && !has_left) {
+        const uint8_t *dst21 = tag_image_pixel(img, tx, ty + 1);
+        rr = (uint8_t) ((rr * subpix_y + dst21[0] * (8 - subpix_y)) >> 3);
+        gg = (uint8_t) ((gg * subpix_y + dst21[1] * (8 - subpix_y)) >> 3);
+        bb = (uint8_t) ((bb * subpix_y + dst21[2] * (8 - subpix_y)) >> 3);
+        aa = (uint8_t) ((aa * subpix_y + dst21[3] * (8 - subpix_y)) >> 3);
+    } else if (has_left && has_up) {
+        const uint8_t *dst12 = tag_image_pixel(img, tx - 1, ty);
+        const uint8_t *dst21 = tag_image_pixel(img, tx, ty + 1);
+        const uint8_t *dst22 = tag_image_pixel(img, tx - 1, ty + 1);
+        rr = (uint8_t) (((((dst21[0] * (8 - subpix_x) + dst22[0] * subpix_x) >> 3) * subpix_y) +
+                         (((rr       * (8 - subpix_x) + dst12[0] * subpix_x) >> 3) * (8 - subpix_y))) >> 3);
+        gg = (uint8_t) (((((dst21[1] * (8 - subpix_x) + dst22[1] * subpix_x) >> 3) * subpix_y) +
+                         (((gg       * (8 - subpix_x) + dst12[1] * subpix_x) >> 3) * (8 - subpix_y))) >> 3);
+        bb = (uint8_t) (((((dst21[2] * (8 - subpix_x) + dst22[2] * subpix_x) >> 3) * subpix_y) +
+                         (((bb       * (8 - subpix_x) + dst12[2] * subpix_x) >> 3) * (8 - subpix_y))) >> 3);
+        aa = (uint8_t) (((((dst21[3] * (8 - subpix_x) + dst22[3] * subpix_x) >> 3) * subpix_y) +
+                         (((aa       * (8 - subpix_x) + dst12[3] * subpix_x) >> 3) * (8 - subpix_y))) >> 3);
+    }
+
+    *r = rr;
+    *g = gg;
+    *b = bb;
+    *a = aa;
 }
 
 static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
@@ -404,6 +451,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          int stride, int dst_x, int dst_y,
                                          int src_x, int src_y,
                                          int full_w, int full_h,
+                                         int subpix_x, int subpix_y,
                                          int layer, unsigned type)
 {
     ASS_Renderer *render_priv = state->renderer;
@@ -417,8 +465,13 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         full_w = w;
     if (full_h <= 0)
         full_h = h;
+    subpix_x &= 7;
+    subpix_y &= 7;
     int64_t denom_w = (full_w > 1) ? (int64_t) (full_w - 1) : 0;
     int64_t denom_h = (full_h > 1) ? (int64_t) (full_h - 1) : 0;
+    int clip_diff = full_h - (src_y + h);
+    if (clip_diff < 0)
+        clip_diff = 0;
 
     const GradientValues *vals = &info->gradient.layer[layer];
     const ImageFillLayer *image_fill = &info->image_fill.layer[layer];
@@ -455,11 +508,12 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             }
             if (use_tag_image) {
                 uint8_t sr, sg, sb, sa;
-                // VSFilterMod compatibility: map Y using the full bitmap
-                // height before wrapping into the image tile.
+                // VSFilterMod compatibility: use visible-height Y coordinates
+                // (top row starts from h-1), plus top/bottom clip compensation.
                 sample_tag_image(tag_image,
                                  src_x + x + image_fill->xoffset,
-                                 full_h - 1 - y + image_fill->yoffset,
+                                 h - 1 - y + src_y + image_fill->yoffset + clip_diff,
+                                 subpix_x, subpix_y,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
                 uint8_t A = (uint8_t) ((cov * layer_opacity + 127) / 255);
@@ -639,6 +693,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      dst_x + r[j].x0, dst_y + r[j].y0,
                                      r[j].x0, r[j].y0,
                                      bm->logical_w, bm->logical_h,
+                                     bm->sub_x, bm->sub_y,
                                      layer1, type));
                 }
             }
@@ -671,6 +726,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      dst_x + lbrk, dst_y + r[j].y0,
                                      lbrk, r[j].y0,
                                      bm->logical_w, bm->logical_h,
+                                     bm->sub_x, bm->sub_y,
                                      layer2, type));
                 }
             }
@@ -773,6 +829,7 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                                  dst_x + b_x0, dst_y + b_y0,
                                  b_x0, b_y0,
                                  bm->logical_w, bm->logical_h,
+                                 bm->sub_x, bm->sub_y,
                                  layer1, type));
         }
     }
@@ -806,6 +863,7 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                                  dst_x + brk, dst_y + b_y0,
                                  brk, b_y0,
                                  bm->logical_w, bm->logical_h,
+                                 bm->sub_x, bm->sub_y,
                                  layer2, type));
         }
     }
@@ -2604,6 +2662,10 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
 
     if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
         memset(bm, 0, sizeof(*bm));
+    else {
+        bm->sub_x = (uint8_t) (k->offset.x & ((1 << SUBPIXEL_ORDER) - 1));
+        bm->sub_y = (uint8_t) (k->offset.y & ((1 << SUBPIXEL_ORDER) - 1));
+    }
     ass_outline_free(&outline[0]);
     ass_outline_free(&outline[1]);
 
@@ -4239,6 +4301,7 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                                         rect.y_max - rect.y_min + 2 * bord,
                                         true)) {
         Bitmap *dst = &v->bm;
+        bool have_subpix = false;
         dst->left = rect.x_min - bord;
         dst->top  = rect.y_min - bord;
         dst->logical_w = rect_l.x_max - rect_l.x_min + 2 * bord;
@@ -4247,6 +4310,11 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
             Bitmap *src = k->bitmaps[i].bm;
             if (!src)
                 continue;
+            if (!have_subpix) {
+                dst->sub_x = src->sub_x;
+                dst->sub_y = src->sub_y;
+                have_subpix = true;
+            }
             int x = k->bitmaps[i].pos.x + src->left - dst->left;
             int y = k->bitmaps[i].pos.y + src->top  - dst->top;
             assert(x >= 0 && x + src->w <= dst->w);
@@ -4266,6 +4334,7 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                                           rect_o.y_max - rect_o.y_min + 2 * bord,
                                           true)) {
         Bitmap *dst = &v->bm_o;
+        bool have_subpix = false;
         dst->left = rect_o.x_min - bord;
         dst->top  = rect_o.y_min - bord;
         dst->logical_w = rect_o_l.x_max - rect_o_l.x_min + 2 * bord;
@@ -4274,6 +4343,11 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
             Bitmap *src = k->bitmaps[i].bm_o;
             if (!src)
                 continue;
+            if (!have_subpix) {
+                dst->sub_x = src->sub_x;
+                dst->sub_y = src->sub_y;
+                have_subpix = true;
+            }
             int x = k->bitmaps[i].pos_o.x + src->left - dst->left;
             int y = k->bitmaps[i].pos_o.y + src->top  - dst->top;
             assert(x >= 0 && x + src->w <= dst->w);
@@ -4311,7 +4385,11 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         // '>>' rounds toward negative infinity, '&' returns correct remainder
         v->bm_s.left += k->filter.shadow.x >> 6;
         v->bm_s.top  += k->filter.shadow.y >> 6;
-        ass_shift_bitmap(&v->bm_s, k->filter.shadow.x & SUBPIXEL_MASK, k->filter.shadow.y & SUBPIXEL_MASK);
+        int shift_x = k->filter.shadow.x & SUBPIXEL_MASK;
+        int shift_y = k->filter.shadow.y & SUBPIXEL_MASK;
+        ass_shift_bitmap(&v->bm_s, shift_x, shift_y);
+        v->bm_s.sub_x = (uint8_t) ((v->bm_s.sub_x + ((shift_x + 4) >> 3)) & 7);
+        v->bm_s.sub_y = (uint8_t) ((v->bm_s.sub_y + ((shift_y + 4) >> 3)) & 7);
     }
 
     if ((flags & FILTER_FILL_IN_SHADOW) && !(flags & FILTER_FILL_IN_BORDER))
