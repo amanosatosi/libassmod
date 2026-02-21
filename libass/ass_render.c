@@ -510,6 +510,13 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         uint8_t *row = rgba + y * rgba_stride;
         const uint8_t *src = mask + y * stride;
         for (int x = 0; x < w; x++) {
+            if (src_x + x >= full_w || src_y + y >= full_h) {
+                row[4 * x + 0] = 0;
+                row[4 * x + 1] = 0;
+                row[4 * x + 2] = 0;
+                row[4 * x + 3] = 0;
+                continue;
+            }
             uint8_t cov = src[x];
             if (!cov) {
                 row[4 * x + 0] = 0;
@@ -631,8 +638,10 @@ static ASS_Image **render_glyph_i(RenderContext *state,
 
     x0 = 0;
     y0 = 0;
-    x1 = bm->w;
-    y1 = bm->h;
+    int logical_w = bm->logical_w > 0 ? bm->logical_w : bm->w;
+    int logical_h = bm->logical_h > 0 ? bm->logical_h : bm->h;
+    x1 = FFMIN(logical_w, bm->w);
+    y1 = FFMIN(logical_h, bm->h);
     cx0 = state->clip_x0 - dst_x;
     cy0 = state->clip_y0 - dst_y;
     cx1 = state->clip_x1 - dst_x;
@@ -792,8 +801,10 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     clip_y1 = FFMINMAX(state->clip_y1, 0, render_priv->height);
     b_x0 = 0;
     b_y0 = 0;
-    b_x1 = bm->w;
-    b_y1 = bm->h;
+    int logical_w = bm->logical_w > 0 ? bm->logical_w : bm->w;
+    int logical_h = bm->logical_h > 0 ? bm->logical_h : bm->h;
+    b_x1 = FFMIN(logical_w, bm->w);
+    b_y1 = FFMIN(logical_h, bm->h);
 
     tmp = dst_x - clip_x0;
     if (tmp < 0)
