@@ -493,23 +493,26 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          image_fill->path);
     bool use_tag_image = tag_image != NULL;
     bool draw_img_compat = use_tag_image && info->from_drawing;
-    int tex_phase_bias_x = draw_img_compat ? 1 : 0;
-    if (use_tag_image && !draw_img_compat && src_x == 0 && w > 0 && h > 0) {
-        // libass bitmap construction may keep a leading pad column in local
-        // mask coordinates. VSFilterMod's \img phase starts from the first
-        // covered column, so detect and compensate that offset.
+    int tex_phase_bias_x = 0;
+    int cov_x0 = 0, cov_x1 = w > 0 ? w - 1 : 0;
+    if (use_tag_image && src_x == 0 && w > 0 && h > 0) {
+        // Find horizontal coverage bounds for this bitmap slice.
+        // VSFilterMod aligns \img texture phase to the first covered column.
+        int first = -1, last = -1;
         for (int x = 0; x < w; x++) {
-            bool covered = false;
             for (int y = 0; y < h; y++) {
                 if (mask[y * stride + x]) {
-                    covered = true;
+                    if (first < 0)
+                        first = x;
+                    last = x;
                     break;
                 }
             }
-            if (covered) {
-                tex_phase_bias_x = x;
-                break;
-            }
+        }
+        if (first >= 0) {
+            cov_x0 = first;
+            cov_x1 = last;
+            tex_phase_bias_x = first;
         }
     }
 
@@ -539,11 +542,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 3] = 0;
                 continue;
             }
-            // Drawing-mode bitmaps in libass include a 1px guard column on
-            // both sides, while VSFilterMod's \img phase starts at the first
-            // covered column and does not render those guard columns.
-            if (draw_img_compat && full_w > 1 &&
-                (gx == 0 || gx == full_w - 1)) {
+            // In drawing mode, clamp to actual covered span so guard/padding
+            // columns do not create wrapped texture seams.
+            if (draw_img_compat && src_x == 0 &&
+                (x < cov_x0 || x > cov_x1)) {
                 row[4 * x + 0] = 0;
                 row[4 * x + 1] = 0;
                 row[4 * x + 2] = 0;
