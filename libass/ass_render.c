@@ -510,7 +510,20 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         uint8_t *row = rgba + y * rgba_stride;
         const uint8_t *src = mask + y * stride;
         for (int x = 0; x < w; x++) {
-            if (src_x + x >= full_w || src_y + y >= full_h) {
+            int gx = src_x + x;
+            int gy = src_y + y;
+            if (gx >= full_w || gy >= full_h) {
+                row[4 * x + 0] = 0;
+                row[4 * x + 1] = 0;
+                row[4 * x + 2] = 0;
+                row[4 * x + 3] = 0;
+                continue;
+            }
+            // VSFilterMod keeps terminal raster padding for span math, but
+            // does not emit visible \img fill from that padded edge.
+            if (use_tag_image &&
+                ((full_w > 1 && gx == full_w - 1) ||
+                 (full_h > 1 && gy == full_h - 1))) {
                 row[4 * x + 0] = 0;
                 row[4 * x + 1] = 0;
                 row[4 * x + 2] = 0;
