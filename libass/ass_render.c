@@ -492,6 +492,26 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         tag_image = ass_lookup_tag_image(render_priv, render_priv->track,
                                          image_fill->path);
     bool use_tag_image = tag_image != NULL;
+    bool draw_img_compat = use_tag_image && info->from_drawing;
+    int tex_phase_bias_x = draw_img_compat ? 1 : 0;
+    if (use_tag_image && !draw_img_compat && src_x == 0 && w > 0 && h > 0) {
+        // libass bitmap construction may keep a leading pad column in local
+        // mask coordinates. VSFilterMod's \img phase starts from the first
+        // covered column, so detect and compensate that offset.
+        for (int x = 0; x < w; x++) {
+            bool covered = false;
+            for (int y = 0; y < h; y++) {
+                if (mask[y * stride + x]) {
+                    covered = true;
+                    break;
+                }
+            }
+            if (covered) {
+                tex_phase_bias_x = x;
+                break;
+            }
+        }
+    }
 
     uint32_t base_color = info->base_c[layer];
     uint8_t base_alpha = _a(base_color);
@@ -519,11 +539,11 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 3] = 0;
                 continue;
             }
-            // VSFilterMod keeps terminal raster padding for span math, but
-            // does not emit visible \img fill from that padded edge.
-            if (use_tag_image &&
-                ((full_w > 1 && gx == full_w - 1) ||
-                 (full_h > 1 && gy == full_h - 1))) {
+            // Drawing-mode bitmaps in libass include a 1px guard column on
+            // both sides, while VSFilterMod's \img phase starts at the first
+            // covered column and does not render those guard columns.
+            if (draw_img_compat && full_w > 1 &&
+                (gx == 0 || gx == full_w - 1)) {
                 row[4 * x + 0] = 0;
                 row[4 * x + 1] = 0;
                 row[4 * x + 2] = 0;
@@ -543,7 +563,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 // VSFilterMod compatibility: use visible-height Y coordinates
                 // (top row starts from h-1) plus bottom clip compensation.
                 sample_tag_image(tag_image,
-                                 src_x + x + image_fill->xoffset,
+                                 src_x + x + image_fill->xoffset - tex_phase_bias_x,
                                  vis_h - 1 - y + image_fill->yoffset + clip_diff,
                                  subpix_x, subpix_y,
                                  &sr, &sg, &sb, &sa);
@@ -710,8 +730,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                     if (!sub_buf)
                         break;
                 }
+                uint32_t legacy_color = color;
+                if (rgba_tail && combined &&
+                    combined->image_fill.layer[layer1].enabled)
+                    legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
                 img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
-                                     dst_x + r[j].x0, dst_y + r[j].y0, color, source);
+                                     dst_x + r[j].x0, dst_y + r[j].y0, legacy_color, source);
                 if (!img) {
                     if (!source)
                         ass_aligned_free(sub_buf);
@@ -743,8 +767,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                     if (!sub_buf)
                         break;
                 }
+                uint32_t legacy_color = color2;
+                if (rgba_tail && combined &&
+                    combined->image_fill.layer[layer2].enabled)
+                    legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
                 img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
-                                     dst_x + lbrk, dst_y + r[j].y0, color2, source);
+                                     dst_x + lbrk, dst_y + r[j].y0, legacy_color, source);
                 if (!img) {
                     if (!source)
                         ass_aligned_free(sub_buf);
@@ -848,8 +876,12 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
             if (!sub_buf)
                 return tail;
         }
+        uint32_t legacy_color = color;
+        if (rgba_tail && combined &&
+            combined->image_fill.layer[layer1].enabled)
+            legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
         img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
-                             dst_x + b_x0, dst_y + b_y0, color, source);
+                             dst_x + b_x0, dst_y + b_y0, legacy_color, source);
         if (!img) {
             if (!source)
                 ass_aligned_free(sub_buf);
@@ -882,8 +914,12 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
             if (!sub_buf)
                 return tail;
         }
+        uint32_t legacy_color = color2;
+        if (rgba_tail && combined &&
+            combined->image_fill.layer[layer2].enabled)
+            legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
         img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
-                             dst_x + brk, dst_y + b_y0, color2, source);
+                             dst_x + brk, dst_y + b_y0, legacy_color, source);
         if (!img) {
             if (!source)
                 ass_aligned_free(sub_buf);
@@ -4104,6 +4140,7 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info->image_fill = info->image_fill;
                 current_info->fade = info->fade;
                 current_info->line = info->line;
+                current_info->from_drawing = info->drawing_text.str != NULL;
                 for (int i = 0; i < 4; i++)
                     ass_apply_fade(&current_info->c[i], info->fade);
 

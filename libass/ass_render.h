@@ -151,6 +151,7 @@ typedef struct {
     uint32_t base_c[4];
     int fade;
     int line;
+    bool from_drawing;
 } CombinedBitmapInfo;
 
 typedef struct {
