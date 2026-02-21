@@ -472,8 +472,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         full_w = w;
     if (full_h <= 0)
         full_h = h;
-    (void) subpix_x;
-    (void) subpix_y;
+    subpix_x &= 7;
+    subpix_y &= 7;
     int64_t denom_w = (full_w > 1) ? (int64_t) (full_w - 1) : 0;
     int64_t denom_h = (full_h > 1) ? (int64_t) (full_h - 1) : 0;
     int vis_h = full_h - src_y;
@@ -522,14 +522,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 uint8_t sr, sg, sb, sa;
                 // VSFilterMod compatibility: use visible-height Y coordinates
                 // (top row starts from h-1) plus bottom clip compensation.
-                // NOTE: VSFilter-style subpixel phase mapping depends on
-                // internal rasterizer coordinates that libass doesn't mirror
-                // exactly yet. Keep nearest-neighbor sampling for now to
-                // avoid placement regressions on some templates.
                 sample_tag_image(tag_image,
                                  src_x + x + image_fill->xoffset,
                                  vis_h - 1 - y + image_fill->yoffset + clip_diff,
-                                 0, 0,
+                                 subpix_x, subpix_y,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
                 uint8_t A = (uint8_t) ((cov * layer_opacity + 127) / 255);
