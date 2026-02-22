@@ -388,6 +388,12 @@ static inline int wrap_image_coord(int c, int size)
     return out;
 }
 
+static inline uint8_t vsf_cov64_from_mask(uint8_t cov)
+{
+    // VSFilter coverage is effectively 6-bit (0..64) in its mixer path.
+    return (uint8_t) ((cov + 2) >> 2);
+}
+
 static inline const uint8_t *tag_image_pixel(const ASS_TagImageEntry *img, int tx, int ty)
 {
     // VSFilter stores rows upside-down in this lookup path.
@@ -497,11 +503,14 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     int cov_x0 = 0, cov_x1 = w > 0 ? w - 1 : 0;
     if (use_tag_image && src_x == 0 && w > 0 && h > 0) {
         // Find horizontal coverage bounds for this bitmap slice.
-        // VSFilterMod aligns \img texture phase to the first covered column.
+        // In drawing mode we only use this to clamp out padding columns.
         int first = -1, last = -1;
         for (int x = 0; x < w; x++) {
             for (int y = 0; y < h; y++) {
-                if (mask[y * stride + x]) {
+                uint8_t cov = mask[y * stride + x];
+                bool covered = draw_img_compat ?
+                    (vsf_cov64_from_mask(cov) > 0) : (cov > 0);
+                if (covered) {
                     if (first < 0)
                         first = x;
                     last = x;
@@ -512,7 +521,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         if (first >= 0) {
             cov_x0 = first;
             cov_x1 = last;
-            tex_phase_bias_x = first;
+            if (!draw_img_compat)
+                tex_phase_bias_x = first;
         }
     }
 
@@ -553,7 +563,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 continue;
             }
             uint8_t cov = src[x];
-            if (!cov) {
+            uint8_t cov64 = draw_img_compat ? vsf_cov64_from_mask(cov) : 0;
+            if ((!draw_img_compat && !cov) || (draw_img_compat && !cov64)) {
                 row[4 * x + 0] = 0;
                 row[4 * x + 1] = 0;
                 row[4 * x + 2] = 0;
@@ -570,7 +581,9 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                  subpix_x, subpix_y,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
-                uint8_t A = (uint8_t) ((cov * layer_opacity + 127) / 255);
+                uint8_t A = draw_img_compat ?
+                    (uint8_t) ((cov64 * layer_opacity) >> 6) :
+                    (uint8_t) ((cov * layer_opacity + 127) / 255);
                 row[4 * x + 0] = (uint8_t) ((sr * A + 127) / 255);
                 row[4 * x + 1] = (uint8_t) ((sg * A + 127) / 255);
                 row[4 * x + 2] = (uint8_t) ((sb * A + 127) / 255);
