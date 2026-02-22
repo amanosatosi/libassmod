@@ -508,8 +508,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         for (int x = 0; x < w; x++) {
             for (int y = 0; y < h; y++) {
                 uint8_t cov = mask[y * stride + x];
-                bool covered = draw_img_compat ?
-                    (vsf_cov64_from_mask(cov) > 0) : (cov > 0);
+                bool covered = cov > 0;
                 if (covered) {
                     if (first < 0)
                         first = x;
@@ -521,8 +520,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         if (first >= 0) {
             cov_x0 = first;
             cov_x1 = last;
-            if (!draw_img_compat)
-                tex_phase_bias_x = first;
+            tex_phase_bias_x = first;
         }
     }
 
@@ -3199,83 +3197,6 @@ static void get_base_point(ASS_DRect *bbox, int alignment, double *bx, double *b
         }
 }
 
-static bool is_vsf_draw_img_event(const TextInfo *text_info)
-{
-    bool any_visible = false;
-    bool all_drawing = true;
-    bool has_tag_image = false;
-
-    for (int i = 0; i < text_info->length; i++) {
-        const GlyphInfo *info = text_info->glyphs + i;
-        if (info->skip || info->symbol == '\n' || info->symbol == 0)
-            continue;
-
-        any_visible = true;
-        if (!info->drawing_text.str)
-            all_drawing = false;
-
-        if (info->drawing_text.str) {
-            for (int layer = 0; layer < 4; layer++) {
-                if (info->image_fill.layer[layer].enabled) {
-                    has_tag_image = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    return any_visible && all_drawing && has_tag_image;
-}
-
-static void get_base_point_vsf_draw_img(const ASS_DRect *bbox, int alignment,
-                                        double *bx, double *by)
-{
-    const int halign = alignment & 3;
-    const int valign = alignment & 12;
-
-    // VSFilter line placement quantizes line extents to 1/8 px before
-    // alignment math for drawing words.
-    int x_min_d6 = ass_lrint(bbox->x_min * 64.0);
-    int y_min_d6 = ass_lrint(bbox->y_min * 64.0);
-    int width_d6 = FFMAX(0, ass_lrint((bbox->x_max - bbox->x_min) * 64.0));
-    int height_d6 = FFMAX(0, ass_lrint((bbox->y_max - bbox->y_min) * 64.0));
-
-    int width_d3 = (width_d6 + 4) >> 3;
-    int height_d3 = (height_d6 + 4) >> 3;
-
-    if (bx) {
-        int offs_x_d3 = 0;
-        switch (halign) {
-        case HALIGN_LEFT:
-            offs_x_d3 = 0;
-            break;
-        case HALIGN_CENTER:
-            offs_x_d3 = (width_d3 + 1) >> 1;
-            break;
-        case HALIGN_RIGHT:
-            offs_x_d3 = width_d3;
-            break;
-        }
-        *bx = d6_to_double(x_min_d6 + (offs_x_d3 << 3));
-    }
-
-    if (by) {
-        int offs_y_d3 = 0;
-        switch (valign) {
-        case VALIGN_TOP:
-            offs_y_d3 = 0;
-            break;
-        case VALIGN_CENTER:
-            offs_y_d3 = (height_d3 + 1) >> 1;
-            break;
-        case VALIGN_SUB:
-            offs_y_d3 = height_d3;
-            break;
-        }
-        *by = d6_to_double(y_min_d6 + (offs_y_d3 << 3));
-    }
-}
-
 /**
  * \brief Adjust the glyph's font size and scale factors to ensure smooth
  *  scaling and handle pathological font sizes. The main problem here is
@@ -3992,12 +3913,7 @@ static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
         center.y = y2scr_pos(render_priv, state->org_y);
     } else {
         double bx = 0., by = 0.;
-        if ((state->evt_type & EVENT_POSITIONED) &&
-            is_vsf_draw_img_event(&state->text_info)) {
-            get_base_point_vsf_draw_img(bbox, state->alignment, &bx, &by);
-        } else {
-            get_base_point(bbox, state->alignment, &bx, &by);
-        }
+        get_base_point(bbox, state->alignment, &bx, &by);
         center.x = device_x + bx;
         center.y = device_y + by;
     }
@@ -4773,12 +4689,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (state->evt_type & EVENT_POSITIONED) {
         double base_x = 0;
         double base_y = 0;
-        if (is_vsf_draw_img_event(text_info)) {
-            get_base_point_vsf_draw_img(bbox_for_origin, state->alignment,
-                                        &base_x, &base_y);
-        } else {
-            get_base_point(bbox_for_origin, state->alignment, &base_x, &base_y);
-        }
+        get_base_point(bbox_for_origin, state->alignment, &base_x, &base_y);
         device_x =
             x2scr_pos(render_priv, state->pos_x) - base_x;
         device_y =
