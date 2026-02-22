@@ -6,6 +6,7 @@ Match VSFilterMod output for `\img` (and `\1img..\4img`) in libassmod, especiall
 ## Current Status
 - `snow` sample: good again after rollback + phase tweaks.
 - `black` sample: still has a visible mismatch (looks like a ~1px parity issue).
+- `hud` sample (`科技感HUD`): center strip still mismatched vs VSFilterMod.
 
 ## Repro Inputs
 - VSFilterMod source path:
@@ -13,12 +14,14 @@ Match VSFilterMod output for `\img` (and `\1img..\4img`) in libassmod, especiall
 - ASS samples:
   - Snow bubble template (`snow` case)
   - Black bubble template (`black` case)
+  - HUD bubble template (`hud` case)
 - Key black-center dialogue (from sample):
   - `\pos(960,529)\bord0\1img(FloatNotice.265.1.png)\p1`
   - shape width is `667.85`
 - Key image dimensions:
   - `FloatNotice.265.1.png`: `8x97`
   - `FloatNotice.2.1.png`: `90x74`
+  - `FloatNotice.217.1.png`: `1x176`
 
 ## Trial Log
 
@@ -67,6 +70,22 @@ Match VSFilterMod output for `\img` (and `\1img..\4img`) in libassmod, especiall
 - Change: if first covered column is 0, compare summed mask coverage of col0 vs col1; when col0 is much weaker (`sum0 * 8 < sum1`), treat col0 as guard (`cov_x0=1`, `tex_phase_bias_x=1`).
 - Reason: fractional-width vector rectangles can leave tiny AA in guard col0, which anchors texture phase one column too far left.
 - Status: pending user retest (final attempt before moving on).
+
+10. Make draw X-phase rebasing selective
+- Area: `render_bitmap_rgba`.
+- Change: keep draw-mode X phase rebasing only for narrow textures (`tag_image->width <= 16`), instead of all draw-mode `\img`.
+- Reason: avoid breaking wide decorative side textures while keeping the black center (`8px` tile) correction path active.
+- Status: pending user retest.
+
+11. Add draw Y guard-row handling for ultra-narrow textures
+- Area: `render_bitmap_rgba`.
+- Changes:
+  - track Y coverage bounds (`cov_y0/cov_y1`) in addition to X bounds,
+  - for very narrow strip textures (`tag_image->width <= 2`), apply Y phase rebase from first covered row,
+  - add row-0 guard heuristic (`sum_row0 * 8 < sum_row1`) similar to the X guard-column rule,
+  - clamp draw-mode padding rows (`y < cov_y0` / `y > cov_y1`) to avoid seam rows affecting phase.
+- Reason: HUD center uses a `1x176` strip; a tiny top guard row can shift the whole vertical texture phase.
+- Status: pending user retest.
 
 ## Verified Facts
 - Black center piece is very sensitive because texture width is `8px` and shape width is fractional (`667.85`).

@@ -500,32 +500,51 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     bool use_tag_image = tag_image != NULL;
     bool draw_img_compat = use_tag_image && info->from_drawing;
     int tex_phase_bias_x = 0;
+    int tex_phase_bias_y = 0;
     int cov_x0 = 0, cov_x1 = w > 0 ? w - 1 : 0;
+    int cov_y0 = 0, cov_y1 = h > 0 ? h - 1 : 0;
     if (use_tag_image && src_x == 0 && w > 0 && h > 0) {
-        // Find horizontal coverage bounds for this bitmap slice.
-        // In drawing mode we only use this to clamp out padding columns.
-        int first = -1, last = -1;
-        for (int x = 0; x < w; x++) {
-            for (int y = 0; y < h; y++) {
-                uint8_t cov = mask[y * stride + x];
-                bool covered = cov > 0;
-                if (covered) {
-                    if (first < 0)
-                        first = x;
-                    last = x;
-                    break;
-                }
+        // Find coverage bounds for this bitmap slice.
+        // In drawing mode we only use this to clamp out guard padding.
+        int min_x = w, max_x = -1;
+        int min_y = h, max_y = -1;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (!mask[y * stride + x])
+                    continue;
+                if (x < min_x)
+                    min_x = x;
+                if (x > max_x)
+                    max_x = x;
+                if (y < min_y)
+                    min_y = y;
+                if (y > max_y)
+                    max_y = y;
             }
         }
-        if (first >= 0) {
-            cov_x0 = first;
-            cov_x1 = last;
-            tex_phase_bias_x = first;
+        if (max_x >= 0 && max_y >= 0) {
+            cov_x0 = min_x;
+            cov_x1 = max_x;
+            cov_y0 = min_y;
+            cov_y1 = max_y;
+            bool apply_draw_phase_bias = !draw_img_compat;
+            if (draw_img_compat && tag_image && tag_image->width > 0 &&
+                tag_image->width <= 16)
+                apply_draw_phase_bias = true;
+            if (apply_draw_phase_bias)
+                tex_phase_bias_x = min_x;
+
+            bool apply_draw_phase_bias_y = false;
+            if (draw_img_compat && tag_image && tag_image->width > 0 &&
+                tag_image->width <= 2)
+                apply_draw_phase_bias_y = true;
+            if (apply_draw_phase_bias_y)
+                tex_phase_bias_y = min_y;
 
             // In draw mode, column 0 can contain tiny AA edge coverage from
             // libass' guard expansion. If that column is much weaker than
             // column 1, treat it as padding for texture phase anchoring.
-            if (draw_img_compat && cov_x0 == 0 && w > 1) {
+            if (apply_draw_phase_bias && draw_img_compat && cov_x0 == 0 && w > 1) {
                 int sum0 = 0;
                 int sum1 = 0;
                 for (int y = 0; y < h; y++) {
@@ -535,6 +554,20 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 if (sum0 * 8 < sum1) {
                     cov_x0 = 1;
                     tex_phase_bias_x = 1;
+                }
+            }
+
+            // Likewise for row 0 on narrow/tall strip textures.
+            if (apply_draw_phase_bias_y && cov_y0 == 0 && h > 1) {
+                int sum0 = 0;
+                int sum1 = 0;
+                for (int x = 0; x < w; x++) {
+                    sum0 += mask[0 * stride + x];
+                    sum1 += mask[1 * stride + x];
+                }
+                if (sum0 * 8 < sum1) {
+                    cov_y0 = 1;
+                    tex_phase_bias_y = 1;
                 }
             }
         }
@@ -569,7 +602,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             // In drawing mode, clamp to actual covered span so guard/padding
             // columns do not create wrapped texture seams.
             if (draw_img_compat && src_x == 0 &&
-                (x < cov_x0 || x > cov_x1)) {
+                (x < cov_x0 || x > cov_x1 || y < cov_y0 || y > cov_y1)) {
                 row[4 * x + 0] = 0;
                 row[4 * x + 1] = 0;
                 row[4 * x + 2] = 0;
@@ -591,7 +624,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 // (top row starts from h-1) plus bottom clip compensation.
                 sample_tag_image(tag_image,
                                  src_x + x + image_fill->xoffset - tex_phase_bias_x,
-                                 vis_h - 1 - y + image_fill->yoffset + clip_diff,
+                                 vis_h - 1 - y + image_fill->yoffset + clip_diff + tex_phase_bias_y,
                                  subpix_x, subpix_y,
                                  &sr, &sg, &sb, &sa);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
