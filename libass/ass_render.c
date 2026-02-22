@@ -690,6 +690,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
     int logical_h = bm->logical_h > 0 ? bm->logical_h : bm->h;
     x1 = FFMIN(logical_w, bm->w);
     y1 = FFMIN(logical_h, bm->h);
+    uint8_t rgba_sub_x = bm->sub_x;
+    uint8_t rgba_sub_y = bm->sub_y;
+    if (combined && combined->from_drawing) {
+        rgba_sub_x = combined->draw_sub_x;
+        rgba_sub_y = combined->draw_sub_y;
+    }
     cx0 = state->clip_x0 - dst_x;
     cy0 = state->clip_y0 - dst_y;
     cx1 = state->clip_x1 - dst_x;
@@ -766,7 +772,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      dst_x + r[j].x0, dst_y + r[j].y0,
                                      r[j].x0, r[j].y0,
                                      bm->logical_w, bm->logical_h,
-                                     bm->sub_x, bm->sub_y,
+                                     rgba_sub_x, rgba_sub_y,
                                      layer1, type));
                 }
             }
@@ -803,7 +809,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      dst_x + lbrk, dst_y + r[j].y0,
                                      lbrk, r[j].y0,
                                      bm->logical_w, bm->logical_h,
-                                     bm->sub_x, bm->sub_y,
+                                     rgba_sub_x, rgba_sub_y,
                                      layer2, type));
                 }
             }
@@ -845,6 +851,12 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     int tmp;
     ASS_Image *img;
     ASS_Renderer *render_priv = state->renderer;
+    uint8_t rgba_sub_x = bm->sub_x;
+    uint8_t rgba_sub_y = bm->sub_y;
+    if (combined && combined->from_drawing) {
+        rgba_sub_x = combined->draw_sub_x;
+        rgba_sub_y = combined->draw_sub_y;
+    }
 
     dst_x += bm->left;
     dst_y += bm->top;
@@ -912,7 +924,7 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                                  dst_x + b_x0, dst_y + b_y0,
                                  b_x0, b_y0,
                                  bm->logical_w, bm->logical_h,
-                                 bm->sub_x, bm->sub_y,
+                                 rgba_sub_x, rgba_sub_y,
                                  layer1, type));
         }
     }
@@ -950,7 +962,7 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                                  dst_x + brk, dst_y + b_y0,
                                  brk, b_y0,
                                  bm->logical_w, bm->logical_h,
-                                 bm->sub_x, bm->sub_y,
+                                 rgba_sub_x, rgba_sub_y,
                                  layer2, type));
         }
     }
@@ -4156,6 +4168,8 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info->fade = info->fade;
                 current_info->line = info->line;
                 current_info->from_drawing = info->drawing_text.str != NULL;
+                current_info->draw_sub_x = 0;
+                current_info->draw_sub_y = 0;
                 for (int i = 0; i < 4; i++)
                     ass_apply_fade(&current_info->c[i], info->fade);
 
@@ -4205,6 +4219,10 @@ static void render_and_combine_glyphs(RenderContext *state,
             info->pos.x = double_to_d6(device_x + jitter_dx +
                                        d6_to_double(info->pos.x) * render_priv->par_scale_x);
             info->pos.y = double_to_d6(device_y + jitter_dy) + info->pos.y;
+            if (current_info->from_drawing && !current_info->bitmap_count) {
+                current_info->draw_sub_x = (uint8_t) ((info->pos.x >> 3) & 7);
+                current_info->draw_sub_y = (uint8_t) ((info->pos.y >> 3) & 7);
+            }
             get_bitmap_glyph(state, info, &current_info->leftmost_x, &pos, &pos_o,
                              &offset, !current_info->bitmap_count, flags);
 
