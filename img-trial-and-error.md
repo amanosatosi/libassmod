@@ -4,7 +4,7 @@
 Match VSFilterMod output for `\img` (and `\1img..\4img`) in libassmod, especially drawing mode (`\p`).
 
 ## Current Status
-- `snow` sample: regressed after a later placement patch; rollback applied, pending retest.
+- `snow` sample: good again after rollback + phase tweaks.
 - `black` sample: still has a visible mismatch (looks like a ~1px parity issue).
 
 ## Repro Inputs
@@ -61,6 +61,12 @@ Match VSFilterMod output for `\img` (and `\1img..\4img`) in libassmod, especiall
 - Change: bound detection no longer uses quantized `cov64` in draw mode.
 - Reason: tiny edge coverage could be rounded to 0 in `cov64` and shift the phase origin by 1 column.
 - Status: pending user retest.
+
+9. Draw guard-column heuristic for phase anchoring
+- Area: `render_bitmap_rgba` draw-mode coverage bound post-processing.
+- Change: if first covered column is 0, compare summed mask coverage of col0 vs col1; when col0 is much weaker (`sum0 * 8 < sum1`), treat col0 as guard (`cov_x0=1`, `tex_phase_bias_x=1`).
+- Reason: fractional-width vector rectangles can leave tiny AA in guard col0, which anchors texture phase one column too far left.
+- Status: pending user retest (final attempt before moving on).
 
 ## Verified Facts
 - Black center piece is very sensitive because texture width is `8px` and shape width is fractional (`667.85`).

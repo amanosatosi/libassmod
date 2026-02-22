@@ -521,6 +521,22 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             cov_x0 = first;
             cov_x1 = last;
             tex_phase_bias_x = first;
+
+            // In draw mode, column 0 can contain tiny AA edge coverage from
+            // libass' guard expansion. If that column is much weaker than
+            // column 1, treat it as padding for texture phase anchoring.
+            if (draw_img_compat && cov_x0 == 0 && w > 1) {
+                int sum0 = 0;
+                int sum1 = 0;
+                for (int y = 0; y < h; y++) {
+                    sum0 += mask[y * stride + 0];
+                    sum1 += mask[y * stride + 1];
+                }
+                if (sum0 * 8 < sum1) {
+                    cov_x0 = 1;
+                    tex_phase_bias_x = 1;
+                }
+            }
         }
     }
 
