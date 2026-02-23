@@ -1051,6 +1051,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 val = 0.0;
             state->z = val;
+        } else if (tag("ortho")) {
+            int32_t val = argtoi32(*args);
+            if (!nargs || !(val == 0 || val == 1))
+                val = 0;
+            state->ortho = !!val;
         } else if (tag("fn")) {
             char *start = args->start;
             if (nargs && strncmp(start, "0", args->end - start)) {

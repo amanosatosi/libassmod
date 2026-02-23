@@ -2038,6 +2038,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->font_encoding = style->Encoding;
     state->jitter = ass_jitter_default_state();
     state->z = 0.0;
+    state->ortho = false;
     state->rnd_x = 0.0;
     state->rnd_y = 0.0;
     state->rnd_z = 0.0;
@@ -2369,6 +2370,10 @@ static void calc_transform_matrix(RenderContext *state,
         x4[i] = x2[i] * cy - z3[i] * sy;
         z4[i] = x2[i] * sy + z3[i] * cy;
     }
+
+    // VSFilterMod \ortho1: keep rotated x/y, but use a constant depth term.
+    if (info->ortho)
+        z4[0] = z4[1] = z4[2] = 0.0;
 
     z4[2] += dist;
 
@@ -3312,6 +3317,7 @@ static void split_style_runs(RenderContext *state)
             last->fry != info->fry ||
             last->frz != info->frz ||
             last->z != info->z ||
+            last->ortho != info->ortho ||
             last->fax != info->fax ||
             last->fay != info->fay ||
             last->scale_x != info->scale_x ||
@@ -3435,6 +3441,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         info->frs = state->frs;
         info->frz = state->frz + info->frs;
         info->z = state->z;
+        info->ortho = state->ortho;
         info->fax = state->fax;
         info->fay = state->fay;
         info->fade = state->fade;

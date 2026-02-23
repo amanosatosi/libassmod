@@ -228,6 +228,7 @@ typedef struct glyph_info {
     double frx, fry, frz;       // rotation
     double frs;                 // baseline rotation
     double z;                   // 3D translation along camera Z
+    bool ortho;                 // orthographic projection toggle
     double fax, fay;            // text shearing
     double scale_x, scale_y;
     // amount of scale_x,y change due to fix_glyph_scaling
@@ -379,6 +380,7 @@ struct render_context {
     MotionState motion;
     JitterState jitter;
     double z;                   // 3D translation along camera Z
+    bool ortho;                 // orthographic projection toggle
     double rnd_x, rnd_y, rnd_z;
     uint64_t rnd_seed_base;     // per-event seed for rnd* offsets
 
