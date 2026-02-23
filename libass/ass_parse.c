@@ -802,16 +802,17 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     state->clip_drawing_mode = 1;
             }
         } else if (tag("blur")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                val = state->blur_x * (1 - pwr) + val * pwr;
-                val = (val < 0) ? 0 : val;
-                val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
-            } else
-                val = 0.0;
-            state->blur_x = val;
-            state->blur_y = val;
+            double target = nargs ? argtod(*args) : 0.0;
+            double val_x = state->blur_x * (1 - pwr) + target * pwr;
+            double val_y = state->blur_y * (1 - pwr) + target * pwr;
+
+            val_x = (val_x < 0) ? 0 : val_x;
+            val_x = (val_x > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val_x;
+            val_y = (val_y < 0) ? 0 : val_y;
+            val_y = (val_y > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val_y;
+
+            state->blur_x = val_x;
+            state->blur_y = val_y;
         } else if (tag("xblur")) {
             double val;
             if (nargs) {
