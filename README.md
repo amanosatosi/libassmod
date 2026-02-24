@@ -68,6 +68,26 @@ All of the above are animatable via `\t`.
 
 ---
 
+### Projection & blur
+
+- `\ortho0`  
+  Perspective projection (default)
+
+- `\ortho1`  
+  Orthogonal projection (no perspective divide)
+
+- `\xblur<radius>`  
+  Directional gaussian blur on the X axis only
+
+- `\yblur<radius>`  
+  Directional gaussian blur on the Y axis only
+
+For `\ortho` semantics and examples, see:
+
+`docs/ortho-tag.md`
+
+---
+
 ### Transform & movement
 
 - `\distort(u1,v1,u2,v2,u3,v3)`  
@@ -145,11 +165,6 @@ The following VSFilterMod-related features are **not supported**:
 - Lua extensions  
   - `\lua(...)`
   - Inline Lua calls
-
-- Projection & blur  
-  - `\ortho0`, `\ortho1`
-  - `\xblur`
-  - `\yblur`
 
 - Blend modes  
   - `\blend` and related variants
