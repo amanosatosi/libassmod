@@ -2371,9 +2371,24 @@ static void calc_transform_matrix(RenderContext *state,
         z4[i] = x2[i] * sy + z3[i] * cy;
     }
 
-    // VSFilterMod \ortho1: keep rotated x/y, but use a constant depth term.
-    if (info->ortho)
-        z4[0] = z4[1] = z4[2] = 0.0;
+    // VSFilterMod \ortho1: orthographic projection (no perspective divide by z).
+    // Keep the rotated/sheared x/y basis and z-coupling into x/y (x4/y3),
+    // but use a pure affine transform with constant depth.
+    if (info->ortho) {
+        double offs_x = info->pos.x - info->shift.x * render_priv->par_scale_x;
+        double offs_y = info->pos.y - info->shift.y;
+
+        for (int i = 0; i < 3; i++) {
+            m[0][i] = x4[i] * render_priv->par_scale_x;
+            m[1][i] = y3[i];
+        }
+        m[0][2] += offs_x;
+        m[1][2] += offs_y;
+        m[2][0] = 0.0;
+        m[2][1] = 0.0;
+        m[2][2] = 1.0;
+        return;
+    }
 
     z4[2] += dist;
 
