@@ -2088,8 +2088,6 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->jitter = ass_jitter_default_state();
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
-    ass_msg(state->renderer->library, MSGL_WARN,
-            "init_render_context rnd reset: x=%g y=%g z=%g", state->rnd_x, state->rnd_y, state->rnd_z);
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2451,15 +2449,6 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 
     bool rnd_active = (info->rnd_x != 0.0) || (info->rnd_y != 0.0) || (info->rnd_z != 0.0);
     if (rnd_active && !(flags & FILTER_BORDER_STYLE_3)) {
-        double eff_x = FFMIN(fabs(info->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-        double eff_y = FFMIN(fabs(info->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-        double eff_z = FFMIN(fabs(info->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-        ass_msg(render_priv->library, MSGL_WARN,
-                "render rnd raw: x=%.3f y=%.3f z=%.3f has_rnd=%d rnd_active=%d eff_x=%.3f eff_y=%.3f eff_z=%.3f seed=%llu",
-                info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd, rnd_active,
-                info->rnd_x, info->rnd_y, info->rnd_z,
-                eff_x, eff_y, eff_z,
-                (unsigned long long) info->rnd_seed);
         bool ok = build_rnd_bitmaps(state, info, outline, m, pos, pos_o,
                                     (flags & FILTER_NONZERO_BORDER), flags);
         if (ok)
