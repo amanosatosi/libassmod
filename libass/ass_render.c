@@ -1512,7 +1512,7 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
         return;
 
     Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-    if (!clip_bm)
+    if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
     // Iterate through bitmaps and blend/clip them
@@ -1633,7 +1633,7 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
         return;
 
     Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-    if (!clip_bm)
+    if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
     unsigned align = 1 << render_priv->engine.align_order;

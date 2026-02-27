@@ -63,6 +63,14 @@ static inline bool get_point(const char **str, ASS_Vector *point)
     double x, y;
     if (!mystrtod((char **) str, &x) || !mystrtod((char **) str, &y))
         return false;
+    if (ass_isnan(x) || ass_isnan(y))
+        return false;
+
+    const double min_d6 = (double) INT32_MIN / 64.0;
+    const double max_d6 = (double) INT32_MAX / 64.0;
+    if (x < min_d6 || x > max_d6 || y < min_d6 || y > max_d6)
+        return false;
+
     *point = (ASS_Vector) {double_to_d6(x), double_to_d6(y)};
     return true;
 }

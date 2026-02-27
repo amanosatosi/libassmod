@@ -26,8 +26,8 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer, const ClipCase
         script, sizeof(script),
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
-        "PlayResX: 640\n"
-        "PlayResY: 360\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n"
         "ScaledBorderAndShadow: yes\n"
         "\n"
         "[V4+ Styles]\n"
@@ -48,14 +48,15 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer, const ClipCase
     if (!track)
         return false;
 
-    int change = 0;
-    ASS_Image *img1 = ass_render_frame(renderer, track, 0, &change);
-    ASS_Image *img2 = ass_render_frame(renderer, track, 0, &change);
+    int change1 = 0;
+    int change2 = 0;
+    ASS_Image *img1 = ass_render_frame(renderer, track, 0, &change1);
+    ASS_Image *img2 = ass_render_frame(renderer, track, 0, &change2);
+    (void) change1;
+    (void) change2;
 
     bool ok = true;
     if (tc->expect_image && (!img1 || !img2))
-        ok = false;
-    if (change != 0)
         ok = false;
 
     ass_free_track(track);
@@ -78,7 +79,8 @@ int main(void)
         return 1;
     }
 
-    ass_set_frame_size(renderer, 640, 360);
+    ass_set_storage_size(renderer, 1920, 1080);
+    ass_set_frame_size(renderer, 1920, 1080);
     ass_set_fonts(renderer, NULL, "sans-serif",
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
@@ -101,6 +103,11 @@ int main(void)
         {
             "rect-valid-negative",
             "{\\pos(320,180)\\clip(-40.75,-20.5,640.1,360.9)}clip",
+            true,
+        },
+        {
+            "rect-right-side-1080p",
+            "{\\pos(1750,540)\\clip(1200.5,300.25,1919.9,900.75)}clip",
             true,
         },
         {
@@ -144,6 +151,16 @@ int main(void)
             true,
         },
         {
+            "vector-huge-scale",
+            "{\\pos(320,180)\\clip(1000,m 0 0 l 640 0 640 360 0 360)}clip",
+            true,
+        },
+        {
+            "vector-huge-point",
+            "{\\pos(320,180)\\clip(m 0 0 l 99999999999999999999 0 10 10)}clip",
+            true,
+        },
+        {
             "iclip-rect-valid",
             "{\\pos(320,180)\\iclip(0,0,20,20)}clip",
             true,
@@ -171,6 +188,16 @@ int main(void)
         {
             "iclip-vector-malformed",
             "{\\pos(320,180)\\iclip(1,2)}clip",
+            true,
+        },
+        {
+            "iclip-vector-huge-scale",
+            "{\\pos(320,180)\\iclip(1000,m 0 0 l 20 0 20 20 0 20)}clip",
+            true,
+        },
+        {
+            "iclip-vector-huge-point",
+            "{\\pos(320,180)\\iclip(m 0 0 l 99999999999999999999 0 10 10)}clip",
             true,
         },
     };

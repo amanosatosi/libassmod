@@ -501,10 +501,6 @@ static bool parse_clip_rectangle_coord(RenderContext *state, struct arg token,
 
     // Decimal clip coordinates are converted by truncating toward zero.
     *value = (int32_t) parsed;
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "PARSE clip rectangle coord[%d] '%.*s' => %g => %d",
-            idx, (int) (token.end - token.start), token.start,
-            parsed, *value);
     return true;
 }
 
@@ -514,7 +510,7 @@ static bool parse_clip_scale(RenderContext *state, struct arg token, int *scale)
     errno = 0;
     long long parsed = strtoll(token.start, &ptr, 10);
 
-    if (ptr != token.end || errno == ERANGE || parsed < 1 || parsed > INT_MAX) {
+    if (ptr != token.end || errno == ERANGE || parsed < 1 || parsed > 31) {
         ass_msg(state->renderer->library, MSGL_DBG2,
                 "PARSE clip vector scale rejected: '%.*s'",
                 (int) (token.end - token.start), token.start);
@@ -522,9 +518,6 @@ static bool parse_clip_scale(RenderContext *state, struct arg token, int *scale)
     }
 
     *scale = (int) parsed;
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "PARSE clip vector scale '%.*s' => %d",
-            (int) (token.end - token.start), token.start, *scale);
     return true;
 }
 
@@ -576,17 +569,6 @@ static ClipParseResult parse_clip_tag(RenderContext *state, const char *tag_name
 
     bool has_empty = false;
     int count = split_clip_args(raw_start, raw_end, tokens, &has_empty);
-    int logged = FFMIN(count, MAX_CLIP_TOKENS);
-    for (int i = 0; i < logged; i++) {
-        if (tokens[i].start && tokens[i].end)
-            ass_msg(state->renderer->library, MSGL_DBG2,
-                    "PARSE %s token[%d] '%.*s'", tag_name, i,
-                    (int) (tokens[i].end - tokens[i].start), tokens[i].start);
-    }
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "PARSE %s token_count=%d empty_token=%d",
-            tag_name, count, has_empty);
-
     if (count <= 0 || has_empty) {
         result.reason = has_empty ? "empty clip argument token"
                                   : "missing clip arguments";
@@ -640,8 +622,6 @@ static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inve
     ClipParseResult parsed = parse_clip_tag(state, tag_name, name_end, q, end);
 
     if (parsed.type == CLIP_RECTANGLE) {
-        ass_msg(state->renderer->library, MSGL_DBG2,
-                "PARSE %s type=rectangle", tag_name);
         state->clip_x0 = state->clip_x0 * (1 - pwr) + parsed.x0 * pwr;
         state->clip_x1 = state->clip_x1 * (1 - pwr) + parsed.x1 * pwr;
         state->clip_y0 = state->clip_y0 * (1 - pwr) + parsed.y0 * pwr;
@@ -651,15 +631,7 @@ static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inve
     }
 
     if (parsed.type == CLIP_VECTOR) {
-        ass_msg(state->renderer->library, MSGL_DBG2,
-                "PARSE %s type=vector scale=%d text='%.*s'",
-                tag_name, parsed.scale,
-                (int) (parsed.drawing.end - parsed.drawing.start),
-                parsed.drawing.start);
         if (state->clip_drawing_text.str) {
-            ass_msg(state->renderer->library, MSGL_DBG2,
-                    "PARSE %s vector skipped (clip drawing already set)",
-                    tag_name);
             return;
         }
 
