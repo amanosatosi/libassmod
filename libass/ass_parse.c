@@ -429,25 +429,249 @@ interpolate_alpha(long long now, int32_t t1, int32_t t2, int32_t t3,
     return a;
 }
 
-/**
- * Parse a vector clip into an outline, using the proper scaling
- * parameters.  Translate it to correct for screen borders, if needed.
- */
-static bool parse_vector_clip(RenderContext *state,
-                              struct arg *args, int nargs)
+enum ClipType {
+    CLIP_INVALID = 0,
+    CLIP_RECTANGLE,
+    CLIP_VECTOR,
+};
+
+typedef struct ClipParseResult {
+    enum ClipType type;
+    int32_t x0, y0, x1, y1;
+    int scale;
+    struct arg drawing;
+    const char *reason;
+} ClipParseResult;
+
+#define MAX_CLIP_TOKENS 8
+
+static int split_clip_args(char *start, char *end,
+                           struct arg *tokens, bool *has_empty)
 {
-    if (nargs != 1 && nargs != 2)
+    int count = 0;
+    *has_empty = false;
+
+    if (!start || !end || start > end)
+        return 0;
+
+    for (char *cursor = start; cursor <= end;) {
+        char *next = memchr(cursor, ',', end - cursor);
+        char *tok_start = cursor;
+        char *tok_end = next ? next : end;
+
+        skip_spaces(&tok_start);
+        rskip_spaces(&tok_end, tok_start);
+
+        if (tok_end > tok_start) {
+            if (count < MAX_CLIP_TOKENS)
+                tokens[count] = (struct arg) { tok_start, tok_end };
+        } else {
+            *has_empty = true;
+        }
+
+        ++count;
+        if (!next)
+            break;
+        cursor = next + 1;
+    }
+
+    return count;
+}
+
+static bool parse_clip_rectangle_coord(RenderContext *state, struct arg token,
+                                       int idx, int32_t *value)
+{
+    char *ptr = token.start;
+    double parsed;
+
+    if (!mystrtod(&ptr, &parsed) || ptr != token.end) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "PARSE clip rectangle coord[%d] rejected: '%.*s'",
+                idx, (int) (token.end - token.start), token.start);
+        return false;
+    }
+
+    if (ass_isnan(parsed) || parsed < (double) INT32_MIN ||
+            parsed > (double) INT32_MAX) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "PARSE clip rectangle coord[%d] rejected (range): %g",
+                idx, parsed);
+        return false;
+    }
+
+    // Decimal clip coordinates are converted by truncating toward zero.
+    *value = (int32_t) parsed;
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "PARSE clip rectangle coord[%d] '%.*s' => %g => %d",
+            idx, (int) (token.end - token.start), token.start,
+            parsed, *value);
+    return true;
+}
+
+static bool parse_clip_scale(RenderContext *state, struct arg token, int *scale)
+{
+    char *ptr = token.start;
+    errno = 0;
+    long long parsed = strtoll(token.start, &ptr, 10);
+
+    if (ptr != token.end || errno == ERANGE || parsed < 1 || parsed > INT_MAX) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "PARSE clip vector scale rejected: '%.*s'",
+                (int) (token.end - token.start), token.start);
+        return false;
+    }
+
+    *scale = (int) parsed;
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "PARSE clip vector scale '%.*s' => %d",
+            (int) (token.end - token.start), token.start, *scale);
+    return true;
+}
+
+static bool validate_clip_drawing_token(struct arg token)
+{
+    if (token.start >= token.end)
         return false;
 
-    int scale = 1;
-    if (nargs == 2)
-        scale = argtoi32(args[0]);
+    switch (*token.start) {
+    case 'm':
+    case 'n':
+    case 'l':
+    case 'b':
+    case 's':
+    case 'p':
+    case 'c':
+        return true;
+    default:
+        return false;
+    }
+}
 
-    struct arg text = args[nargs - 1];
-    state->clip_drawing_text.str = text.start;
-    state->clip_drawing_text.len = text.end - text.start;
-    state->clip_drawing_scale = scale;
-    return true;
+static ClipParseResult parse_clip_tag(RenderContext *state, const char *tag_name,
+                                      char *name_end, char *q, char *end)
+{
+    ClipParseResult result = {
+        .type = CLIP_INVALID,
+        .scale = 1,
+        .reason = "invalid clip arguments",
+    };
+
+    if (name_end >= end || *name_end != '(') {
+        result.reason = "missing parenthesized arguments";
+        return result;
+    }
+
+    char *raw_start = name_end + 1;
+    char *raw_end = q;
+    if (raw_end > raw_start && raw_end[-1] == ')')
+        --raw_end;
+    if (raw_start > raw_end) {
+        result.reason = "empty clip argument list";
+        return result;
+    }
+
+    struct arg tokens[MAX_CLIP_TOKENS];
+    for (int i = 0; i < MAX_CLIP_TOKENS; i++)
+        tokens[i] = (struct arg) { NULL, NULL };
+
+    bool has_empty = false;
+    int count = split_clip_args(raw_start, raw_end, tokens, &has_empty);
+    int logged = FFMIN(count, MAX_CLIP_TOKENS);
+    for (int i = 0; i < logged; i++) {
+        if (tokens[i].start && tokens[i].end)
+            ass_msg(state->renderer->library, MSGL_DBG2,
+                    "PARSE %s token[%d] '%.*s'", tag_name, i,
+                    (int) (tokens[i].end - tokens[i].start), tokens[i].start);
+    }
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "PARSE %s token_count=%d empty_token=%d",
+            tag_name, count, has_empty);
+
+    if (count <= 0 || has_empty) {
+        result.reason = has_empty ? "empty clip argument token"
+                                  : "missing clip arguments";
+        return result;
+    }
+
+    if (count == 4) {
+        if (!parse_clip_rectangle_coord(state, tokens[0], 0, &result.x0) ||
+            !parse_clip_rectangle_coord(state, tokens[1], 1, &result.y0) ||
+            !parse_clip_rectangle_coord(state, tokens[2], 2, &result.x1) ||
+            !parse_clip_rectangle_coord(state, tokens[3], 3, &result.y1)) {
+            result.reason = "invalid rectangle clip coordinate";
+            return result;
+        }
+        result.type = CLIP_RECTANGLE;
+        return result;
+    }
+
+    if (count == 1) {
+        if (!validate_clip_drawing_token(tokens[0])) {
+            result.reason = "invalid vector clip drawing data";
+            return result;
+        }
+        result.type = CLIP_VECTOR;
+        result.scale = 1;
+        result.drawing = tokens[0];
+        return result;
+    }
+
+    if (count == 2) {
+        if (!parse_clip_scale(state, tokens[0], &result.scale)) {
+            result.reason = "invalid vector clip scale";
+            return result;
+        }
+        if (!validate_clip_drawing_token(tokens[1])) {
+            result.reason = "invalid vector clip drawing data";
+            return result;
+        }
+        result.type = CLIP_VECTOR;
+        result.drawing = tokens[1];
+        return result;
+    }
+
+    result.reason = "unsupported clip argument count";
+    return result;
+}
+
+static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inverse,
+                           char *name_end, char *q, char *end, double pwr)
+{
+    ClipParseResult parsed = parse_clip_tag(state, tag_name, name_end, q, end);
+
+    if (parsed.type == CLIP_RECTANGLE) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "PARSE %s type=rectangle", tag_name);
+        state->clip_x0 = state->clip_x0 * (1 - pwr) + parsed.x0 * pwr;
+        state->clip_x1 = state->clip_x1 * (1 - pwr) + parsed.x1 * pwr;
+        state->clip_y0 = state->clip_y0 * (1 - pwr) + parsed.y0 * pwr;
+        state->clip_y1 = state->clip_y1 * (1 - pwr) + parsed.y1 * pwr;
+        state->clip_mode = inverse ? 1 : 0;
+        return;
+    }
+
+    if (parsed.type == CLIP_VECTOR) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "PARSE %s type=vector scale=%d text='%.*s'",
+                tag_name, parsed.scale,
+                (int) (parsed.drawing.end - parsed.drawing.start),
+                parsed.drawing.start);
+        if (state->clip_drawing_text.str) {
+            ass_msg(state->renderer->library, MSGL_DBG2,
+                    "PARSE %s vector skipped (clip drawing already set)",
+                    tag_name);
+            return;
+        }
+
+        state->clip_drawing_text.str = parsed.drawing.start;
+        state->clip_drawing_text.len = parsed.drawing.end - parsed.drawing.start;
+        state->clip_drawing_scale = parsed.scale;
+        state->clip_drawing_mode = inverse ? 1 : 0;
+        return;
+    }
+
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "PARSE %s rejected: %s", tag_name, parsed.reason);
 }
 
 static int32_t parse_alpha_tag(char *str)
@@ -782,25 +1006,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->distort_u3 = calc_anim(target[4], state->distort_u3, pwr);
             state->distort_v3 = calc_anim(target[5], state->distort_v3, pwr);
         } else if (complex_tag("iclip")) {
-            if (nargs == 4) {
-                int32_t x0, y0, x1, y1;
-                x0 = argtoi32(args[0]);
-                y0 = argtoi32(args[1]);
-                x1 = argtoi32(args[2]);
-                y1 = argtoi32(args[3]);
-                state->clip_x0 =
-                    state->clip_x0 * (1 - pwr) + x0 * pwr;
-                state->clip_x1 =
-                    state->clip_x1 * (1 - pwr) + x1 * pwr;
-                state->clip_y0 =
-                    state->clip_y0 * (1 - pwr) + y0 * pwr;
-                state->clip_y1 =
-                    state->clip_y1 * (1 - pwr) + y1 * pwr;
-                state->clip_mode = 1;
-            } else if (!state->clip_drawing_text.str) {
-                if (parse_vector_clip(state, args, nargs))
-                    state->clip_drawing_mode = 1;
-            }
+            apply_clip_tag(state, "iclip", true, name_end, q, end, pwr);
         } else if (tag("blur")) {
             double target = nargs ? argtod(*args) : 0.0;
             double val_x = state->blur_x * (1 - pwr) + target * pwr;
@@ -1254,25 +1460,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 q = p;
             }
         } else if (complex_tag("clip")) {
-            if (nargs == 4) {
-                int32_t x0, y0, x1, y1;
-                x0 = argtoi32(args[0]);
-                y0 = argtoi32(args[1]);
-                x1 = argtoi32(args[2]);
-                y1 = argtoi32(args[3]);
-                state->clip_x0 =
-                    state->clip_x0 * (1 - pwr) + x0 * pwr;
-                state->clip_x1 =
-                    state->clip_x1 * (1 - pwr) + x1 * pwr;
-                state->clip_y0 =
-                    state->clip_y0 * (1 - pwr) + y0 * pwr;
-                state->clip_y1 =
-                    state->clip_y1 * (1 - pwr) + y1 * pwr;
-                state->clip_mode = 0;
-            } else if (!state->clip_drawing_text.str) {
-                if (parse_vector_clip(state, args, nargs))
-                    state->clip_drawing_mode = 0;
-            }
+            apply_clip_tag(state, "clip", false, name_end, q, end, pwr);
         } else if (tag("img") || tag("1img")) {
             apply_img_tag(state, 0, args, nargs, pwr);
         } else if (tag("2img")) {

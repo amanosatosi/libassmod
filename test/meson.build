@@ -18,4 +18,14 @@ distort_unit = executable(
     link_with: libass_for_tools,
 )
 
+clip_unit = executable(
+    'clip_unit',
+    files('clip_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 test('distortion-warp', distort_unit)
+test('clip-regression', clip_unit)
