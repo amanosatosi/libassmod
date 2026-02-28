@@ -658,7 +658,7 @@ static int process_style(ASS_Track *track, char *str)
     if (!q)
         return -1;
 
-    ass_msg(track->library, MSGL_V, "[%p] Style: %s", track, str);
+    ass_msg(track->library, MSGL_DBG2, "[%p] Style: %s", track, str);
 
     sid = ass_alloc_style(track);
     if (sid < 0) {
@@ -925,7 +925,7 @@ static void event_format_fallback(ASS_Track *track)
         track->event_format = strdup(ssa_event_format);
     else
         track->event_format = strdup(ass_event_format);
-    ass_msg(track->library, MSGL_V,
+    ass_msg(track->library, MSGL_DBG2,
             "No event format found, using fallback");
 }
 
@@ -1622,7 +1622,7 @@ ASS_Track *ass_read_memory(ASS_Library *library, char *buf,
     if (!track)
         return 0;
 
-    ass_msg(library, MSGL_INFO, "Added subtitle file: "
+    ass_msg(library, MSGL_DBG2, "Added subtitle file: "
             "<memory> (%d styles, %d events)",
             track->n_styles, track->n_events);
     return track;

@@ -2042,8 +2042,6 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->rnd_x = 0.0;
     state->rnd_y = 0.0;
     state->rnd_z = 0.0;
-    ass_msg(state->renderer->library, MSGL_WARN,
-            "AFTER \\r: state rnd: x=%g y=%g z=%g", state->rnd_x, state->rnd_y, state->rnd_z);
     state->needs_rgba = false;
     state->distort_enabled = false;
     state->distort_u1 = 1.0;
