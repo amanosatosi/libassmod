@@ -2,7 +2,6 @@ name: GitHub CI
 
 on:
   push:
-    branches: [master, ci, coverity_scan]
   pull_request:
 
 jobs:

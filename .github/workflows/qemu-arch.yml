@@ -2,7 +2,6 @@ name: Automatic Regression Tests (emulated architectures)
 
 on:
   push:
-    branches: [master, ci]
   pull_request:
   workflow_dispatch:
     # Even with defaults, jobs not started via dispatch will only have blank inputs
