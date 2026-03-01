@@ -4857,6 +4857,61 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         state->clip_y1 = FFMIN(state->clip_y1, y1);
     }
 
+    bool simple_rect_clip =
+        !state->clip_drawing_text.str &&
+        !state->distort_enabled &&
+        state->frx == 0.0 && state->fry == 0.0 && state->frz == 0.0 &&
+        state->fax == 0.0 && state->fay == 0.0;
+
+    if (state->explicit && simple_rect_clip) {
+        bool empty_clip =
+            state->clip_x0 >= state->clip_x1 || state->clip_y0 >= state->clip_y1;
+
+        // Use the event's coarse device-space bounds to cheaply decide
+        // whether a rectangular clip can affect rendering at all.
+        int event_top = device_y - text_info->lines[0].asc - text_info->border_top;
+        int event_height =
+            text_info->height + text_info->border_bottom + text_info->border_top;
+        int event_left =
+            (device_x + bbox.x_min) * render_priv->par_scale_x - text_info->border_x + 0.5;
+        int event_width =
+            (bbox.x_max - bbox.x_min) * render_priv->par_scale_x
+            + 2 * text_info->border_x + 0.5;
+        int event_bottom = event_top + event_height;
+        int event_right = event_left + event_width;
+        bool no_overlap =
+            event_top >= state->clip_y1 || state->clip_y0 >= event_bottom ||
+            event_left >= state->clip_x1 || state->clip_x0 >= event_right;
+
+        if (!state->clip_mode) {
+            if (empty_clip || no_overlap) {
+                ass_shaper_cleanup(state->shaper, text_info);
+                free_render_context(state);
+                return false;
+            }
+        } else {
+            if (empty_clip || no_overlap) {
+                int zx = render_priv->settings.left_margin;
+                int zy = render_priv->settings.top_margin;
+                int sx = zx + render_priv->frame_content_width;
+                int sy = zy + render_priv->frame_content_height;
+
+                state->clip_mode = 0;
+                state->clip_x0 = zx;
+                state->clip_y0 = zy;
+                state->clip_x1 = sx;
+                state->clip_y1 = sy;
+            } else if (state->clip_x0 <= event_left &&
+                       state->clip_y0 <= event_top &&
+                       state->clip_x1 >= event_right &&
+                       state->clip_y1 >= event_bottom) {
+                ass_shaper_cleanup(state->shaper, text_info);
+                free_render_context(state);
+                return false;
+            }
+        }
+    }
+
     calculate_rotation_params(state, bbox_for_origin, device_x, device_y);
 
     render_and_combine_glyphs(state, device_x, device_y);

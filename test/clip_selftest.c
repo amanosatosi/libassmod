@@ -111,6 +111,16 @@ int main(void)
             true,
         },
         {
+            "rect-no-overlap",
+            "{\\pos(320,180)\\clip(1800,900,1919,1079)}clip",
+            false,
+        },
+        {
+            "rect-zero-area",
+            "{\\pos(320,180)\\clip(50,50,50,50)}clip",
+            false,
+        },
+        {
             "rect-huge-overflow",
             "{\\pos(320,180)\\clip(99999999999999999999,0,640,360)}clip",
             true,
@@ -166,8 +176,23 @@ int main(void)
             true,
         },
         {
+            "iclip-rect-full-cover",
+            "{\\pos(320,180)\\iclip(0,0,640,360)}clip",
+            false,
+        },
+        {
             "iclip-rect-decimals",
             "{\\pos(320,180)\\iclip(-10.5,-10.5,20.5,20.5)}clip",
+            true,
+        },
+        {
+            "iclip-rect-no-overlap",
+            "{\\pos(320,180)\\iclip(1800,900,1919,1079)}clip",
+            true,
+        },
+        {
+            "iclip-rect-zero-area",
+            "{\\pos(320,180)\\iclip(50,50,50,50)}clip",
             true,
         },
         {
