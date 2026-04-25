@@ -72,6 +72,54 @@ static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
 /* #define ASS_RND_DEBUG */
 
 
+static void free_glyph_list_chains(GlyphInfo *glyphs, int length)
+{
+    for (int i = 0; i < length; i++) {
+        GlyphInfo *info = glyphs[i].next;
+        glyphs[i].next = NULL;
+        while (info) {
+            GlyphInfo *next = info->next;
+            if (info->has_distort_bitmap) {
+                ass_free_bitmap(&info->distort_bitmap);
+                ass_free_bitmap(&info->distort_bitmap_o);
+            }
+            if (info->has_distort_outline && info->distorted_outline) {
+                ass_outline_free(&info->distorted_outline->outline[0]);
+                ass_outline_free(&info->distorted_outline->outline[1]);
+                free(info->distorted_outline);
+            }
+            free(info);
+            info = next;
+        }
+    }
+}
+
+static void free_furi_groups(TextInfo *text_info)
+{
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        free_glyph_list_chains(group->glyphs, group->length);
+        for (int j = 0; j < group->length; j++) {
+            GlyphInfo *info = &group->glyphs[j];
+            if (info->has_distort_bitmap) {
+                ass_free_bitmap(&info->distort_bitmap);
+                ass_free_bitmap(&info->distort_bitmap_o);
+            }
+            if (info->has_distort_outline && info->distorted_outline) {
+                ass_outline_free(&info->distorted_outline->outline[0]);
+                ass_outline_free(&info->distorted_outline->outline[1]);
+                free(info->distorted_outline);
+            }
+        }
+        free(group->glyphs);
+        free(group->event_text);
+    }
+    free(text_info->furi_groups);
+    text_info->furi_groups = NULL;
+    text_info->n_furi_groups = 0;
+    text_info->max_furi_groups = 0;
+}
+
 static bool text_info_init(TextInfo* text_info)
 {
     text_info->max_bitmaps = MAX_BITMAPS_INITIAL;
@@ -93,6 +141,7 @@ static bool text_info_init(TextInfo* text_info)
 
 static void text_info_done(TextInfo* text_info)
 {
+    free_furi_groups(text_info);
     free(text_info->glyphs);
     free(text_info->event_text);
     free(text_info->breaks);
@@ -110,6 +159,9 @@ static bool render_context_init(RenderContext *state, ASS_Renderer *priv)
     if (!(state->shaper = ass_shaper_new(priv->cache.metrics_cache, priv->cache.face_size_metrics_cache)))
         return false;
 
+    if (!(state->furi_shaper = ass_shaper_new(priv->cache.metrics_cache, priv->cache.face_size_metrics_cache)))
+        return false;
+
     return ass_rasterizer_init(&priv->engine, &state->rasterizer, RASTERIZER_PRECISION);
 }
 
@@ -119,6 +171,8 @@ static void render_context_done(RenderContext *state)
 
     if (state->shaper)
         ass_shaper_free(state->shaper);
+    if (state->furi_shaper)
+        ass_shaper_free(state->furi_shaper);
 
     text_info_done(&state->text_info);
 }
@@ -1411,16 +1465,12 @@ static long long jitter_current_time(RenderContext *state)
     return now > limit ? LLONG_MAX : now * 10000;
 }
 
-static void update_glyph_jitter_offsets(RenderContext *state)
+static void update_glyph_jitter_offsets_list(RenderContext *state,
+                                             GlyphInfo *glyphs, int length,
+                                             long long time_100ns)
 {
-#if DEBUG_LEVEL >= 2
-    jitter_run_debug_tests();
-#endif
-    TextInfo *text_info = &state->text_info;
-    long long time_100ns = jitter_current_time(state);
-
-    for (int i = 0; i < text_info->length; i++) {
-        for (GlyphInfo *info = text_info->glyphs + i; info; info = info->next) {
+    for (int i = 0; i < length; i++) {
+        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
             double dx = 0.0;
             double dy = 0.0;
             if (info->has_jitter) {
@@ -1816,6 +1866,33 @@ static void compute_string_bbox(TextInfo *text, ASS_DRect *bbox)
         bbox->x_min = bbox->x_max = bbox->y_min = bbox->y_max = 0;
 }
 
+static void add_glyph_list_visual_bbox(GlyphInfo *glyphs, int length,
+                                       ASS_DRect *bbox)
+{
+    for (int i = 0; i < length; i++) {
+        GlyphInfo *root = glyphs + i;
+        if (root->skip)
+            continue;
+
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double x = d6_to_double(info->pos.x);
+            double y = d6_to_double(info->pos.y);
+            bbox->x_min = FFMIN(bbox->x_min, x + d6_to_double(info->bbox.x_min));
+            bbox->x_max = FFMAX(bbox->x_max, x + d6_to_double(info->bbox.x_max));
+            bbox->y_min = FFMIN(bbox->y_min, y + d6_to_double(info->bbox.y_min));
+            bbox->y_max = FFMAX(bbox->y_max, y + d6_to_double(info->bbox.y_max));
+        }
+    }
+}
+
+static void add_furi_to_bbox(TextInfo *text_info, ASS_DRect *bbox)
+{
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        add_glyph_list_visual_bbox(group->glyphs, group->length, bbox);
+    }
+}
+
 static ASS_Style *handle_selective_style_overrides(RenderContext *state,
                                                    ASS_Style *rstyle)
 {
@@ -2018,6 +2095,13 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->hspacing = style->Spacing;
     state->fsvp = 0;
     state->fshp = 0;
+    state->furi_enabled = true;
+    state->furi_scale_x = 50.0;
+    state->furi_scale_y = 50.0;
+    state->furi_hspacing = 0.0;
+    state->furi_align = FURI_ALIGN_CENTER;
+    state->furi_offset_x = 0.0;
+    state->furi_offset_y = 0.0;
     state->be = 0;
     state->blur_x = style->Blur;
     state->blur_y = style->Blur;
@@ -2141,6 +2225,7 @@ static void free_distortion_resources(RenderContext *state)
 static void free_render_context(RenderContext *state)
 {
     free_distortion_resources(state);
+    free_furi_groups(&state->text_info);
     state->font = NULL;
     state->family.str = NULL;
     state->family.len = 0;
@@ -3279,14 +3364,16 @@ fix_glyph_scaling(ASS_Renderer *priv, GlyphInfo *glyph)
 }
 
 // Initial run splitting based purely on the characters' styles
-static void split_style_runs(RenderContext *state)
+static void split_style_runs_list(GlyphInfo *glyphs, int length)
 {
-    TextInfo *text_info = &state->text_info;
-    Effect last_effect_type = text_info->glyphs[0].effect_type;
-    text_info->glyphs[0].starts_new_run = true;
-    for (int i = 1; i < text_info->length; i++) {
-        GlyphInfo *info = text_info->glyphs + i;
-        GlyphInfo *last = text_info->glyphs + (i - 1);
+    if (length <= 0)
+        return;
+
+    Effect last_effect_type = glyphs[0].effect_type;
+    glyphs[0].starts_new_run = true;
+    for (int i = 1; i < length; i++) {
+        GlyphInfo *info = glyphs + i;
+        GlyphInfo *last = glyphs + (i - 1);
         Effect effect_type = info->effect_type;
         info->starts_new_run =
             info->effect_timing ||  // but ignore effect_skip_timing
@@ -3328,12 +3415,363 @@ static void split_style_runs(RenderContext *state)
     }
 }
 
+static void split_style_runs(RenderContext *state)
+{
+    split_style_runs_list(state->text_info.glyphs, state->text_info.length);
+}
+
+static bool furi_escapes_char(char c)
+{
+    return c == '<' || c == '>' || c == '|' || c == '\\';
+}
+
+static unsigned get_next_char_bounded(RenderContext *state, char **str, char *end)
+{
+    char *p = *str;
+    unsigned chr;
+    if (p >= end)
+        return 0;
+    if (*p == '\t') {
+        ++p;
+        *str = p;
+        return ' ';
+    }
+    if (*p == '\\' && p + 1 < end) {
+        if ((p[1] == 'N') || ((p[1] == 'n') &&
+                              (state->wrap_style == 2))) {
+            p += 2;
+            *str = p;
+            return '\n';
+        } else if (p[1] == 'n') {
+            p += 2;
+            *str = p;
+            return ' ';
+        } else if (p[1] == 'h') {
+            p += 2;
+            *str = p;
+            return NBSP;
+        } else if (p[1] == '{') {
+            p += 2;
+            *str = p;
+            return '{';
+        } else if (p[1] == '}') {
+            p += 2;
+            *str = p;
+            return '}';
+        } else if (state->furi_enabled && furi_escapes_char(p[1])) {
+            chr = (unsigned char) p[1];
+            p += 2;
+            *str = p;
+            return chr;
+        }
+    }
+
+    char *next = p;
+    chr = ass_utf8_get_char(&next);
+    if (next > end) {
+        chr = (unsigned char) *p;
+        next = p + 1;
+    }
+    *str = next;
+    return chr;
+}
+
+static bool ensure_glyph_capacity(GlyphInfo **glyphs, FriBidiChar **event_text,
+                                  char **breaks, int *length, int *max_glyphs)
+{
+    if (*length < *max_glyphs)
+        return true;
+
+    int base = *max_glyphs ? *max_glyphs : 8;
+    int new_max = 2 * FFMIN(FFMAX(base, *length / 2 + 1), INT_MAX / 2);
+    if (*length >= new_max)
+        return false;
+    if (!ASS_REALLOC_ARRAY(*glyphs, new_max) ||
+            !ASS_REALLOC_ARRAY(*event_text, new_max) ||
+            (breaks && !ASS_REALLOC_ARRAY(*breaks, new_max)))
+        return false;
+    *max_glyphs = new_max;
+    return true;
+}
+
+static bool append_glyph_to_target(RenderContext *state,
+                                   GlyphInfo **glyphs,
+                                   FriBidiChar **event_text,
+                                   char **breaks,
+                                   int *length,
+                                   int *max_glyphs,
+                                   unsigned code,
+                                   ASS_StringView drawing_text,
+                                   bool is_furi,
+                                   int furi_group)
+{
+    ASS_Renderer *render_priv = state->renderer;
+
+    if (!state->font)
+        return false;
+
+    if (!ensure_glyph_capacity(glyphs, event_text, breaks, length, max_glyphs))
+        return false;
+
+    GlyphInfo *info = &(*glyphs)[*length];
+    memset(info, 0, sizeof(GlyphInfo));
+
+    if (drawing_text.str) {
+        info->drawing_text = drawing_text;
+        info->drawing_scale = state->drawing_scale;
+        info->drawing_pbo = state->pbo;
+    }
+
+    double scale_x = state->scale_x;
+    double scale_y = state->scale_y;
+    double hspacing = state->hspacing;
+    if (is_furi) {
+        scale_x *= state->furi_scale_x / 100.0;
+        scale_y *= state->furi_scale_y / 100.0;
+        hspacing = state->furi_hspacing;
+    }
+
+    info->symbol = code;
+    info->font = state->font;
+    for (int i = 0; i < 4; i++)
+        info->c[i] = state->c[i];
+    info->gradient = state->gradient;
+    info->image_fill = state->image_fill;
+    info->line = 0;
+
+    info->effect_type = state->effect_type;
+    info->effect_timing = state->effect_timing;
+    info->effect_skip_timing = state->effect_skip_timing;
+    info->reset_effect = state->reset_effect;
+    info->font_size = fabs(state->font_size * state->screen_scale_y);
+    info->be = state->be;
+    info->blur_x = state->blur_x;
+    info->blur_y = state->blur_y;
+    info->shadow_x = state->shadow_x;
+    info->shadow_y = state->shadow_y;
+    info->scale_x = scale_x;
+    info->scale_y = scale_y;
+    info->border_style = state->border_style;
+    info->border_x = state->border_x;
+    info->border_y = state->border_y;
+    info->hspacing = hspacing;
+    info->bold = state->bold;
+    info->italic = state->italic;
+    info->flags = state->flags;
+    if (info->font->desc.vertical && code >= VERTICAL_LOWER_BOUND)
+        info->flags |= DECO_ROTATE;
+    info->frx = state->frx;
+    info->fry = state->fry;
+    info->frs = state->frs;
+    info->frz = state->frz + info->frs;
+    info->z = state->z;
+    info->ortho = state->ortho;
+    info->fax = state->fax;
+    info->fay = state->fay;
+    info->fade = state->fade;
+    info->vshift = -double_to_d6(state->fsvp * state->screen_scale_y);
+    if (state->jitter.enabled) {
+        info->has_jitter = true;
+        info->jitter = state->jitter;
+    }
+    info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
+    uint64_t glyph_index = (uint64_t) *length;
+    if (is_furi)
+        glyph_index ^= (uint64_t) (furi_group + 1) << 48;
+    info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
+    info->rnd_x = x2scr_offset(state, state->rnd_x);
+    info->rnd_y = y2scr_offset(state, state->rnd_y);
+    info->rnd_z = y2scr_offset(state, state->rnd_z);
+#ifdef ASS_RND_DEBUG
+    if (info->has_rnd) {
+        ass_msg(render_priv->library, MSGL_WARN,
+                "glyph rnd (screen units): x=%g y=%g z=%g has_rnd=%d",
+                info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
+    }
+#endif
+    info->distort_enabled = state->distort_enabled;
+    info->distort_u1 = state->distort_u1;
+    info->distort_v1 = state->distort_v1;
+    info->distort_u2 = state->distort_u2;
+    info->distort_v2 = state->distort_v2;
+    info->distort_u3 = state->distort_u3;
+    info->distort_v3 = state->distort_v3;
+    info->distorted_outline = NULL;
+    info->has_distort_bitmap = false;
+    info->has_distort_outline = false;
+    info->is_furi = is_furi;
+    info->furi_group = furi_group;
+
+    info->hspacing_scaled = 0;
+    info->scale_fix = 1;
+
+    if (!drawing_text.str) {
+        info->hspacing_scaled = double_to_d6(info->hspacing *
+                state->screen_scale_x / render_priv->par_scale_x *
+                info->scale_x);
+        fix_glyph_scaling(render_priv, info);
+    }
+
+    (*length)++;
+    return true;
+}
+
+static bool append_text_segment(RenderContext *state, char *start, char *end,
+                                GlyphInfo **glyphs,
+                                FriBidiChar **event_text,
+                                char **breaks,
+                                int *length,
+                                int *max_glyphs,
+                                bool is_furi,
+                                int furi_group)
+{
+    char *p = start;
+    while (p < end) {
+        unsigned code = get_next_char_bounded(state, &p, end);
+        if (!code)
+            break;
+        if (!append_glyph_to_target(state, glyphs, event_text, breaks,
+                                    length, max_glyphs, code,
+                                    (ASS_StringView) {NULL, 0},
+                                    is_furi, furi_group))
+            return false;
+
+        if (!is_furi) {
+            state->effect_type = EF_NONE;
+            state->effect_timing = 0;
+            state->effect_skip_timing = 0;
+            state->reset_effect = false;
+        }
+    }
+    return true;
+}
+
+typedef struct {
+    char *base_start;
+    char *base_end;
+    char *furi_start;
+    char *furi_end;
+    char *end;
+} FuriCandidate;
+
+typedef enum {
+    FURI_CANDIDATE_NONE = 0,
+    FURI_CANDIDATE_LITERAL,
+    FURI_CANDIDATE_GROUP,
+} FuriCandidateType;
+
+static FuriCandidateType parse_furi_candidate(char *p, FuriCandidate *candidate)
+{
+    if (*p != '<')
+        return FURI_CANDIDATE_NONE;
+
+    char *pipe = NULL;
+    char *q = p + 1;
+    bool malformed = false;
+    while (*q) {
+        if (*q == '\\' && furi_escapes_char(q[1])) {
+            q += 2;
+            continue;
+        }
+        // Override blocks inside a furi group are reserved for a later
+        // implementation; literalize them instead of half-parsing them.
+        if (*q == '<' || *q == '{' || *q == '}')
+            malformed = true;
+        if (*q == '|') {
+            if (!pipe)
+                pipe = q;
+            else
+                malformed = true;
+        } else if (*q == '>') {
+            candidate->base_start = p + 1;
+            candidate->base_end = pipe ? pipe : q;
+            candidate->furi_start = pipe ? pipe + 1 : q;
+            candidate->furi_end = q;
+            candidate->end = q + 1;
+
+            if (!pipe)
+                return FURI_CANDIDATE_LITERAL;
+            if (candidate->base_start == candidate->base_end ||
+                    candidate->furi_start == candidate->furi_end ||
+                    malformed)
+                return FURI_CANDIDATE_LITERAL;
+            return FURI_CANDIDATE_GROUP;
+        }
+        q++;
+    }
+
+    if (pipe) {
+        candidate->base_start = p;
+        candidate->base_end = q;
+        candidate->furi_start = q;
+        candidate->furi_end = q;
+        candidate->end = q;
+        return FURI_CANDIDATE_LITERAL;
+    }
+
+    return FURI_CANDIDATE_NONE;
+}
+
+static FuriGroup *append_new_furi_group(TextInfo *text_info)
+{
+    if (text_info->n_furi_groups >= text_info->max_furi_groups) {
+        int new_max = text_info->max_furi_groups ?
+            2 * text_info->max_furi_groups : 8;
+        if (!ASS_REALLOC_ARRAY(text_info->furi_groups, new_max))
+            return NULL;
+        text_info->max_furi_groups = new_max;
+    }
+
+    FuriGroup *group = &text_info->furi_groups[text_info->n_furi_groups++];
+    memset(group, 0, sizeof(*group));
+    return group;
+}
+
+static bool append_furi_group(RenderContext *state, const FuriCandidate *candidate)
+{
+    TextInfo *text_info = &state->text_info;
+    FuriGroup *group = append_new_furi_group(text_info);
+    if (!group)
+        return false;
+
+    int group_id = text_info->n_furi_groups - 1;
+    group->base_start = text_info->length;
+    group->align = state->furi_align;
+    group->scale_x = state->furi_scale_x;
+    group->scale_y = state->furi_scale_y;
+    group->hspacing = state->furi_hspacing;
+    group->offset_x = state->furi_offset_x;
+    group->offset_y = state->furi_offset_y;
+
+    if (!append_text_segment(state, candidate->base_start, candidate->base_end,
+                             &text_info->glyphs, &text_info->event_text,
+                             &text_info->breaks, &text_info->length,
+                             &text_info->max_glyphs, false, group_id))
+        return false;
+
+    group->base_len = text_info->length - group->base_start;
+    if (group->base_len <= 0)
+        return false;
+    for (int i = 0; i < group->base_len; i++) {
+        GlyphInfo *info = &text_info->glyphs[group->base_start + i];
+        info->is_furi_base = true;
+        info->furi_group = group_id;
+    }
+
+    if (!append_text_segment(state, candidate->furi_start, candidate->furi_end,
+                             &group->glyphs, &group->event_text, NULL,
+                             &group->length, &group->max_glyphs,
+                             true, group_id))
+        return false;
+
+    return group->length > 0;
+}
+
 // Parse event text.
 // Fill render_priv->text_info.
 static bool parse_events(RenderContext *state, ASS_Event *event)
 {
     TextInfo *text_info = &state->text_info;
-    ASS_Renderer *render_priv = state->renderer;
 
     char *p = event->Text, *q;
 
@@ -3361,125 +3799,46 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
                 p = q;
                 break;
             } else {
+                if (state->furi_enabled && *p == '<') {
+                    FuriCandidate candidate;
+                    FuriCandidateType type = parse_furi_candidate(p, &candidate);
+                    if (type == FURI_CANDIDATE_GROUP) {
+                        if (!append_furi_group(state, &candidate))
+                            goto fail;
+                        p = candidate.end;
+                        code = 0;
+                        break;
+                    } else if (type == FURI_CANDIDATE_LITERAL) {
+                        if (!append_text_segment(state, p, candidate.end,
+                                                 &text_info->glyphs,
+                                                 &text_info->event_text,
+                                                 &text_info->breaks,
+                                                 &text_info->length,
+                                                 &text_info->max_glyphs,
+                                                 false, -1))
+                            goto fail;
+                        p = candidate.end;
+                        code = 0;
+                        break;
+                    }
+                }
                 code = ass_get_next_char(state, &p);
                 break;
             }
         }
 
+        if (code == 0 && *p)
+            continue;
         if (code == 0)
             break;
 
-        // face could have been changed in get_next_char
-        if (!state->font)
+        if (!append_glyph_to_target(state, &text_info->glyphs,
+                                    &text_info->event_text,
+                                    &text_info->breaks,
+                                    &text_info->length,
+                                    &text_info->max_glyphs,
+                                    code, drawing_text, false, -1))
             goto fail;
-
-        if (text_info->length >= text_info->max_glyphs) {
-            // Raise maximum number of glyphs
-            int new_max = 2 * FFMIN(FFMAX(text_info->max_glyphs, text_info->length / 2 + 1),
-                                    INT_MAX / 2);
-            if (text_info->length >= new_max)
-                goto fail;
-            if (!ASS_REALLOC_ARRAY(text_info->glyphs, new_max) ||
-                    !ASS_REALLOC_ARRAY(text_info->event_text, new_max) ||
-                    !ASS_REALLOC_ARRAY(text_info->breaks, new_max))
-                goto fail;
-            text_info->max_glyphs = new_max;
-        }
-
-        GlyphInfo *info = &text_info->glyphs[text_info->length];
-
-        // Clear current GlyphInfo
-        memset(info, 0, sizeof(GlyphInfo));
-
-        // Parse drawing
-        if (drawing_text.str) {
-            info->drawing_text = drawing_text;
-            info->drawing_scale = state->drawing_scale;
-            info->drawing_pbo = state->pbo;
-        }
-
-        // Fill glyph information
-        info->symbol = code;
-        info->font = state->font;
-        for (int i = 0; i < 4; i++)
-            info->c[i] = state->c[i];
-        info->gradient = state->gradient;
-        info->image_fill = state->image_fill;
-        info->line = 0;
-
-        info->effect_type = state->effect_type;
-        info->effect_timing = state->effect_timing;
-        info->effect_skip_timing = state->effect_skip_timing;
-        info->reset_effect = state->reset_effect;
-        // VSFilter compatibility: font glyphs use PlayResY scaling in both dimensions
-        info->font_size =
-            fabs(state->font_size * state->screen_scale_y);
-        info->be = state->be;
-        info->blur_x = state->blur_x;
-        info->blur_y = state->blur_y;
-        info->shadow_x = state->shadow_x;
-        info->shadow_y = state->shadow_y;
-        info->scale_x = state->scale_x;
-        info->scale_y = state->scale_y;
-        info->border_style = state->border_style;
-        info->border_x = state->border_x;
-        info->border_y = state->border_y;
-        info->hspacing = state->hspacing;
-        info->bold = state->bold;
-        info->italic = state->italic;
-        info->flags = state->flags;
-        if (info->font->desc.vertical && code >= VERTICAL_LOWER_BOUND)
-            info->flags |= DECO_ROTATE;
-        info->frx = state->frx;
-        info->fry = state->fry;
-        info->frs = state->frs;
-        info->frz = state->frz + info->frs;
-        info->z = state->z;
-        info->ortho = state->ortho;
-        info->fax = state->fax;
-        info->fay = state->fay;
-        info->fade = state->fade;
-        info->vshift = -double_to_d6(state->fsvp * state->screen_scale_y);
-        if (state->jitter.enabled) {
-            info->has_jitter = true;
-            info->jitter = state->jitter;
-        }
-        info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
-        // Keep rnd pattern stable per event/glyph instance; mix glyph id and order
-        uint64_t glyph_index = (uint64_t) text_info->length;
-    info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
-    info->rnd_x = x2scr_offset(state, state->rnd_x);
-    info->rnd_y = y2scr_offset(state, state->rnd_y);
-    info->rnd_z = y2scr_offset(state, state->rnd_z);
-#ifdef ASS_RND_DEBUG
-    if (info->has_rnd) {
-        ass_msg(render_priv->library, MSGL_WARN,
-                "glyph rnd (screen units): x=%g y=%g z=%g has_rnd=%d",
-                info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
-    }
-#endif
-        info->distort_enabled = state->distort_enabled;
-        info->distort_u1 = state->distort_u1;
-        info->distort_v1 = state->distort_v1;
-        info->distort_u2 = state->distort_u2;
-        info->distort_v2 = state->distort_v2;
-        info->distort_u3 = state->distort_u3;
-        info->distort_v3 = state->distort_v3;
-        info->distorted_outline = NULL;
-        info->has_distort_bitmap = false;
-        info->has_distort_outline = false;
-
-        info->hspacing_scaled = 0;
-        info->scale_fix = 1;
-
-        if (!drawing_text.str) {
-            info->hspacing_scaled = double_to_d6(info->hspacing *
-                    state->screen_scale_x / render_priv->par_scale_x *
-                    info->scale_x);
-            fix_glyph_scaling(render_priv, info);
-        }
-
-        text_info->length++;
 
         state->effect_type = EF_NONE;
         state->effect_timing = 0;
@@ -3495,12 +3854,12 @@ fail:
 }
 
 // Process render_priv->text_info and load glyph outlines.
-static void retrieve_glyphs(RenderContext *state)
+static void retrieve_glyphs_from_list(RenderContext *state,
+                                      GlyphInfo *glyphs, int length)
 {
-    GlyphInfo *glyphs = state->text_info.glyphs;
     int i;
 
-    for (i = 0; i < state->text_info.length; i++) {
+    for (i = 0; i < length; i++) {
         GlyphInfo *info = glyphs + i;
         GlyphInfo *root = info;
         do {
@@ -3563,12 +3922,18 @@ static void retrieve_glyphs(RenderContext *state)
     }
 }
 
+static void retrieve_glyphs(RenderContext *state)
+{
+    retrieve_glyphs_from_list(state, state->text_info.glyphs,
+                              state->text_info.length);
+}
+
 // Preliminary layout (for line wrapping)
-static void preliminary_layout(RenderContext *state)
+static void preliminary_layout_list(GlyphInfo *glyphs, int length)
 {
     ASS_Vector pen = { 0, 0 };
-    for (int i = 0; i < state->text_info.length; i++) {
-        GlyphInfo *info = state->text_info.glyphs + i;
+    for (int i = 0; i < length; i++) {
+        GlyphInfo *info = glyphs + i;
         ASS_Vector cluster_pen = pen;
         do {
             info->pos.x = cluster_pen.x;
@@ -3579,10 +3944,15 @@ static void preliminary_layout(RenderContext *state)
 
             info = info->next;
         } while (info);
-        info = state->text_info.glyphs + i;
+        info = glyphs + i;
         pen.x += info->cluster_advance.x;
         pen.y += info->cluster_advance.y;
     }
+}
+
+static void preliminary_layout(RenderContext *state)
+{
+    preliminary_layout_list(state->text_info.glyphs, state->text_info.length);
 }
 
 // Reorder text into visual order
@@ -3626,6 +3996,186 @@ static void reorder_text(RenderContext *state)
             info = info->next;
         }
     }
+}
+
+static TextInfo furi_group_text_info(FuriGroup *group)
+{
+    TextInfo text = {0};
+    text.glyphs = group->glyphs;
+    text.event_text = group->event_text;
+    text.length = group->length;
+    return text;
+}
+
+static bool reorder_furi_group(RenderContext *state, FuriGroup *group)
+{
+    TextInfo furi_text = furi_group_text_info(group);
+    FriBidiStrIndex *cmap = ass_shaper_reorder(state->furi_shaper, &furi_text);
+    if (!cmap)
+        return false;
+
+    ASS_Vector pen = {0, 0};
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *info = group->glyphs + cmap[i];
+        if (info->skip)
+            continue;
+
+        ASS_Vector cluster_pen = pen;
+        pen.x += info->cluster_advance.x;
+        pen.y += info->cluster_advance.y;
+        while (info) {
+            info->pos.x = info->offset.x + cluster_pen.x;
+            info->pos.y = info->offset.y + cluster_pen.y + info->vshift;
+            cluster_pen.x += info->advance.x;
+            cluster_pen.y += info->advance.y;
+            info = info->next;
+        }
+    }
+
+    return true;
+}
+
+static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
+                              double *left, double *right,
+                              double *top, int *line)
+{
+    TextInfo *text_info = &state->text_info;
+    bool have = false;
+    *left = DBL_MAX;
+    *right = -DBL_MAX;
+    *top = DBL_MAX;
+    *line = 0;
+
+    for (int i = 0; i < group->base_len; i++) {
+        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
+        double x0 = d6_to_double(root->pos.x);
+        double x1 = x0 + d6_to_double(root->cluster_advance.x);
+        *left = FFMIN(*left, FFMIN(x0, x1));
+        *right = FFMAX(*right, FFMAX(x0, x1));
+        if (!have)
+            *line = root->line;
+
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double y0 = d6_to_double(info->pos.y + info->bbox.y_min);
+            *top = FFMIN(*top, y0);
+        }
+        have = true;
+    }
+
+    return have && *left < *right;
+}
+
+static bool furi_text_metrics(FuriGroup *group, double *left,
+                              double *right, double *bottom)
+{
+    bool have = false;
+    *left = DBL_MAX;
+    *right = -DBL_MAX;
+    *bottom = -DBL_MAX;
+
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        if (root->skip)
+            continue;
+        double x0 = d6_to_double(root->pos.x);
+        double x1 = x0 + d6_to_double(root->cluster_advance.x);
+        *left = FFMIN(*left, FFMIN(x0, x1));
+        *right = FFMAX(*right, FFMAX(x0, x1));
+
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double y1 = d6_to_double(info->pos.y + info->bbox.y_max);
+            *bottom = FFMAX(*bottom, y1);
+        }
+        have = true;
+    }
+
+    return have && *left < *right;
+}
+
+static void position_furi_group(RenderContext *state, FuriGroup *group)
+{
+    double base_left, base_right, base_top;
+    double furi_left, furi_right, furi_bottom;
+    int line;
+    if (!furi_base_metrics(state, group, &base_left, &base_right,
+                           &base_top, &line))
+        return;
+    if (!furi_text_metrics(group, &furi_left, &furi_right, &furi_bottom))
+        return;
+
+    double base_width = base_right - base_left;
+    double furi_width = furi_right - furi_left;
+    double target_left;
+    switch (group->align) {
+    case FURI_ALIGN_LEFT:
+        target_left = base_left;
+        break;
+    case FURI_ALIGN_RIGHT:
+        target_left = base_right - furi_width;
+        break;
+    case FURI_ALIGN_CENTER:
+    default:
+        target_left = base_left + (base_width - furi_width) / 2.0;
+        break;
+    }
+
+    double dx = target_left - furi_left + x2scr_offset(state, group->offset_x);
+    double dy = base_top - furi_bottom - y2scr_offset(state, group->offset_y);
+    int32_t shift_x = double_to_d6(dx);
+    int32_t shift_y = double_to_d6(dy);
+
+    for (int i = 0; i < group->length; i++) {
+        for (GlyphInfo *info = &group->glyphs[i]; info; info = info->next) {
+            info->pos.x += shift_x;
+            info->pos.y += shift_y;
+            info->line = line;
+        }
+    }
+}
+
+static void update_glyph_jitter_offsets(RenderContext *state)
+{
+#if DEBUG_LEVEL >= 2
+    jitter_run_debug_tests();
+#endif
+    TextInfo *text_info = &state->text_info;
+    long long time_100ns = jitter_current_time(state);
+
+    update_glyph_jitter_offsets_list(state, text_info->glyphs,
+                                     text_info->length, time_100ns);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        update_glyph_jitter_offsets_list(state, group->glyphs,
+                                         group->length, time_100ns);
+    }
+}
+
+static bool layout_furi_groups(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    if (!text_info->n_furi_groups)
+        return true;
+
+    ass_shaper_set_base_direction(state->furi_shaper,
+            ass_resolve_base_direction(state->font_encoding));
+
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        TextInfo furi_text = furi_group_text_info(group);
+
+        split_style_runs_list(group->glyphs, group->length);
+        ass_shaper_find_runs(state->furi_shaper, state->renderer,
+                             group->glyphs, group->length);
+        if (!ass_shaper_shape(state->furi_shaper, &furi_text))
+            return false;
+
+        retrieve_glyphs_from_list(state, group->glyphs, group->length);
+        if (!reorder_furi_group(state, group))
+            return false;
+        position_furi_group(state, group);
+    }
+
+    return true;
 }
 
 static bool glyph_is_separator(const GlyphInfo *info)
@@ -3953,10 +4503,32 @@ static void align_lines(RenderContext *state, double max_text_width)
     }
 }
 
+static void calculate_rotation_params_list(RenderContext *state,
+                                           GlyphInfo *glyphs, int length,
+                                           ASS_DVector center,
+                                           double device_x, double device_y)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    for (int i = 0; i < length; i++) {
+        GlyphInfo *info = glyphs + i;
+        while (info) {
+            double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
+            double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
+            info->shift.x = info->pos.x + double_to_d6(device_x + jitter_dx - center.x +
+                    info->shadow_x * state->border_scale_x /
+                    render_priv->par_scale_x);
+            info->shift.y = info->pos.y + double_to_d6(device_y + jitter_dy - center.y +
+                    info->shadow_y * state->border_scale_y);
+            info = info->next;
+        }
+    }
+}
+
 static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
                                       double device_x, double device_y)
 {
     ASS_Renderer *render_priv = state->renderer;
+    TextInfo *text_info = &state->text_info;
     ASS_DVector center;
     if (state->have_origin) {
         center.x = x2scr_pos(render_priv, state->org_x);
@@ -3968,19 +4540,14 @@ static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
         center.y = device_y + by;
     }
 
-    TextInfo *text_info = &state->text_info;
-    for (int i = 0; i < text_info->length; i++) {
-        GlyphInfo *info = text_info->glyphs + i;
-        while (info) {
-            double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
-            double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
-            info->shift.x = info->pos.x + double_to_d6(device_x + jitter_dx - center.x +
-                    info->shadow_x * state->border_scale_x /
-                    render_priv->par_scale_x);
-            info->shift.y = info->pos.y + double_to_d6(device_y + jitter_dy - center.y +
-                    info->shadow_y * state->border_scale_y);
-            info = info->next;
-        }
+    calculate_rotation_params_list(state, text_info->glyphs,
+                                   text_info->length, center,
+                                   device_x, device_y);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        calculate_rotation_params_list(state, group->glyphs,
+                                       group->length, center,
+                                       device_x, device_y);
     }
 }
 
@@ -4155,22 +4722,22 @@ static bool text_needs_rgba(const TextInfo *text_info)
     return false;
 }
 
-// Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
-static void render_and_combine_glyphs(RenderContext *state,
-                                      double device_x, double device_y)
+static void render_glyph_list_to_bitmaps(RenderContext *state,
+                                         GlyphInfo *glyphs, int length,
+                                         double device_x, double device_y,
+                                         unsigned *nb_bitmaps,
+                                         CombinedBitmapInfo **combined_info)
 {
     ASS_Renderer *render_priv = state->renderer;
     TextInfo *text_info = &state->text_info;
-    int left = render_priv->settings.left_margin;
-    device_x = (device_x - left) * render_priv->par_scale_x + left;
-    unsigned nb_bitmaps = 0;
     bool new_run = true;
-    CombinedBitmapInfo *combined_info = text_info->combined_bitmaps;
     CombinedBitmapInfo *current_info = NULL;
     ASS_DVector offset;
-    for (int i = 0; i < text_info->length; i++) {
-        GlyphInfo *info = text_info->glyphs + i;
-        if (info->starts_new_run) new_run = true;
+
+    for (int i = 0; i < length; i++) {
+        GlyphInfo *info = glyphs + i;
+        if (info->starts_new_run)
+            new_run = true;
         if (info->skip)
             continue;
 
@@ -4199,15 +4766,15 @@ static void render_and_combine_glyphs(RenderContext *state,
                 flags |= FILTER_FILL_IN_BORDER;
 
             if (new_run) {
-                if (nb_bitmaps >= text_info->max_bitmaps) {
+                if (*nb_bitmaps >= text_info->max_bitmaps) {
                     size_t new_size = 2 * text_info->max_bitmaps;
                     if (!ASS_REALLOC_ARRAY(text_info->combined_bitmaps, new_size))
                         continue;
 
                     text_info->max_bitmaps = new_size;
-                    combined_info = text_info->combined_bitmaps;
+                    *combined_info = text_info->combined_bitmaps;
                 }
-                current_info = &combined_info[nb_bitmaps];
+                current_info = &(*combined_info)[*nb_bitmaps];
 
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
@@ -4218,8 +4785,8 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info->from_drawing = info->drawing_text.str != NULL;
                 current_info->draw_sub_x = 0;
                 current_info->draw_sub_y = 0;
-                for (int i = 0; i < 4; i++)
-                    ass_apply_fade(&current_info->c[i], info->fade);
+                for (int j = 0; j < 4; j++)
+                    ass_apply_fade(&current_info->c[j], info->fade);
 
                 current_info->effect_type = info->effect_type;
                 current_info->effect_timing = info->effect_timing;
@@ -4240,8 +4807,9 @@ static void render_and_combine_glyphs(RenderContext *state,
                     int32_t y = double_to_d6(info->shadow_y * state->border_scale_y);
                     filter->shadow.x = (x + (shadow_mask_x >> 1)) & ~shadow_mask_x;
                     filter->shadow.y = (y + (shadow_mask_y >> 1)) & ~shadow_mask_y;
-                } else
+                } else {
                     filter->shadow.x = filter->shadow.y = 0;
+                }
 
                 current_info->x = current_info->y = INT_MAX;
                 current_info->bm = current_info->bm_o = current_info->bm_s = NULL;
@@ -4256,7 +4824,7 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info->has_distortion = false;
                 current_info->temp_image = NULL;
 
-                nb_bitmaps++;
+                (*nb_bitmaps)++;
                 new_run = false;
             }
             assert(current_info);
@@ -4296,6 +4864,27 @@ static void render_and_combine_glyphs(RenderContext *state,
             current_info->x = FFMIN(current_info->x, pos.x);
             current_info->y = FFMIN(current_info->y, pos.y);
         }
+    }
+}
+
+// Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
+static void render_and_combine_glyphs(RenderContext *state,
+                                      double device_x, double device_y)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    TextInfo *text_info = &state->text_info;
+    int left = render_priv->settings.left_margin;
+    device_x = (device_x - left) * render_priv->par_scale_x + left;
+    unsigned nb_bitmaps = 0;
+    CombinedBitmapInfo *combined_info = text_info->combined_bitmaps;
+    render_glyph_list_to_bitmaps(state, text_info->glyphs, text_info->length,
+                                 device_x, device_y, &nb_bitmaps,
+                                 &combined_info);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        render_glyph_list_to_bitmaps(state, group->glyphs, group->length,
+                                     device_x, device_y, &nb_bitmaps,
+                                     &combined_info);
     }
 
     for (int i = 0; i < nb_bitmaps; i++) {
@@ -4797,6 +5386,16 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
 
+    if (!layout_furi_groups(state)) {
+        ass_msg(render_priv->library, MSGL_ERR, "Failed to shape furi text");
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        return false;
+    }
+
+    ASS_DRect render_bbox = bbox;
+    add_furi_to_bbox(text_info, &render_bbox);
+
     update_glyph_jitter_offsets(state);
 
     // fix clip coordinates
@@ -4847,13 +5446,20 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the
     // frame, so negative values for top and left may occur
-    event_images->top = device_y - text_info->lines[0].asc - text_info->border_top;
-    event_images->height =
-        text_info->height + text_info->border_bottom + text_info->border_top;
+    if (text_info->n_furi_groups) {
+        event_images->top = device_y + render_bbox.y_min - text_info->border_top;
+        event_images->height =
+            render_bbox.y_max - render_bbox.y_min +
+            text_info->border_bottom + text_info->border_top + 0.5;
+    } else {
+        event_images->top = device_y - text_info->lines[0].asc - text_info->border_top;
+        event_images->height =
+            text_info->height + text_info->border_bottom + text_info->border_top;
+    }
     event_images->left =
-        (device_x + bbox.x_min) * render_priv->par_scale_x - text_info->border_x + 0.5;
+        (device_x + render_bbox.x_min) * render_priv->par_scale_x - text_info->border_x + 0.5;
     event_images->width =
-        (bbox.x_max - bbox.x_min) * render_priv->par_scale_x
+        (render_bbox.x_max - render_bbox.x_min) * render_priv->par_scale_x
         + 2 * text_info->border_x + 0.5;
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
@@ -4934,6 +5540,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     }
 
     setup_shaper(render_priv->state.shaper, render_priv);
+    setup_shaper(render_priv->state.furi_shaper, render_priv);
 
     // PAR correction
     double par = render_priv->settings.par;

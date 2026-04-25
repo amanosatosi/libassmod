@@ -191,6 +191,12 @@ static inline JitterState ass_jitter_default_state(void)
     };
 }
 
+typedef enum {
+    FURI_ALIGN_LEFT = 0,
+    FURI_ALIGN_CENTER,
+    FURI_ALIGN_RIGHT,
+} FuriAlign;
+
 // describes a glyph
 // GlyphInfo and TextInfo are used for text centering and word-wrapping operations
 typedef struct glyph_info {
@@ -268,10 +274,28 @@ typedef struct glyph_info {
     double rnd_x, rnd_y, rnd_z; // VSFilterMod random offsets (screen px)
     uint64_t rnd_seed;          // event/glyph seed for rnd* noise
     bool has_rnd;
+    bool is_furi;
+    bool is_furi_base;
+    int furi_group;
 
     // next glyph in this cluster
     struct glyph_info *next;
 } GlyphInfo;
+
+typedef struct {
+    int base_start;
+    int base_len;
+    GlyphInfo *glyphs;
+    FriBidiChar *event_text;
+    int length;
+    int max_glyphs;
+    FuriAlign align;
+    double scale_x;
+    double scale_y;
+    double hspacing;
+    double offset_x;
+    double offset_y;
+} FuriGroup;
 
 typedef struct {
     double asc, desc;
@@ -300,6 +324,9 @@ typedef struct {
     int max_glyphs;
     int max_lines;
     unsigned max_bitmaps;
+    FuriGroup *furi_groups;
+    int n_furi_groups;
+    int max_furi_groups;
 } TextInfo;
 
 typedef struct {
@@ -337,6 +364,7 @@ struct render_context {
     ASS_Renderer *renderer;
     TextInfo text_info;
     ASS_Shaper *shaper;
+    ASS_Shaper *furi_shaper;
     RasterizerData rasterizer;
 
     ASS_Event *event;
@@ -358,6 +386,13 @@ struct render_context {
     double hspacing;            // distance between letters, in pixels
     double fsvp;                // per-glyph vertical shift, script pixels
     double fshp;                // extra vertical spacing between lines, script pixels
+    bool furi_enabled;
+    double furi_scale_x;
+    double furi_scale_y;
+    double furi_hspacing;
+    FuriAlign furi_align;
+    double furi_offset_x;
+    double furi_offset_y;
     double border_x;            // outline width
     double border_y;
     enum {

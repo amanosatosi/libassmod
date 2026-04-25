@@ -61,6 +61,12 @@ static inline void push_arg(struct arg *args, int *nargs, char *start, char *end
     }
 }
 
+static inline bool arg_equals(struct arg arg, const char *sample)
+{
+    size_t len = arg.end - arg.start;
+    return strlen(sample) == len && !strncmp(arg.start, sample, len);
+}
+
 /**
  * \brief Check if starting part of (*p) matches sample.
  * If true, shift p to the first symbol after the matching part.
@@ -1029,6 +1035,49 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->scale_x = state->style->ScaleX;
                 state->scale_y = state->style->ScaleY;
             }
+        } else if (complex_tag("furipos")) {
+            if (!nargs) {
+                state->furi_align = FURI_ALIGN_CENTER;
+                state->furi_offset_x = 0.0;
+                state->furi_offset_y = 0.0;
+            } else if (nargs == 3) {
+                FuriAlign align;
+                if (arg_equals(args[0], "left"))
+                    align = FURI_ALIGN_LEFT;
+                else if (arg_equals(args[0], "center"))
+                    align = FURI_ALIGN_CENTER;
+                else if (arg_equals(args[0], "right"))
+                    align = FURI_ALIGN_RIGHT;
+                else
+                    continue;
+
+                state->furi_align = align;
+                state->furi_offset_x =
+                    state->furi_offset_x * (1 - pwr) + argtod(args[1]) * pwr;
+                state->furi_offset_y =
+                    state->furi_offset_y * (1 - pwr) + argtod(args[2]) * pwr;
+            }
+        } else if (tag("furifsp")) {
+            double val = nargs ? argtod(*args) : 0.0;
+            state->furi_hspacing =
+                state->furi_hspacing * (1 - pwr) + val * pwr;
+        } else if (tag("furisx")) {
+            double val = nargs ? argtod(*args) : 50.0;
+            val = state->furi_scale_x * (1 - pwr) + val * pwr;
+            state->furi_scale_x = val < 0 ? 0 : val;
+        } else if (tag("furisy")) {
+            double val = nargs ? argtod(*args) : 50.0;
+            val = state->furi_scale_y * (1 - pwr) + val * pwr;
+            state->furi_scale_y = val < 0 ? 0 : val;
+        } else if (tag("furis")) {
+            double val = nargs ? argtod(*args) : 50.0;
+            double x = state->furi_scale_x * (1 - pwr) + val * pwr;
+            double y = state->furi_scale_y * (1 - pwr) + val * pwr;
+            state->furi_scale_x = x < 0 ? 0 : x;
+            state->furi_scale_y = y < 0 ? 0 : y;
+        } else if (tag("furi")) {
+            int32_t val = nargs ? argtoi32(*args) : 1;
+            state->furi_enabled = val != 0;
         } else if (tag("fsp")) {
             double val;
             if (nargs) {
@@ -1959,6 +2008,13 @@ unsigned ass_get_next_char(RenderContext *state, char **str)
             p += 2;
             *str = p;
             return '}';
+        } else if (state->furi_enabled &&
+                   (p[1] == '<' || p[1] == '>' ||
+                    p[1] == '|' || p[1] == '\\')) {
+            chr = (unsigned char) p[1];
+            p += 2;
+            *str = p;
+            return chr;
         }
     }
     chr = ass_utf8_get_char((char **) &p);
