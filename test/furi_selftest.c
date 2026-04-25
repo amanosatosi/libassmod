@@ -191,6 +191,94 @@ static int expect_y_order(const char *up, const char *down)
     return ok ? 0 : 1;
 }
 
+static int expect_bottom_anchor_with_taller_block(const char *with_furi,
+                                                  const char *without_furi)
+{
+    Mask mf = {0}, mn = {0};
+    int err = render_mask(with_furi, &mf);
+    if (!err)
+        err = render_mask(without_furi, &mn);
+    if (err) {
+        free_mask(&mf);
+        free_mask(&mn);
+        return 1;
+    }
+    bool ok = !mf.empty && !mn.empty && abs(mf.y1 - mn.y1) <= 1 &&
+        mf.y0 < mn.y0;
+    if (!ok)
+        fprintf(stderr, "expected bottom anchor and taller block: `%s` vs `%s`\n",
+                with_furi, without_furi);
+    free_mask(&mf);
+    free_mask(&mn);
+    return ok ? 0 : 1;
+}
+
+static int expect_top_anchor_with_taller_block(const char *with_furi,
+                                               const char *without_furi)
+{
+    Mask mf = {0}, mn = {0};
+    int err = render_mask(with_furi, &mf);
+    if (!err)
+        err = render_mask(without_furi, &mn);
+    if (err) {
+        free_mask(&mf);
+        free_mask(&mn);
+        return 1;
+    }
+    bool ok = !mf.empty && !mn.empty && abs(mf.y0 - mn.y0) <= 1 &&
+        mf.y1 > mn.y1;
+    if (!ok)
+        fprintf(stderr, "expected top anchor and taller block: `%s` vs `%s`\n",
+                with_furi, without_furi);
+    free_mask(&mf);
+    free_mask(&mn);
+    return ok ? 0 : 1;
+}
+
+static int expect_center_anchor_with_taller_block(const char *with_furi,
+                                                  const char *without_furi)
+{
+    Mask mf = {0}, mn = {0};
+    int err = render_mask(with_furi, &mf);
+    if (!err)
+        err = render_mask(without_furi, &mn);
+    if (err) {
+        free_mask(&mf);
+        free_mask(&mn);
+        return 1;
+    }
+    int cf = mf.y0 + mf.y1;
+    int cn = mn.y0 + mn.y1;
+    bool ok = !mf.empty && !mn.empty && abs(cf - cn) <= 2 &&
+        (mf.y1 - mf.y0) > (mn.y1 - mn.y0);
+    if (!ok)
+        fprintf(stderr, "expected center anchor and taller block: `%s` vs `%s`\n",
+                with_furi, without_furi);
+    free_mask(&mf);
+    free_mask(&mn);
+    return ok ? 0 : 1;
+}
+
+static int expect_same_height(const char *a, const char *b)
+{
+    Mask ma = {0}, mb = {0};
+    int err = render_mask(a, &ma);
+    if (!err)
+        err = render_mask(b, &mb);
+    if (err) {
+        free_mask(&ma);
+        free_mask(&mb);
+        return 1;
+    }
+    bool ok = !ma.empty && !mb.empty &&
+        abs((ma.y1 - ma.y0) - (mb.y1 - mb.y0)) <= 1;
+    if (!ok)
+        fprintf(stderr, "expected same visual height: `%s` vs `%s`\n", a, b);
+    free_mask(&ma);
+    free_mask(&mb);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int fail = 0;
@@ -219,6 +307,15 @@ int main(void)
                              "{\\furipos(right,0,0)}<A|BBBB>");
     fail |= expect_y_order("{\\furipos(center,0,8)}<A|B>",
                            "{\\furipos(center,0,-8)}<A|B>");
+    fail |= expect_same("A\\NB", "{\\furi0}A\\NB");
+    fail |= expect_bottom_anchor_with_taller_block(
+        "{\\an2}TOP\\N<A|BBBB>", "{\\an2}TOP\\NA");
+    fail |= expect_top_anchor_with_taller_block(
+        "{\\an8}<A|BBBB>\\NBOTTOM", "{\\an8}A\\NBOTTOM");
+    fail |= expect_center_anchor_with_taller_block(
+        "{\\an5}TOP\\N<A|BBBB>", "{\\an5}TOP\\NA");
+    fail |= expect_same_height(
+        "<A|BBBB>", "<A|BBBB><A|BBBB>");
 
     return fail ? 1 : 0;
 }

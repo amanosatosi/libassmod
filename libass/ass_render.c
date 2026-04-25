@@ -4133,6 +4133,13 @@ static void position_furi_group(RenderContext *state, FuriGroup *group)
     }
 }
 
+static void position_furi_groups(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    for (int i = 0; i < text_info->n_furi_groups; i++)
+        position_furi_group(state, &text_info->furi_groups[i]);
+}
+
 static void update_glyph_jitter_offsets(RenderContext *state)
 {
 #if DEBUG_LEVEL >= 2
@@ -4175,6 +4182,137 @@ static bool layout_furi_groups(RenderContext *state)
         position_furi_group(state, group);
     }
 
+    return true;
+}
+
+static void compute_line_baselines(RenderContext *state, double *baselines)
+{
+    TextInfo *text_info = &state->text_info;
+    baselines[0] = 0.0;
+    for (int i = 1; i < text_info->n_lines; i++) {
+        baselines[i] = baselines[i - 1] +
+            text_info->lines[i - 1].desc +
+            text_info->lines[i].asc +
+            line_spacing(state);
+    }
+}
+
+static void update_text_height(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    text_info->height = 0.0;
+    for (int i = 0; i < text_info->n_lines; i++)
+        text_info->height += text_info->lines[i].asc + text_info->lines[i].desc;
+    text_info->height += (text_info->n_lines - 1) * line_spacing(state);
+}
+
+static void shift_glyph_list_line(GlyphInfo *glyphs, int length,
+                                  const double *line_shift, int n_lines)
+{
+    for (int i = 0; i < length; i++) {
+        int line = glyphs[i].line;
+        if (line < 0 || line >= n_lines)
+            continue;
+        int32_t shift = double_to_d6(line_shift[line]);
+        if (!shift)
+            continue;
+        for (GlyphInfo *info = &glyphs[i]; info; info = info->next)
+            info->pos.y += shift;
+    }
+}
+
+static void apply_line_shifts(RenderContext *state, const double *line_shift)
+{
+    TextInfo *text_info = &state->text_info;
+    shift_glyph_list_line(text_info->glyphs, text_info->length,
+                          line_shift, text_info->n_lines);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        shift_glyph_list_line(group->glyphs, group->length,
+                              line_shift, text_info->n_lines);
+    }
+}
+
+static bool furi_group_visual_bbox(FuriGroup *group,
+                                   double *top, double *bottom)
+{
+    bool have = false;
+    *top = DBL_MAX;
+    *bottom = -DBL_MAX;
+
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        if (root->skip)
+            continue;
+
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double y = d6_to_double(info->pos.y);
+            *top = FFMIN(*top, y + d6_to_double(info->bbox.y_min));
+            *bottom = FFMAX(*bottom, y + d6_to_double(info->bbox.y_max));
+            have = true;
+        }
+    }
+
+    return have;
+}
+
+static bool expand_furi_line_metrics(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    if (!text_info->n_furi_groups)
+        return true;
+
+    double *old_baselines = calloc(text_info->n_lines, sizeof(*old_baselines));
+    double *new_baselines = calloc(text_info->n_lines, sizeof(*new_baselines));
+    double *above = calloc(text_info->n_lines, sizeof(*above));
+    double *below = calloc(text_info->n_lines, sizeof(*below));
+    double *line_shift = calloc(text_info->n_lines, sizeof(*line_shift));
+    if (!old_baselines || !new_baselines || !above || !below || !line_shift) {
+        free(old_baselines);
+        free(new_baselines);
+        free(above);
+        free(below);
+        free(line_shift);
+        return false;
+    }
+
+    compute_line_baselines(state, old_baselines);
+
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        int line = 0;
+        double base_left, base_right, base_top;
+        double furi_top, furi_bottom;
+        if (!furi_base_metrics(state, group, &base_left, &base_right,
+                               &base_top, &line))
+            continue;
+        if (line < 0 || line >= text_info->n_lines)
+            continue;
+        if (!furi_group_visual_bbox(group, &furi_top, &furi_bottom))
+            continue;
+
+        // Per visual line, reserve the maximum furi overhang relative to
+        // the base text top. Do not accumulate multiple groups on a line.
+        above[line] = FFMAX(above[line], FFMAX(0.0, base_top - furi_top));
+        below[line] = FFMAX(below[line], FFMAX(0.0, furi_bottom - base_top));
+    }
+
+    for (int i = 0; i < text_info->n_lines; i++) {
+        text_info->lines[i].asc += above[i];
+        text_info->lines[i].desc += below[i];
+    }
+    update_text_height(state);
+    compute_line_baselines(state, new_baselines);
+
+    for (int i = 0; i < text_info->n_lines; i++)
+        line_shift[i] = new_baselines[i] - old_baselines[i];
+    apply_line_shifts(state, line_shift);
+
+    free(old_baselines);
+    free(new_baselines);
+    free(above);
+    free(below);
+    free(line_shift);
     return true;
 }
 
@@ -5282,6 +5420,20 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     align_lines(state, max_text_width);
 
+    if (!layout_furi_groups(state)) {
+        ass_msg(render_priv->library, MSGL_ERR, "Failed to shape furi text");
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        return false;
+    }
+
+    if (!expand_furi_line_metrics(state)) {
+        ass_msg(render_priv->library, MSGL_ERR, "Failed to expand furi line metrics");
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        return false;
+    }
+
     apply_distortion(state);
 
     // determine text bounding box
@@ -5306,7 +5458,13 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         apply_baseline_rotation(state, origin_x, origin_y);
         compute_string_bbox(text_info, &bbox);
     }
-    ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &bbox;
+    if (text_info->n_furi_groups)
+        position_furi_groups(state);
+
+    ASS_DRect render_bbox = bbox;
+    add_furi_to_bbox(text_info, &render_bbox);
+    ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &render_bbox;
+    ASS_DRect *bbox_for_position = &render_bbox;
 
     // determine device coordinates for text
     double device_x = 0;
@@ -5317,7 +5475,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (state->evt_type & EVENT_POSITIONED) {
         double base_x = 0;
         double base_y = 0;
-        get_base_point(bbox_for_origin, state->alignment, &base_x, &base_y);
+        get_base_point(bbox_for_position, state->alignment, &base_x, &base_y);
         device_x =
             x2scr_pos(render_priv, state->pos_x) - base_x;
         device_y =
@@ -5334,7 +5492,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         else if (state->scroll_direction == SCROLL_LR)
             device_x =
                 x2scr_pos(render_priv, state->scroll_shift) -
-                (bbox.x_max - bbox.x_min);
+                (bbox_for_position->x_max - bbox_for_position->x_min);
     } else if (!(state->evt_type & EVENT_POSITIONED)) {
         device_x = x2scr_left(state, MarginL);
     }
@@ -5346,13 +5504,13 @@ ass_render_event(RenderContext *state, ASS_Event *event,
                 y2scr(state,
                       state->scroll_y0 +
                       state->scroll_shift) -
-                bbox.y_max;
+                bbox_for_position->y_max;
         else if (state->scroll_direction == SCROLL_BT)
             device_y =
                 y2scr(state,
                       state->scroll_y1 -
                       state->scroll_shift) -
-                bbox.y_min;
+                bbox_for_position->y_min;
     } else if (!(state->evt_type & EVENT_POSITIONED)) {
         if (valign == VALIGN_TOP) {     // toptitle
             device_y =
@@ -5361,7 +5519,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         } else if (valign == VALIGN_CENTER) {   // midtitle
             double scr_y =
                 y2scr(state, render_priv->track->PlayResY / 2.0);
-            device_y = scr_y - (bbox.y_max + bbox.y_min) / 2.0;
+            device_y = scr_y -
+                (bbox_for_position->y_max + bbox_for_position->y_min) / 2.0;
         } else {                // subtitle
             double line_pos = state->explicit ?
                 0 : render_priv->settings.line_position;
@@ -5385,16 +5544,6 @@ ass_render_event(RenderContext *state, ASS_Event *event,
             }
         }
     }
-
-    if (!layout_furi_groups(state)) {
-        ass_msg(render_priv->library, MSGL_ERR, "Failed to shape furi text");
-        ass_shaper_cleanup(state->shaper, text_info);
-        free_render_context(state);
-        return false;
-    }
-
-    ASS_DRect render_bbox = bbox;
-    add_furi_to_bbox(text_info, &render_bbox);
 
     update_glyph_jitter_offsets(state);
 

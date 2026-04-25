@@ -49,6 +49,9 @@ furigana upward; negative y moves it downward. The default is
 ```
 
 Furigana is shaped and rendered as sidecar glyphs tied to the base glyph range.
-The base text remains the primary text for line layout and wrapping. Furigana
-may overhang its base text and is included in rendered event bounds, but it does
-not increase the base advance width.
+The base text remains the primary text for horizontal line layout and wrapping.
+After visual lines are resolved, furigana overhang above or below its base text
+is included in that line's vertical metrics. Multiple furigana groups on the
+same line use the maximum above and below extent, not the sum. Furigana may
+overhang its base text horizontally and is included in rendered event bounds,
+but it does not increase the base advance width.
