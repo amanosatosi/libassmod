@@ -173,6 +173,7 @@ ASS_Renderer *ass_renderer_init(ASS_Library *library)
     priv->cache.glyph_max = GLYPH_CACHE_MAX;
     priv->cache.bitmap_max_size = BITMAP_CACHE_MAX_SIZE;
     priv->cache.composite_max_size = COMPOSITE_CACHE_MAX_SIZE;
+    priv->rgba_output_max_size = RGBA_OUTPUT_MAX_SIZE;
 
     if (!render_context_init(&priv->state, priv))
         goto fail;
@@ -468,11 +469,12 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          int layer, unsigned type)
 {
     ASS_Renderer *render_priv = state->renderer;
-    unsigned align = 1 << render_priv->engine.align_order;
-    int rgba_stride = ass_align(align, w * 4);
-    uint8_t *rgba = ass_aligned_alloc(align, rgba_stride * h + align, false);
-    if (!rgba)
+    ASS_ImageRGBA *img =
+        ass_rgba_image_alloc(render_priv, w, h, dst_x, dst_y, type);
+    if (!img)
         return NULL;
+    int rgba_stride = img->stride;
+    uint8_t *rgba = img->rgba;
 
     if (full_w <= 0)
         full_w = w;
@@ -656,19 +658,6 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         }
     }
 
-    ASS_ImageRGBA *img = malloc(sizeof(*img));
-    if (!img) {
-        ass_aligned_free(rgba);
-        return NULL;
-    }
-    img->w = w;
-    img->h = h;
-    img->stride = rgba_stride;
-    img->rgba = rgba;
-    img->dst_x = dst_x;
-    img->dst_y = dst_y;
-    img->type = type;
-    img->next = NULL;
     return img;
 }
 
@@ -1636,12 +1625,11 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
     if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
-    unsigned align = 1 << render_priv->engine.align_order;
-
     for (ASS_ImageRGBA *cur = head; cur; cur = cur->next) {
         int left, top, right, bottom, aw, ah, as;
         int ax, ay, bx, by, bw, bh, bs;
         int aleft, atop, bleft, btop;
+        ASS_ImageRGBAPriv *rgba_priv = (ASS_ImageRGBAPriv *) cur;
         uint8_t *abuffer = cur->rgba;
         uint8_t *bbuffer = clip_bm->buffer;
         ax = cur->dst_x;
@@ -1672,7 +1660,11 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
                 continue;
             }
 
-            uint8_t *nbuffer = ass_aligned_alloc(align, as * ah + align, false);
+            size_t alloc_size;
+            uint8_t *nbuffer =
+                ass_rgba_alloc_buffer_stride(render_priv, as, ah,
+                                             rgba_priv->alloc_size,
+                                             &alloc_size);
             if (!nbuffer)
                 break;
             memcpy(nbuffer, abuffer, as * ah);
@@ -1687,8 +1679,7 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
                     }
                 }
             }
-            ass_aligned_free(cur->rgba);
-            cur->rgba = nbuffer;
+            ass_rgba_image_replace_buffer(cur, nbuffer, alloc_size, aw, ah, as);
         } else {
             if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
                 ay > by + bh || !hclip || !wclip) {
@@ -1696,8 +1687,12 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
                 continue;
             }
 
-            int ns = ass_align(align, wclip * 4);
-            uint8_t *nbuffer = ass_aligned_alloc(align, ns * hclip + align, false);
+            int ns;
+            size_t alloc_size;
+            uint8_t *nbuffer =
+                ass_rgba_alloc_buffer(render_priv, wclip, hclip,
+                                      rgba_priv->alloc_size, &ns,
+                                      &alloc_size);
             if (!nbuffer)
                 break;
             for (int y = 0; y < hclip; y++) {
@@ -1712,13 +1707,10 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
                     }
                 }
             }
-            ass_aligned_free(cur->rgba);
-            cur->rgba = nbuffer;
             cur->dst_x += aleft;
             cur->dst_y += atop;
-            cur->w = wclip;
-            cur->h = hclip;
-            cur->stride = ns;
+            ass_rgba_image_replace_buffer(cur, nbuffer, alloc_size,
+                                          wclip, hclip, ns);
         }
     }
 }
@@ -4596,11 +4588,12 @@ static void add_background(RenderContext *state, EventImages *event_images,
     }
     if (rgba_head) {
         uint8_t alpha = 255 - _a(clr);
-        int stride = ass_align(1 << render_priv->engine.align_order, w * 4);
-        uint8_t *rgba = ass_aligned_alloc(1 << render_priv->engine.align_order,
-                                          stride * h + (1 << render_priv->engine.align_order),
-                                          false);
-        if (rgba) {
+        ASS_ImageRGBA *rimg =
+            ass_rgba_image_alloc(render_priv, w, h, left, top,
+                                 IMAGE_TYPE_SHADOW);
+        if (rimg) {
+            int stride = rimg->stride;
+            uint8_t *rgba = rimg->rgba;
             uint8_t pr = (uint8_t) ((_r(clr) * alpha + 127) / 255);
             uint8_t pg = (uint8_t) ((_g(clr) * alpha + 127) / 255);
             uint8_t pb = (uint8_t) ((_b(clr) * alpha + 127) / 255);
@@ -4613,21 +4606,9 @@ static void add_background(RenderContext *state, EventImages *event_images,
                     row[4 * x + 3] = alpha;
                 }
             }
-            ASS_ImageRGBA *rimg = malloc(sizeof(*rimg));
-            if (rimg) {
-                rimg->w = w;
-                rimg->h = h;
-                rimg->stride = stride;
-                rimg->rgba = rgba;
-                rimg->dst_x = left;
-                rimg->dst_y = top;
-                rimg->type = IMAGE_TYPE_SHADOW;
-                rimg->next = *rgba_head;
-                *rgba_head = rimg;
-                event_images->imgs_rgba = rimg;
-            } else {
-                ass_aligned_free(rgba);
-            }
+            rimg->next = *rgba_head;
+            *rgba_head = rimg;
+            event_images->imgs_rgba = rimg;
         }
     }
 }
@@ -4941,6 +4922,8 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     render_priv->track = track;
     render_priv->time = now;
     render_priv->frame_needs_rgba = false;
+    render_priv->rgba_output_limit_hit = false;
+    render_priv->rgba_output_size = 0;
 
     ass_lazy_track_init(render_priv->library, render_priv->track);
 
@@ -5045,17 +5028,29 @@ shift_event(ASS_Renderer *render_priv, EventImages *ei, int shift)
     }
     ASS_ImageRGBA *rcur = ei->imgs_rgba;
     while (rcur) {
-        rcur->dst_y += shift;
+        int64_t shifted_y = (int64_t) rcur->dst_y + shift;
+        if (shifted_y < INT_MIN || shifted_y > INT_MAX) {
+            rcur->h = 0;
+            rcur->dst_y = 0;
+            rcur = rcur->next;
+            continue;
+        }
+        rcur->dst_y = (int) shifted_y;
         if (rcur->dst_y < 0) {
-            int clip = -rcur->dst_y;
-            rcur->h -= clip;
-            rcur->rgba += clip * rcur->stride;
+            int64_t clip64 = -(int64_t) rcur->dst_y;
+            if (clip64 >= rcur->h) {
+                rcur->h = 0;
+            } else {
+                int clip = (int) clip64;
+                rcur->h -= clip;
+                rcur->rgba += (size_t) clip * rcur->stride;
+            }
             rcur->dst_y = 0;
         }
-        if (rcur->dst_y + rcur->h >= render_priv->height) {
-            int clip = rcur->dst_y + rcur->h - render_priv->height;
-            rcur->h -= clip;
-        }
+        if (rcur->dst_y >= render_priv->height)
+            rcur->h = 0;
+        else if ((int64_t) rcur->dst_y + rcur->h > render_priv->height)
+            rcur->h = render_priv->height - rcur->dst_y;
         if (rcur->h <= 0) {
             rcur->h = 0;
             rcur->dst_y = 0;

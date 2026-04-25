@@ -51,6 +51,7 @@
 #define BITMAP_CACHE_MAX_SIZE (128 * MEGABYTE)
 #define COMPOSITE_CACHE_RATIO 2
 #define COMPOSITE_CACHE_MAX_SIZE (BITMAP_CACHE_MAX_SIZE / COMPOSITE_CACHE_RATIO)
+#define RGBA_OUTPUT_MAX_SIZE BITMAP_CACHE_MAX_SIZE
 
 #define PARSED_FADE (1<<0)
 #define PARSED_A    (1<<1)
@@ -61,6 +62,12 @@ typedef struct {
     unsigned char *buffer;
     size_t ref_count;
 } ASS_ImagePriv;
+
+typedef struct {
+    ASS_ImageRGBA result;
+    uint8_t *buffer;
+    size_t alloc_size;
+} ASS_ImageRGBAPriv;
 
 typedef struct {
     int frame_width;
@@ -454,6 +461,9 @@ struct ass_renderer {
     ASS_Settings settings;
     int render_id;
     bool frame_needs_rgba;
+    bool rgba_output_limit_hit;
+    size_t rgba_output_size;
+    size_t rgba_output_max_size;
 
     ASS_Image *images_root;     // rendering result is stored here
     ASS_Image *prev_images_root;
@@ -495,6 +505,18 @@ typedef struct {
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
+ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
+                                    int dst_x, int dst_y, int type);
+uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
+                               size_t replace_size, int *stride,
+                               size_t *alloc_size);
+uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
+                                      size_t replace_size,
+                                      size_t *alloc_size);
+void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
+                                   size_t alloc_size, int w, int h,
+                                   int stride);
+void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out);
