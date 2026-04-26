@@ -307,6 +307,15 @@ int main(void)
     fail |= expect_different("<A|B>", "{\\furipos(8,0)}<A|B>");
     fail |= expect_y_order("{\\furipos(0,8)}<A|B>",
                            "{\\furipos(0,-8)}<A|B>");
+    fail |= expect_same("<A|BBBB>", "{\\furistyle0}<A|BBBB>");
+    fail |= expect_same("{\\furistyle0}<A|BBBB>",
+                        "{\\furistyle1}<A|BBBB>");
+    fail |= expect_different("{\\furistyle0}<A|BBBB>",
+                             "{\\furistyle2}<A|BBBB>");
+    fail |= expect_same("{\\furistyle2\\furistyle99}<A|BBBB>",
+                        "{\\furistyle2}<A|BBBB>");
+    fail |= expect_different("{\\furistyle0}<A|BBBB> {\\furistyle2}<A|BBBB>",
+                             "{\\furistyle0}<A|BBBB> <A|BBBB>");
     fail |= expect_same("A\\NB", "{\\furi0}A\\NB");
     fail |= expect_bottom_anchor_with_taller_block(
         "{\\an2}TOP\\N<A|BBBB>", "{\\an2}TOP\\NA");

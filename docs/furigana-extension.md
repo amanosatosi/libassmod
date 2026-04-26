@@ -24,6 +24,7 @@ group instead.
 \furisy<N>
 \furifsp<N>
 \furipos(x,y)
+\furistyle<N>
 ```
 
 `\furi0` disables parsing of `<base|furi>` groups from that point in the event.
@@ -40,12 +41,22 @@ is 0.
 y moves furigana upward; negative y moves it downward. The default is
 `\furipos(0,0)`.
 
+`\furistyle<N>` controls horizontal group layout. The default is
+`\furistyle0`. `\furistyle0` and `\furistyle1` both use Aegisub-style group
+spacing: the group advance is the larger of the base width and furi width, and
+both base and furi are centered in that group. `\furistyle2` uses manga-style
+X-fit: furi is horizontally scaled to the base width and the base advance is
+kept unchanged.
+
 ## Examples
 
 ```ass
 {\furi1}<明日|あした>また会う
 {\furi1\furis45\furifsp1\furipos(0,3)}<明日|あした>また会う
 {\furi0}<A|B>
+{\furi1\furistyle0}<水鏡|みずかがみ><心誘う|こころいざなう>
+{\furi1\furistyle1}<水鏡|みずかがみ><心誘う|こころいざなう>
+{\furi1\furistyle2}<水鏡|みずかがみ><心誘う|こころいざなう>
 ```
 
 Furigana is shaped and rendered as sidecar glyphs tied to the base glyph range.

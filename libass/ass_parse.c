@@ -1043,6 +1043,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             double val = nargs ? argtod(*args) : 0.0;
             state->furi_hspacing =
                 state->furi_hspacing * (1 - pwr) + val * pwr;
+        } else if (tag("furistyle")) {
+            int32_t val = nargs ? argtoi32(*args) : 0;
+            if (val >= 0 && val <= 2)
+                state->furi_style = val;
         } else if (tag("furisx")) {
             double val = nargs ? argtod(*args) : 50.0;
             val = state->furi_scale_x * (1 - pwr) + val * pwr;

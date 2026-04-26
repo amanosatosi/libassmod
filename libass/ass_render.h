@@ -283,6 +283,9 @@ typedef struct {
     FriBidiChar *event_text;
     int length;
     int max_glyphs;
+    int style;
+    int32_t layout_width;
+    int32_t base_shift;
     double scale_x;
     double scale_y;
     double hspacing;
@@ -383,6 +386,7 @@ struct render_context {
     double furi_scale_x;
     double furi_scale_y;
     double furi_hspacing;
+    int furi_style;
     double furi_offset_x;
     double furi_offset_y;
     double border_x;            // outline width

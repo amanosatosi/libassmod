@@ -2099,6 +2099,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->furi_scale_x = 50.0;
     state->furi_scale_y = 50.0;
     state->furi_hspacing = 0.0;
+    state->furi_style = 0;
     state->furi_offset_x = 0.0;
     state->furi_offset_y = 0.0;
     state->be = 0;
@@ -3735,6 +3736,7 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
 
     int group_id = text_info->n_furi_groups - 1;
     group->base_start = text_info->length;
+    group->style = state->furi_style;
     group->scale_x = state->furi_scale_x;
     group->scale_y = state->furi_scale_y;
     group->hspacing = state->furi_hspacing;
@@ -4034,6 +4036,118 @@ static bool reorder_furi_group(RenderContext *state, FuriGroup *group)
     return true;
 }
 
+static int32_t clamp_i64_to_i32(int64_t value)
+{
+    if (value > INT_MAX)
+        return INT_MAX;
+    if (value < INT_MIN)
+        return INT_MIN;
+    return value;
+}
+
+static int32_t furi_base_advance_width(RenderContext *state, FuriGroup *group)
+{
+    TextInfo *text_info = &state->text_info;
+    int64_t width = 0;
+
+    for (int i = 0; i < group->base_len; i++) {
+        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
+        if (!root->skip)
+            width += root->cluster_advance.x;
+    }
+
+    return clamp_i64_to_i32(FFMAX(0, width));
+}
+
+static int32_t furi_text_advance_width(FuriGroup *group)
+{
+    int64_t width = 0;
+    int32_t trailing_spacing = 0;
+    bool have = false;
+
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        if (root->skip)
+            continue;
+        width += root->cluster_advance.x;
+        trailing_spacing = root->hspacing_scaled;
+        have = true;
+    }
+
+    if (have)
+        width -= trailing_spacing;
+    return clamp_i64_to_i32(FFMAX(0, width));
+}
+
+static void scale_furi_group_x(FuriGroup *group, double scale)
+{
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        root->cluster_advance.x = double_to_d6(
+                d6_to_double(root->cluster_advance.x) * scale);
+
+        for (GlyphInfo *info = root; info; info = info->next) {
+            info->offset.x = double_to_d6(d6_to_double(info->offset.x) * scale);
+            info->advance.x = double_to_d6(d6_to_double(info->advance.x) * scale);
+            info->bbox.x_min = double_to_d6(d6_to_double(info->bbox.x_min) * scale);
+            info->bbox.x_max = double_to_d6(d6_to_double(info->bbox.x_max) * scale);
+            info->hspacing_scaled = double_to_d6(
+                    d6_to_double(info->hspacing_scaled) * scale);
+            info->scale_x *= scale;
+            info->transform.scale.x *= scale;
+        }
+    }
+}
+
+static void shift_furi_base(RenderContext *state, FuriGroup *group,
+                            int32_t shift)
+{
+    TextInfo *text_info = &state->text_info;
+    if (!shift)
+        return;
+
+    for (int i = 0; i < group->base_len; i++) {
+        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
+        for (GlyphInfo *info = root; info; info = info->next)
+            info->offset.x += shift;
+    }
+}
+
+static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
+{
+    TextInfo *text_info = &state->text_info;
+    int32_t base_width = furi_base_advance_width(state, group);
+    int32_t furi_width = furi_text_advance_width(group);
+    group->layout_width = base_width;
+    group->base_shift = 0;
+
+    if (group->style == 2) {
+        if (base_width > 0 && furi_width > 0) {
+            double scale = (double) base_width / furi_width;
+            scale_furi_group_x(group, scale);
+        }
+        return;
+    }
+
+    int32_t group_width = FFMAX(base_width, furi_width);
+    int32_t extra = group_width - base_width;
+    if (extra <= 0)
+        return;
+
+    int last = group->base_start + group->base_len - 1;
+    for (; last >= group->base_start; last--) {
+        if (!text_info->glyphs[last].skip)
+            break;
+    }
+    if (last < group->base_start)
+        return;
+
+    group->layout_width = group_width;
+    group->base_shift = extra / 2;
+    shift_furi_base(state, group, group->base_shift);
+    text_info->glyphs[last].cluster_advance.x += extra;
+}
+
 static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
                               double *left, double *right,
                               double *top, int *line)
@@ -4045,12 +4159,22 @@ static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
     *top = DBL_MAX;
     *line = 0;
 
+    GlyphInfo *first = &text_info->glyphs[group->base_start];
+    double group_left = d6_to_double(first->pos.x - first->offset.x -
+                                     group->base_shift);
+    if (group->layout_width > 0) {
+        *left = group_left;
+        *right = group_left + d6_to_double(group->layout_width);
+    }
+
     for (int i = 0; i < group->base_len; i++) {
         GlyphInfo *root = &text_info->glyphs[group->base_start + i];
         double x0 = d6_to_double(root->pos.x);
         double x1 = x0 + d6_to_double(root->cluster_advance.x);
-        *left = FFMIN(*left, FFMIN(x0, x1));
-        *right = FFMAX(*right, FFMAX(x0, x1));
+        if (group->layout_width <= 0) {
+            *left = FFMIN(*left, FFMIN(x0, x1));
+            *right = FFMAX(*right, FFMAX(x0, x1));
+        }
         if (!have)
             *line = root->line;
 
@@ -4146,7 +4270,7 @@ static void update_glyph_jitter_offsets(RenderContext *state)
     }
 }
 
-static bool layout_furi_groups(RenderContext *state)
+static bool prepare_furi_groups(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
     if (!text_info->n_furi_groups)
@@ -4166,9 +4290,9 @@ static bool layout_furi_groups(RenderContext *state)
             return false;
 
         retrieve_glyphs_from_list(state, group->glyphs, group->length);
+        apply_furi_group_layout(state, group);
         if (!reorder_furi_group(state, group))
             return false;
-        position_furi_group(state, group);
     }
 
     return true;
@@ -5383,6 +5507,13 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     retrieve_glyphs(state);
 
+    if (!prepare_furi_groups(state)) {
+        ass_msg(render_priv->library, MSGL_ERR, "Failed to shape furi text");
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        return false;
+    }
+
     preliminary_layout(state);
 
     int valign = state->alignment & 12;
@@ -5409,12 +5540,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     align_lines(state, max_text_width);
 
-    if (!layout_furi_groups(state)) {
-        ass_msg(render_priv->library, MSGL_ERR, "Failed to shape furi text");
-        ass_shaper_cleanup(state->shaper, text_info);
-        free_render_context(state);
-        return false;
-    }
+    if (text_info->n_furi_groups)
+        position_furi_groups(state);
 
     if (!expand_furi_line_metrics(state)) {
         ass_msg(render_priv->library, MSGL_ERR, "Failed to expand furi line metrics");
