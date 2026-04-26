@@ -4122,7 +4122,7 @@ static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
     group->base_shift = 0;
 
     if (group->style == 2) {
-        if (base_width > 0 && furi_width > 0) {
+        if (base_width > 0 && furi_width > base_width) {
             double scale = (double) base_width / furi_width;
             scale_furi_group_x(group, scale);
         }
@@ -4200,6 +4200,7 @@ static bool furi_text_metrics(FuriGroup *group, double *left,
         GlyphInfo *root = &group->glyphs[i];
         if (root->skip)
             continue;
+
         double x0 = d6_to_double(root->pos.x);
         // Center against inter-glyph spacing, not a trailing \furifsp pad.
         int32_t advance = root->cluster_advance.x - root->hspacing_scaled;

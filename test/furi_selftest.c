@@ -312,6 +312,8 @@ int main(void)
                         "{\\furistyle1}<A|BBBB>");
     fail |= expect_different("{\\furistyle0}<A|BBBB>",
                              "{\\furistyle2}<A|BBBB>");
+    fail |= expect_same("{\\furistyle0}<BBBB|A>",
+                        "{\\furistyle2}<BBBB|A>");
     fail |= expect_same("{\\furistyle2\\furistyle99}<A|BBBB>",
                         "{\\furistyle2}<A|BBBB>");
     fail |= expect_different("{\\furistyle0}<A|BBBB> {\\furistyle2}<A|BBBB>",

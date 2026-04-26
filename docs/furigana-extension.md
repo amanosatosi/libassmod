@@ -45,8 +45,8 @@ y moves furigana upward; negative y moves it downward. The default is
 `\furistyle0`. `\furistyle0` and `\furistyle1` both use Aegisub-style group
 spacing: the group advance is the larger of the base width and furi width, and
 both base and furi are centered in that group. `\furistyle2` uses manga-style
-X-fit: furi is horizontally scaled to the base width and the base advance is
-kept unchanged.
+X-fit: furi wider than its base is horizontally shrunk to the base width, while
+shorter furi keeps its normal width. The base advance is kept unchanged.
 
 ## Examples
 
