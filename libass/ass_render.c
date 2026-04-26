@@ -3973,9 +3973,7 @@ static void reorder_text(RenderContext *state)
     int lineno = 1;
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *info = text_info->glyphs + cmap[i];
-        int line_id = lineno - 1;
-        for (GlyphInfo *g = info; g; g = g->next)
-            g->line = line_id;
+        // linebreak marks the first glyph of the new visual line.
         if (text_info->glyphs[i].linebreak) {
             pen.x = 0;
             pen.y += double_to_d6(text_info->lines[lineno-1].desc);
@@ -3983,6 +3981,9 @@ static void reorder_text(RenderContext *state)
             pen.y += double_to_d6(line_spacing(state));
             lineno++;
         }
+        int line_id = lineno - 1;
+        for (GlyphInfo *g = info; g; g = g->next)
+            g->line = line_id;
         if (info->skip)
             continue;
         ASS_Vector cluster_pen = pen;
