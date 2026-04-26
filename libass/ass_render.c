@@ -2099,7 +2099,6 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->furi_scale_x = 50.0;
     state->furi_scale_y = 50.0;
     state->furi_hspacing = 0.0;
-    state->furi_align = FURI_ALIGN_CENTER;
     state->furi_offset_x = 0.0;
     state->furi_offset_y = 0.0;
     state->be = 0;
@@ -3736,7 +3735,6 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
 
     int group_id = text_info->n_furi_groups - 1;
     group->base_start = text_info->length;
-    group->align = state->furi_align;
     group->scale_x = state->furi_scale_x;
     group->scale_y = state->furi_scale_y;
     group->hspacing = state->furi_hspacing;
@@ -4079,7 +4077,9 @@ static bool furi_text_metrics(FuriGroup *group, double *left,
         if (root->skip)
             continue;
         double x0 = d6_to_double(root->pos.x);
-        double x1 = x0 + d6_to_double(root->cluster_advance.x);
+        // Center against inter-glyph spacing, not a trailing \furifsp pad.
+        int32_t advance = root->cluster_advance.x - root->hspacing_scaled;
+        double x1 = x0 + d6_to_double(advance);
         *left = FFMIN(*left, FFMIN(x0, x1));
         *right = FFMAX(*right, FFMAX(x0, x1));
 
@@ -4106,19 +4106,7 @@ static void position_furi_group(RenderContext *state, FuriGroup *group)
 
     double base_width = base_right - base_left;
     double furi_width = furi_right - furi_left;
-    double target_left;
-    switch (group->align) {
-    case FURI_ALIGN_LEFT:
-        target_left = base_left;
-        break;
-    case FURI_ALIGN_RIGHT:
-        target_left = base_right - furi_width;
-        break;
-    case FURI_ALIGN_CENTER:
-    default:
-        target_left = base_left + (base_width - furi_width) / 2.0;
-        break;
-    }
+    double target_left = base_left + (base_width - furi_width) / 2.0;
 
     double dx = target_left - furi_left + x2scr_offset(state, group->offset_x);
     double dy = base_top - furi_bottom - y2scr_offset(state, group->offset_y);

@@ -191,12 +191,6 @@ static inline JitterState ass_jitter_default_state(void)
     };
 }
 
-typedef enum {
-    FURI_ALIGN_LEFT = 0,
-    FURI_ALIGN_CENTER,
-    FURI_ALIGN_RIGHT,
-} FuriAlign;
-
 // describes a glyph
 // GlyphInfo and TextInfo are used for text centering and word-wrapping operations
 typedef struct glyph_info {
@@ -289,7 +283,6 @@ typedef struct {
     FriBidiChar *event_text;
     int length;
     int max_glyphs;
-    FuriAlign align;
     double scale_x;
     double scale_y;
     double hspacing;
@@ -390,7 +383,6 @@ struct render_context {
     double furi_scale_x;
     double furi_scale_y;
     double furi_hspacing;
-    FuriAlign furi_align;
     double furi_offset_x;
     double furi_offset_y;
     double border_x;            // outline width

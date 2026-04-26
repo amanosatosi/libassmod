@@ -23,7 +23,7 @@ group instead.
 \furisx<N>
 \furisy<N>
 \furifsp<N>
-\furipos(left|center|right,x,y)
+\furipos(x,y)
 ```
 
 `\furi0` disables parsing of `<base|furi>` groups from that point in the event.
@@ -36,15 +36,15 @@ axes independently. The defaults are `\furis50`, `\furisx50`, and `\furisy50`.
 `\furifsp<N>` mirrors ASS `\fsp`, but applies only to furigana text. The default
 is 0.
 
-`\furipos(<align>,<x>,<y>)` controls furigana placement. Positive y moves
-furigana upward; negative y moves it downward. The default is
-`\furipos(center,0,0)`.
+`\furipos(<x>,<y>)` controls furigana offset from centered placement. Positive
+y moves furigana upward; negative y moves it downward. The default is
+`\furipos(0,0)`.
 
 ## Examples
 
 ```ass
 {\furi1}<明日|あした>また会う
-{\furi1\furis45\furifsp1\furipos(center,0,3)}<明日|あした>また会う
+{\furi1\furis45\furifsp1\furipos(0,3)}<明日|あした>また会う
 {\furi0}<A|B>
 ```
 

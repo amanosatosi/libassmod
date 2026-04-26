@@ -302,11 +302,11 @@ int main(void)
     fail |= expect_different("<A|B>", "{\\furis80}<A|B>");
     fail |= expect_different("{\\furisx80}<A|B>",
                              "{\\furisy80}<A|B>");
+    fail |= expect_same("<A|B>", "{\\furifsp10}<A|B>");
     fail |= expect_different("<A|BBBB>", "{\\furifsp10}<A|BBBB>");
-    fail |= expect_different("{\\furipos(left,0,0)}<A|BBBB>",
-                             "{\\furipos(right,0,0)}<A|BBBB>");
-    fail |= expect_y_order("{\\furipos(center,0,8)}<A|B>",
-                           "{\\furipos(center,0,-8)}<A|B>");
+    fail |= expect_different("<A|B>", "{\\furipos(8,0)}<A|B>");
+    fail |= expect_y_order("{\\furipos(0,8)}<A|B>",
+                           "{\\furipos(0,-8)}<A|B>");
     fail |= expect_same("A\\NB", "{\\furi0}A\\NB");
     fail |= expect_bottom_anchor_with_taller_block(
         "{\\an2}TOP\\N<A|BBBB>", "{\\an2}TOP\\NA");

@@ -61,12 +61,6 @@ static inline void push_arg(struct arg *args, int *nargs, char *start, char *end
     }
 }
 
-static inline bool arg_equals(struct arg arg, const char *sample)
-{
-    size_t len = arg.end - arg.start;
-    return strlen(sample) == len && !strncmp(arg.start, sample, len);
-}
-
 /**
  * \brief Check if starting part of (*p) matches sample.
  * If true, shift p to the first symbol after the matching part.
@@ -1037,25 +1031,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (complex_tag("furipos")) {
             if (!nargs) {
-                state->furi_align = FURI_ALIGN_CENTER;
                 state->furi_offset_x = 0.0;
                 state->furi_offset_y = 0.0;
-            } else if (nargs == 3) {
-                FuriAlign align;
-                if (arg_equals(args[0], "left"))
-                    align = FURI_ALIGN_LEFT;
-                else if (arg_equals(args[0], "center"))
-                    align = FURI_ALIGN_CENTER;
-                else if (arg_equals(args[0], "right"))
-                    align = FURI_ALIGN_RIGHT;
-                else
-                    continue;
-
-                state->furi_align = align;
+            } else if (nargs == 2) {
                 state->furi_offset_x =
-                    state->furi_offset_x * (1 - pwr) + argtod(args[1]) * pwr;
+                    state->furi_offset_x * (1 - pwr) + argtod(args[0]) * pwr;
                 state->furi_offset_y =
-                    state->furi_offset_y * (1 - pwr) + argtod(args[2]) * pwr;
+                    state->furi_offset_y * (1 - pwr) + argtod(args[1]) * pwr;
             }
         } else if (tag("furifsp")) {
             double val = nargs ? argtod(*args) : 0.0;
