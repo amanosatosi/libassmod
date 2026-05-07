@@ -128,6 +128,7 @@ typedef struct {
     double size_x;
     double size_y;
     uint32_t color;
+    GradientValues gradient;
 } BorderLayerState;
 
 typedef struct ass_tag_image_entry {

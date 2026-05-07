@@ -1098,7 +1098,7 @@ static ASS_Image **render_border_layer(RenderContext *state,
     GradientValues saved_gradient = info->gradient.layer[2];
     ImageFillLayer saved_image = info->image_fill.layer[2];
     info->base_c[2] = info->border_layers[layer].color;
-    memset(&info->gradient.layer[2], 0, sizeof(info->gradient.layer[2]));
+    info->gradient.layer[2] = info->border_layers[layer].gradient;
     clear_image_fill_layer(&info->image_fill.layer[2]);
 
     tail = render_glyph(state, info, bm, info->x, info->y, color,
@@ -2141,6 +2141,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
         .size_y = style->Outline,
         .color = style->OutlineColour,
     };
+    state->border_layers[0].gradient = state->gradient.layer[2];
     for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++) {
         state->border_layers[i] = (BorderLayerState) {
             .enabled = false,
@@ -2150,6 +2151,8 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
             .size_y = 0,
             .color = style->OutlineColour,
         };
+        ass_gradient_values_reset(&state->border_layers[i].gradient,
+                                  style->OutlineColour);
     }
     state->scale_x = style->ScaleX;
     state->scale_y = style->ScaleY;
@@ -3804,7 +3807,8 @@ static bool border_layer_state_equal(const BorderLayerState *a,
            a->has_alpha == b->has_alpha &&
            a->size_x == b->size_x &&
            a->size_y == b->size_y &&
-           a->color == b->color;
+           a->color == b->color &&
+           !memcmp(&a->gradient, &b->gradient, sizeof(a->gradient));
 }
 
 static bool border_layers_state_equal(const BorderLayerState *a,
@@ -3847,6 +3851,7 @@ static void sync_glyph_layer1_border(GlyphInfo *info)
     info->border_layers[0].size_x = info->border_x;
     info->border_layers[0].size_y = info->border_y;
     info->border_layers[0].color = info->c[2];
+    info->border_layers[0].gradient = info->gradient.layer[2];
 }
 
 static double glyph_border_max_x(const GlyphInfo *info)
@@ -5161,12 +5166,24 @@ static bool text_needs_rgba(const TextInfo *text_info)
 {
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
         const CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
-        if (!info->bitmap_count || (!info->bm && !info->bm_o && !info->bm_s))
+        bool has_bitmap = info->bm || info->bm_o || info->bm_s;
+        for (int layer = 0;
+             layer < ASS_BORDER_LAYERS_MAX - 1 && !has_bitmap;
+             layer++)
+            has_bitmap = info->bm_border[layer] != NULL;
+        if (!info->bitmap_count || !has_bitmap)
             continue;
         for (int layer = 0; layer < 4; layer++) {
             if (info->image_fill.layer[layer].enabled)
                 return true;
             const GradientValues *vals = &info->gradient.layer[layer];
+            if (vals->color_enabled || vals->alpha_enabled)
+                return true;
+        }
+        for (int layer = 1; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            if (!info->bm_border[layer - 1])
+                continue;
+            const GradientValues *vals = &info->border_layers[layer].gradient;
             if (vals->color_enabled || vals->alpha_enabled)
                 return true;
         }

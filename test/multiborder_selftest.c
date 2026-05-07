@@ -14,6 +14,16 @@ typedef struct {
     int n_colors;
 } RenderSig;
 
+typedef struct {
+    int count;
+    int outline_count;
+    uint64_t alpha_coverage;
+    uint64_t hash;
+    bool needs_rgba;
+    bool outline_red;
+    bool outline_blue;
+} RgbaSig;
+
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
 {
     (void) level;
@@ -41,8 +51,7 @@ static bool has_color(const RenderSig *sig, uint32_t color)
     return false;
 }
 
-static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
-                        const char *text, RenderSig *sig)
+static ASS_Track *read_case_track(ASS_Library *lib, const char *text)
 {
     char script[8192];
     int n = snprintf(
@@ -64,9 +73,15 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
         "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\pos(320,180)}%s\n",
         text);
     if (n < 0 || n >= (int) sizeof(script))
-        return false;
+        return NULL;
 
-    ASS_Track *track = ass_read_memory(lib, script, strlen(script), NULL);
+    return ass_read_memory(lib, script, strlen(script), NULL);
+}
+
+static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
+                        const char *text, RenderSig *sig)
+{
+    ASS_Track *track = read_case_track(lib, text);
     if (!track)
         return false;
 
@@ -94,6 +109,64 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
     return sig->count > 0 && sig->coverage > 0;
 }
 
+static void hash_u8(uint64_t *hash, uint8_t value)
+{
+    *hash ^= value;
+    *hash *= 1099511628211ULL;
+}
+
+static void hash_i32(uint64_t *hash, int value)
+{
+    for (int i = 0; i < 4; i++)
+        hash_u8(hash, (uint8_t) ((unsigned) value >> (8 * i)));
+}
+
+static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
+                             const char *text, RgbaSig *sig)
+{
+    ASS_Track *track = read_case_track(lib, text);
+    if (!track)
+        return false;
+
+    int change = 0;
+    ASS_ImageRGBA *img = ass_render_frame_rgba(renderer, track, 0, &change);
+    (void) change;
+
+    memset(sig, 0, sizeof(*sig));
+    sig->hash = 1469598103934665603ULL;
+    sig->needs_rgba = ass_frame_needs_rgba(renderer) != 0;
+
+    for (ASS_ImageRGBA *cur = img; cur; cur = cur->next) {
+        sig->count++;
+        hash_i32(&sig->hash, cur->type);
+        hash_i32(&sig->hash, cur->w);
+        hash_i32(&sig->hash, cur->h);
+        hash_i32(&sig->hash, cur->dst_x);
+        hash_i32(&sig->hash, cur->dst_y);
+        if (cur->type == IMAGE_TYPE_OUTLINE)
+            sig->outline_count++;
+        for (int y = 0; y < cur->h; y++) {
+            const uint8_t *row = cur->rgba + y * cur->stride;
+            for (int x = 0; x < cur->w; x++) {
+                uint8_t r = row[4 * x + 0];
+                uint8_t b = row[4 * x + 2];
+                uint8_t a = row[4 * x + 3];
+                sig->alpha_coverage += a;
+                for (int c = 0; c < 4; c++)
+                    hash_u8(&sig->hash, row[4 * x + c]);
+                if (cur->type == IMAGE_TYPE_OUTLINE && a) {
+                    sig->outline_red |= r > b && r > 0;
+                    sig->outline_blue |= b > r && b > 0;
+                }
+            }
+        }
+    }
+
+    ass_free_images_rgba(img);
+    ass_free_track(track);
+    return sig->count > 0 && sig->alpha_coverage > 0;
+}
+
 static bool same_sig(const RenderSig *a, const RenderSig *b)
 {
     return a->count == b->count &&
@@ -101,6 +174,17 @@ static bool same_sig(const RenderSig *a, const RenderSig *b)
            a->coverage == b->coverage &&
            a->n_colors == b->n_colors &&
            !memcmp(a->colors, b->colors, sizeof(a->colors));
+}
+
+static bool same_rgba_sig(const RgbaSig *a, const RgbaSig *b)
+{
+    return a->count == b->count &&
+           a->outline_count == b->outline_count &&
+           a->alpha_coverage == b->alpha_coverage &&
+           a->hash == b->hash &&
+           a->needs_rgba == b->needs_rgba &&
+           a->outline_red == b->outline_red &&
+           a->outline_blue == b->outline_blue;
 }
 
 int main(void)
@@ -125,6 +209,7 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     RenderSig legacy, numbered, multi, invalid;
+    RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
     bool ok = true;
 
     ok &= render_case(lib, renderer,
@@ -164,7 +249,8 @@ int main(void)
                       "{\\10bs20\\10bc&H202020&\\10ba&HAA&}Ten",
                       &multi);
     ok &= render_case(lib, renderer,
-                      "{\\11bs20\\0bs20\\2bsbad\\2bcINVALID\\2baINVALID}Invalid",
+                      "{\\11bs20\\0bs20\\2bsbad\\2bcINVALID\\2baINVALID"
+                      "\\2bvcINVALID\\2bvaINVALID}Invalid",
                       &invalid);
     ok &= render_case(lib, renderer,
                       "{\\1bs6\\2bs2\\2bc&H000000&}Small",
@@ -175,6 +261,47 @@ int main(void)
     ok &= render_case(lib, renderer,
                       "{\\2bs6}Before {\\r}After",
                       &invalid);
+
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\bord5\\3vc(&H0000FF&,&HFF0000&,"
+                           "&H0000FF&,&HFF0000&)}Grad",
+                           &rgba_legacy);
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\1bs5\\1bvc(&H0000FF&,&HFF0000&,"
+                           "&H0000FF&,&HFF0000&)}Grad",
+                           &rgba_numbered);
+    if (ok && !same_rgba_sig(&rgba_legacy, &rgba_numbered)) {
+        fprintf(stderr, "layer-1 border gradient differs from legacy outline gradient\n");
+        ok = false;
+    }
+    if (ok && (!rgba_numbered.needs_rgba ||
+               !rgba_numbered.outline_red ||
+               !rgba_numbered.outline_blue)) {
+        fprintf(stderr, "layer-1 numbered gradient did not produce RGBA outline colors\n");
+        ok = false;
+    }
+
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\bord2\\2bs8\\2bvc(&H0000FF&,&HFF0000&,"
+                           "&H0000FF&,&HFF0000&)\\2bva(&H00&,&H80&,"
+                           "&H00&,&H80&)}OuterGrad",
+                           &rgba_multi);
+    if (ok && (!rgba_multi.needs_rgba ||
+               rgba_multi.outline_count < 2 ||
+               !rgba_multi.outline_red ||
+               !rgba_multi.outline_blue)) {
+        fprintf(stderr, "extra border gradient did not render as RGBA outline\n");
+        ok = false;
+    }
+
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\2bs8\\2bvc(&H0000FF&,&HFF0000&,"
+                           "&H0000FF&,&HFF0000&)\\2bc&H000000&}Flat",
+                           &rgba_flat);
+    if (ok && rgba_flat.needs_rgba) {
+        fprintf(stderr, "flat border color did not disable extra-layer gradient\n");
+        ok = false;
+    }
 
     ass_renderer_done(renderer);
     ass_library_done(lib);

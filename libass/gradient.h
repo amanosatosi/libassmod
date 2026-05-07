@@ -56,6 +56,15 @@ void ass_gradient_disable_color(GradientState *state, int layer, uint32_t fallba
                                 double pwr);
 void ass_gradient_disable_alpha(GradientState *state, int layer, uint8_t fallback,
                                 double pwr);
+void ass_gradient_values_reset(GradientValues *values, uint32_t base_color);
+void ass_gradient_values_apply_color(GradientValues *dst, const uint32_t *values,
+                                     int count, double pwr);
+void ass_gradient_values_apply_alpha(GradientValues *dst, const uint8_t *values,
+                                     int count, double pwr);
+void ass_gradient_values_disable_color(GradientValues *dst, uint32_t fallback,
+                                       double pwr);
+void ass_gradient_values_disable_alpha(GradientValues *dst, uint8_t fallback,
+                                       double pwr);
 bool ass_gradient_equal(const GradientState *a, const GradientState *b);
 
 uint32_t ass_gradient_sample_color(const GradientValues *val, double u, double v);

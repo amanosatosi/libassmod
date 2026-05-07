@@ -676,6 +676,8 @@ typedef enum {
     BORDER_TAG_SIZE_Y,
     BORDER_TAG_COLOR,
     BORDER_TAG_ALPHA,
+    BORDER_TAG_COLOR_GRADIENT,
+    BORDER_TAG_ALPHA_GRADIENT,
 } NumberedBorderTag;
 
 static bool is_digit_char(char c)
@@ -723,6 +725,10 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
         tag = BORDER_TAG_SIZE_Y;
     else if (match_border_suffix(q, name_end, "bs", &arg_start))
         tag = BORDER_TAG_SIZE;
+    else if (match_border_suffix(q, name_end, "bvc", &arg_start))
+        tag = BORDER_TAG_COLOR_GRADIENT;
+    else if (match_border_suffix(q, name_end, "bva", &arg_start))
+        tag = BORDER_TAG_ALPHA_GRADIENT;
     else if (match_border_suffix(q, name_end, "bc", &arg_start))
         tag = BORDER_TAG_COLOR;
     else if (match_border_suffix(q, name_end, "ba", &arg_start))
@@ -787,14 +793,36 @@ static bool parse_hex_arg_strict(struct arg arg, uint32_t *out)
     return true;
 }
 
+static void fill_gradient_colors(GradientValues *values, uint32_t color)
+{
+    for (int i = 0; i < 4; i++)
+        values->color[i] = color;
+}
+
+static void fill_gradient_alphas(GradientValues *values, uint8_t alpha)
+{
+    for (int i = 0; i < 4; i++)
+        values->alpha[i] = alpha;
+}
+
+static void mark_rgba_needed(RenderContext *state)
+{
+    state->needs_rgba = true;
+    state->renderer->track->has_rgba = 1;
+}
+
 static void default_extra_border_color(RenderContext *state, int layer)
 {
     BorderLayerState *border = &state->border_layers[layer];
     uint32_t layer1 = state->border_layers[0].color;
-    if (!border->has_color)
+    if (!border->has_color) {
         border->color = (layer1 & 0xFFFFFF00u) | _a(border->color);
-    if (!border->has_alpha)
+        fill_gradient_colors(&border->gradient, border->color);
+    }
+    if (!border->has_alpha) {
         border->color = (border->color & 0xFFFFFF00u) | _a(layer1);
+        fill_gradient_alphas(&border->gradient, _a(border->color));
+    }
 }
 
 static void sync_layer1_border(RenderContext *state)
@@ -805,6 +833,7 @@ static void sync_layer1_border(RenderContext *state)
     state->border_layers[0].size_x = state->border_x;
     state->border_layers[0].size_y = state->border_y;
     state->border_layers[0].color = state->c[2];
+    state->border_layers[0].gradient = state->gradient.layer[2];
 }
 
 static void set_border_layer_size(RenderContext *state, int layer,
@@ -883,6 +912,8 @@ static void apply_numbered_border_tag(RenderContext *state,
             BorderLayerState *border = &state->border_layers[layer];
             default_extra_border_color(state, layer);
             change_color(&border->color, ass_bswap32(val), pwr);
+            ass_gradient_values_disable_color(&border->gradient,
+                                              border->color, pwr);
             border->has_color = true;
         }
         break;
@@ -907,10 +938,78 @@ static void apply_numbered_border_tag(RenderContext *state,
             BorderLayerState *border = &state->border_layers[layer];
             default_extra_border_color(state, layer);
             change_alpha(&border->color, val, pwr);
+            ass_gradient_values_disable_alpha(&border->gradient,
+                                              _a(border->color), pwr);
             border->has_alpha = true;
         }
         break;
     }
+    case BORDER_TAG_COLOR_GRADIENT:
+        if (layer == 0) {
+            if (nargs) {
+                uint32_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = parse_color_tag(args[i].start);
+                ass_gradient_apply_color(&state->gradient, 2, vals, cnt, pwr);
+                disable_image_fill_layer(state, 2);
+                mark_rgba_needed(state);
+            } else {
+                ass_gradient_disable_color(&state->gradient, 2,
+                                           state->c[2], pwr);
+            }
+            sync_layer1_border(state);
+        } else {
+            BorderLayerState *border = &state->border_layers[layer];
+            default_extra_border_color(state, layer);
+            if (nargs) {
+                uint32_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = parse_color_tag(args[i].start);
+                ass_gradient_values_apply_color(&border->gradient,
+                                                vals, cnt, pwr);
+                border->has_color = true;
+                mark_rgba_needed(state);
+            } else {
+                ass_gradient_values_disable_color(&border->gradient,
+                                                  border->color, pwr);
+            }
+        }
+        break;
+    case BORDER_TAG_ALPHA_GRADIENT:
+        if (layer == 0) {
+            if (nargs) {
+                uint8_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
+                ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+                disable_image_fill_layer(state, 2);
+                mark_rgba_needed(state);
+            } else {
+                ass_gradient_disable_alpha(&state->gradient, 2,
+                                           _a(state->c[2]), pwr);
+            }
+            sync_layer1_border(state);
+        } else {
+            BorderLayerState *border = &state->border_layers[layer];
+            default_extra_border_color(state, layer);
+            if (nargs) {
+                uint8_t vals[4];
+                int cnt = FFMIN(nargs, 4);
+                for (int i = 0; i < cnt; i++)
+                    vals[i] = (uint8_t) parse_alpha_tag(args[i].start);
+                ass_gradient_values_apply_alpha(&border->gradient,
+                                                vals, cnt, pwr);
+                border->has_alpha = true;
+                mark_rgba_needed(state);
+            } else {
+                ass_gradient_values_disable_alpha(&border->gradient,
+                                                  _a(border->color), pwr);
+            }
+        }
+        break;
     default:
         break;
     }
