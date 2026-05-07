@@ -126,15 +126,6 @@ START(filter, filter_desc)
     VECTOR(shadow)
 END(FilterDesc)
 
-// describes glyph bitmap reference
-// bm and bm_o are refed when inserted and unrefed when dropped
-START(bitmap_ref, bitmap_ref_key)
-    GENERIC(Bitmap *, bm)
-    GENERIC(Bitmap *, bm_o)
-    VECTOR(pos)
-    VECTOR(pos_o)
-END(BitmapRef)
-
 #undef START
 #undef GENERIC
 #undef STRING

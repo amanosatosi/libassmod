@@ -121,6 +121,15 @@ typedef struct {
     ImageFillLayer layer[4];
 } ImageFillState;
 
+typedef struct {
+    bool enabled;
+    bool has_color;
+    bool has_alpha;
+    double size_x;
+    double size_y;
+    uint32_t color;
+} BorderLayerState;
+
 typedef struct ass_tag_image_entry {
     char *key;
     ASS_TagImageFormat format;
@@ -151,10 +160,12 @@ typedef struct {
     bool has_distortion;
     CompositeHashValue *temp_image;
     int x, y;
-    Bitmap *bm, *bm_o, *bm_s;   // glyphs, outline, shadow bitmaps
+    Bitmap *bm, *bm_o, *bm_s;   // glyphs, layer-1 outline, shadow bitmaps
+    Bitmap *bm_border[ASS_BORDER_LAYERS_MAX - 1];
     CompositeHashValue *image;
     GradientState gradient;
     ImageFillState image_fill;
+    BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t base_c[4];
     int fade;
     int line;
@@ -251,6 +262,7 @@ typedef struct glyph_info {
     double distort_u3, distort_v3;
     OutlineHashValue *distorted_outline;
     Bitmap distort_bitmap, distort_bitmap_o;
+    Bitmap distort_bitmap_border[ASS_BORDER_LAYERS_MAX - 1];
     bool has_distort_bitmap;
     bool has_distort_outline;
     unsigned italic;
@@ -262,6 +274,9 @@ typedef struct glyph_info {
 
     ASS_Vector shift;
     Bitmap *bm, *bm_o;
+    Bitmap *bm_border[ASS_BORDER_LAYERS_MAX - 1];
+    ASS_Vector pos_border[ASS_BORDER_LAYERS_MAX - 1];
+    BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     JitterState jitter;
     double jitter_dx;
     double jitter_dy;
@@ -391,6 +406,7 @@ struct render_context {
     double furi_offset_y;
     double border_x;            // outline width
     double border_y;
+    BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     enum {
         EVENT_NORMAL = 0,       // "normal" top-, sub- or mid- title
         EVENT_POSITIONED = 1,   // happens after \pos or \move, margins are ignored

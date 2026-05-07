@@ -28,10 +28,13 @@
 typedef struct cache Cache;
 typedef uint64_t ass_hashcode;
 
+#define ASS_BORDER_LAYERS_MAX 10
+
 // cache values
 
 typedef struct {
     Bitmap bm, bm_o, bm_s;
+    Bitmap bm_border[ASS_BORDER_LAYERS_MAX - 1];
 } CompositeHashValue;
 
 typedef struct {
@@ -45,6 +48,17 @@ typedef struct {
 // Create definitions for bitmap, outline and composite hash keys
 #define CREATE_STRUCT_DEFINITIONS
 #include "ass_cache_template.h"
+
+// describes glyph bitmap reference
+// bm and border bitmaps are refed when inserted and unrefed when dropped
+typedef struct {
+    Bitmap *bm;
+    Bitmap *bm_o;
+    Bitmap *bm_border[ASS_BORDER_LAYERS_MAX - 1];
+    ASS_Vector pos;
+    ASS_Vector pos_o;
+    ASS_Vector pos_border[ASS_BORDER_LAYERS_MAX - 1];
+} BitmapRef;
 
 // Type-specific function pointers
 typedef ass_hashcode (*HashFunction)(void *key, ass_hashcode hval);
@@ -76,11 +90,12 @@ enum {
     FILTER_NONZERO_SHADOW = 0x04,
     FILTER_FILL_IN_SHADOW = 0x08,
     FILTER_FILL_IN_BORDER = 0x10,
+    FILTER_MULTI_BORDER = 0x20,
 };
 
 // ass_cache_get() takes ownership of the bitmaps array and either frees it
-// or persists it in the item key; individual bitmaps in the array behave
-// as documented in ass_cache_template.h
+// or persists it in the item key; individual bitmaps are refed when inserted
+// and unrefed when dropped
 typedef struct {
     FilterDesc filter;
     size_t bitmap_count;

@@ -48,6 +48,16 @@ static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
                               const double m[3][3],
                               ASS_Vector *pos, ASS_Vector *pos_o,
                               bool need_border, int flags);
+static inline bool border_layer_has_size(const BorderLayerState *layer);
+static bool border_layers_state_equal(const BorderLayerState *a,
+                                      const BorderLayerState *b);
+static bool has_multi_border_layers(const BorderLayerState *layers);
+static double border_layers_max_x(const BorderLayerState *layers);
+static double border_layers_max_y(const BorderLayerState *layers);
+static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer);
+static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer);
+static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer);
+static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
@@ -82,6 +92,8 @@ static void free_glyph_list_chains(GlyphInfo *glyphs, int length)
             if (info->has_distort_bitmap) {
                 ass_free_bitmap(&info->distort_bitmap);
                 ass_free_bitmap(&info->distort_bitmap_o);
+                for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+                    ass_free_bitmap(&info->distort_bitmap_border[i]);
             }
             if (info->has_distort_outline && info->distorted_outline) {
                 ass_outline_free(&info->distorted_outline->outline[0]);
@@ -104,6 +116,8 @@ static void free_furi_groups(TextInfo *text_info)
             if (info->has_distort_bitmap) {
                 ass_free_bitmap(&info->distort_bitmap);
                 ass_free_bitmap(&info->distort_bitmap_o);
+                for (int k = 0; k < ASS_BORDER_LAYERS_MAX - 1; k++)
+                    ass_free_bitmap(&info->distort_bitmap_border[k]);
             }
             if (info->has_distort_outline && info->distorted_outline) {
                 ass_outline_free(&info->distorted_outline->outline[0]);
@@ -1059,6 +1073,44 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     return tail;
 }
 
+static ASS_Image **render_border_layer(RenderContext *state,
+                                       CombinedBitmapInfo *info,
+                                       int layer, ASS_Image **tail,
+                                       ASS_ImageRGBA ***rgba_tail)
+{
+    Bitmap *bm = combined_border_bitmap(info, layer);
+    if (!bm)
+        return tail;
+
+    if ((info->effect_type == EF_KARAOKE_KO) && (info->effect_timing <= 0))
+        return tail;
+
+    if (layer == 0) {
+        return render_glyph(state, info, bm, info->x, info->y, info->c[2],
+                            0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
+                            2, 2, rgba_tail);
+    }
+
+    uint32_t color = info->border_layers[layer].color;
+    ass_apply_fade(&color, info->fade);
+
+    uint32_t saved_base = info->base_c[2];
+    GradientValues saved_gradient = info->gradient.layer[2];
+    ImageFillLayer saved_image = info->image_fill.layer[2];
+    info->base_c[2] = info->border_layers[layer].color;
+    memset(&info->gradient.layer[2], 0, sizeof(info->gradient.layer[2]));
+    clear_image_fill_layer(&info->image_fill.layer[2]);
+
+    tail = render_glyph(state, info, bm, info->x, info->y, color,
+                        0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
+                        2, 2, rgba_tail);
+
+    info->base_c[2] = saved_base;
+    info->gradient.layer[2] = saved_gradient;
+    info->image_fill.layer[2] = saved_image;
+    return tail;
+}
+
 static bool quantize_transform(double m[3][3], ASS_Vector *pos,
                                ASS_DVector *offset, bool first,
                                BitmapHashKey *key)
@@ -1791,18 +1843,9 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
         CombinedBitmapInfo *info = &bitmaps[i];
-        if (!info->bm_o)
-            continue;
-
-        if ((info->effect_type == EF_KARAOKE_KO)
-                && (info->effect_timing <= 0)) {
-            // do nothing
-        } else {
-            tail =
-                render_glyph(state, info, info->bm_o, info->x, info->y, info->c[2],
-                             0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
-                             2, 2, out_rgba ? &rgba_tail : NULL);
-        }
+        for (int layer = ASS_BORDER_LAYERS_MAX - 1; layer >= 0; layer--)
+            tail = render_border_layer(state, info, layer, tail,
+                                       out_rgba ? &rgba_tail : NULL);
     }
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
@@ -2090,6 +2133,24 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->border_style = style->BorderStyle;
     state->border_x = style->Outline;
     state->border_y = style->Outline;
+    state->border_layers[0] = (BorderLayerState) {
+        .enabled = style->Outline > 0,
+        .has_color = true,
+        .has_alpha = true,
+        .size_x = style->Outline,
+        .size_y = style->Outline,
+        .color = style->OutlineColour,
+    };
+    for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++) {
+        state->border_layers[i] = (BorderLayerState) {
+            .enabled = false,
+            .has_color = false,
+            .has_alpha = false,
+            .size_x = 0,
+            .size_y = 0,
+            .color = style->OutlineColour,
+        };
+    }
     state->scale_x = style->ScaleX;
     state->scale_y = style->ScaleY;
     state->hspacing = style->Spacing;
@@ -2191,8 +2252,12 @@ static void free_distortion_resources(RenderContext *state)
             if (info->has_distort_bitmap) {
                 ass_free_bitmap(&info->distort_bitmap);
                 ass_free_bitmap(&info->distort_bitmap_o);
+                for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                    ass_free_bitmap(&info->distort_bitmap_border[j]);
                 info->bm = NULL;
                 info->bm_o = NULL;
+                for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                    info->bm_border[j] = NULL;
                 info->has_distort_bitmap = false;
             }
             if (info->has_distort_outline && info->distorted_outline) {
@@ -2211,6 +2276,8 @@ static void free_distortion_resources(RenderContext *state)
             ass_free_bitmap(&info->temp_image->bm);
             ass_free_bitmap(&info->temp_image->bm_o);
             ass_free_bitmap(&info->temp_image->bm_s);
+            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                ass_free_bitmap(&info->temp_image->bm_border[j]);
             free(info->temp_image);
             info->temp_image = NULL;
         }
@@ -2483,6 +2550,127 @@ static void calc_transform_matrix(RenderContext *state,
  * After that, bitmaps are added to the cache.
  * They are returned in info->bm (glyph), info->bm_o (outline).
  */
+static bool setup_border_outline_key(RenderContext *state, GlyphInfo *info,
+                                     OutlineHashValue *outline,
+                                     const double m[3][3],
+                                     const double m2[3][3],
+                                     double border_x, double border_y,
+                                     OutlineHashKey *ol_key,
+                                     double out_m[3][3],
+                                     bool *zero_border)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    const ASS_Transform *tr = &info->transform;
+
+    ol_key->type = OUTLINE_BORDER;
+    BorderHashKey *k = &ol_key->u.border;
+    k->outline = outline;
+
+    double bord_x =
+        64 * state->border_scale_x * border_x / tr->scale.x /
+            render_priv->par_scale_x;
+    double bord_y =
+        64 * state->border_scale_y * border_y / tr->scale.y;
+
+    const ASS_Rect *bbox = &outline->cbox;
+    // Estimate bounding box half size after stroking
+    double dx = (bbox->x_max - bbox->x_min) / 2.0 + (bord_x + 64);
+    double dy = (bbox->y_max - bbox->y_min) / 2.0 + (bord_y + 64);
+
+    // Matrix after quantize_transform() has
+    // input and output origin at bounding box center.
+    double mxx = fabs(m[0][0]), mxy = fabs(m[0][1]);
+    double myx = fabs(m[1][0]), myy = fabs(m[1][1]);
+    double mzx = fabs(m[2][0]), mzy = fabs(m[2][1]);
+
+    double z0 = m[2][2] - mzx * dx - mzy * dy;
+    double w = 1 / FFMAX(z0, m[2][2] / MAX_PERSP_SCALE);
+
+    // Notation from quantize_transform(). Estimate acceptable stroker error.
+    double x_lim = mxx * dx + mxy * dy;
+    double y_lim = myx * dx + myy * dy;
+    double rz = FFMAX(x_lim, y_lim) * w;
+
+    w *= STROKER_PRECISION / POSITION_PRECISION;
+    frexp(w * (FFMAX(mxx, myx) + mzx * rz), &k->scale_ord_x);
+    frexp(w * (FFMAX(mxy, myy) + mzy * rz), &k->scale_ord_y);
+    bord_x = ldexp(bord_x, k->scale_ord_x);
+    bord_y = ldexp(bord_y, k->scale_ord_y);
+    if (!(bord_x < OUTLINE_MAX && bord_y < OUTLINE_MAX))
+        return false;
+    k->border.x = ass_lrint(bord_x / STROKER_PRECISION);
+    k->border.y = ass_lrint(bord_y / STROKER_PRECISION);
+    if (!k->border.x && !k->border.y) {
+        *zero_border = true;
+        return true;
+    }
+
+    *zero_border = false;
+    for (int i = 0; i < 3; i++) {
+        out_m[i][0] = ldexp(m2[i][0], -k->scale_ord_x);
+        out_m[i][1] = ldexp(m2[i][1], -k->scale_ord_y);
+        out_m[i][2] = m2[i][2];
+    }
+    return true;
+}
+
+static bool load_border_bitmap(RenderContext *state, GlyphInfo *info,
+                               BitmapHashKey *base_key,
+                               OutlineHashKey *ol_key,
+                               const double m[3][3],
+                               ASS_Vector *pos_o,
+                               ASS_DVector *offset,
+                               bool distorted,
+                               Bitmap *distort_bitmap,
+                               Bitmap **out_bm)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    OutlineHashValue temp_outline = {0};
+    OutlineHashValue *outline_border = NULL;
+    bool ok = false;
+
+    if (distorted) {
+        if (!ass_outline_construct(ol_key, &temp_outline, render_priv) ||
+                !temp_outline.valid)
+            goto cleanup;
+        outline_border = &temp_outline;
+    } else {
+        outline_border =
+            ass_cache_get(render_priv->cache.outline_cache, ol_key, render_priv);
+    }
+
+    BitmapHashKey key = *base_key;
+    key.outline = outline_border;
+    double qm[3][3];
+    memcpy(qm, m, sizeof(qm));
+    if (!key.outline || !key.outline->valid ||
+            !quantize_transform(qm, pos_o, offset, false, &key))
+        goto cleanup;
+
+    if (distorted) {
+        memset(distort_bitmap, 0, sizeof(*distort_bitmap));
+        if (ass_bitmap_construct(&key, distort_bitmap, state) &&
+                distort_bitmap->buffer) {
+            *out_bm = distort_bitmap;
+            info->has_distort_bitmap = true;
+            ok = true;
+        }
+    } else {
+        *out_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+        if (*out_bm && (*out_bm)->buffer)
+            ok = true;
+        else
+            *out_bm = NULL;
+    }
+
+cleanup:
+    if (distorted) {
+        ass_outline_free(&temp_outline.outline[0]);
+        ass_outline_free(&temp_outline.outline[1]);
+    }
+    return ok;
+}
+
 static void
 get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                  int32_t *leftmost_x,
@@ -2523,7 +2711,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     *pos_o = *pos;
 
     bool rnd_active = (info->rnd_x != 0.0) || (info->rnd_y != 0.0) || (info->rnd_z != 0.0);
-    if (rnd_active && !(flags & FILTER_BORDER_STYLE_3)) {
+    if (rnd_active && !(flags & (FILTER_BORDER_STYLE_3 | FILTER_MULTI_BORDER))) {
         bool ok = build_rnd_bitmaps(state, info, outline, m, pos, pos_o,
                                     (flags & FILTER_NONZERO_BORDER), flags);
         if (ok)
@@ -2547,11 +2735,14 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 
     *pos_o = *pos;
 
-    OutlineHashKey ol_key;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+        info->bm_border[i] = NULL;
+
     if (flags & FILTER_BORDER_STYLE_3) {
         if (!(flags & (FILTER_NONZERO_BORDER | FILTER_NONZERO_SHADOW)))
             return;
 
+        OutlineHashKey ol_key;
         ol_key.type = OUTLINE_BOX;
 
         ASS_DVector bord = {
@@ -2587,120 +2778,66 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
             m[i][1] = m1[i][1] * scale.y;
             m[i][2] = m1[i][0] * offset.x + m1[i][1] * offset.y + m1[i][2];
         }
-    } else {
-        if (!(flags & FILTER_NONZERO_BORDER))
-            return;
 
-        ol_key.type = OUTLINE_BORDER;
-        BorderHashKey *k = &ol_key.u.border;
-        k->outline = outline;
-
-        double bord_x =
-            64 * state->border_scale_x * info->border_x / tr->scale.x /
-                render_priv->par_scale_x;
-        double bord_y =
-            64 * state->border_scale_y * info->border_y / tr->scale.y;
-
-        const ASS_Rect *bbox = &outline->cbox;
-        // Estimate bounding box half size after stroking
-        double dx = (bbox->x_max - bbox->x_min) / 2.0 + (bord_x + 64);
-        double dy = (bbox->y_max - bbox->y_min) / 2.0 + (bord_y + 64);
-
-        // Matrix after quantize_transform() has
-        // input and output origin at bounding box center.
-        double mxx = fabs(m[0][0]), mxy = fabs(m[0][1]);
-        double myx = fabs(m[1][0]), myy = fabs(m[1][1]);
-        double mzx = fabs(m[2][0]), mzy = fabs(m[2][1]);
-
-        double z0 = m[2][2] - mzx * dx - mzy * dy;
-        double w = 1 / FFMAX(z0, m[2][2] / MAX_PERSP_SCALE);
-
-        // Notation from quantize_transform().
-        // Note that goal here is to estimate acceptable error for stroking, i. e. D(x) and D(y).
-        // Matrix coefficients are constants now, so D(m_ij) = 0 for all i, j from {x, y, z}.
-
-        // D(z) <= |m_zx| * D(x) + |m_zy| * D(y),
-        // D(x_out) = D((m_xx * x + m_xy * y) / z)
-        //  <= (|m_xx| * D(x) + |m_xy| * D(y)) / z0 + x_lim * D(z) / z0^2
-        //  <= (|m_xx| / z0 + |m_zx| * x_lim / z0^2) * D(x)
-        //   + (|m_xy| / z0 + |m_zy| * x_lim / z0^2) * D(y),
-        // D(y_out) = D((m_yx * x + m_yy * y) / z)
-        //  <= (|m_yx| * D(x) + |m_yy| * D(y)) / z0 + y_lim * D(z) / z0^2
-        //  <= (|m_yx| / z0 + |m_zx| * y_lim / z0^2) * D(x)
-        //   + (|m_yy| / z0 + |m_zy| * y_lim / z0^2) * D(y).
-
-        // Quantization steps (pick: ACCURACY = POSITION_PRECISION):
-        // STROKER_PRECISION / 2^scale_ord_x ~ D(x) ~ POSITION_PRECISION /
-        //   (max(|m_xx|, |m_yx|) / z0 + |m_zx| * max(x_lim, y_lim) / z0^2),
-        // STROKER_PRECISION / 2^scale_ord_y ~ D(y) ~ POSITION_PRECISION /
-        //   (max(|m_xy|, |m_yy|) / z0 + |m_zy| * max(x_lim, y_lim) / z0^2).
-
-        double x_lim = mxx * dx + mxy * dy;
-        double y_lim = myx * dx + myy * dy;
-        double rz = FFMAX(x_lim, y_lim) * w;
-
-        w *= STROKER_PRECISION / POSITION_PRECISION;
-        frexp(w * (FFMAX(mxx, myx) + mzx * rz), &k->scale_ord_x);
-        frexp(w * (FFMAX(mxy, myy) + mzy * rz), &k->scale_ord_y);
-        bord_x = ldexp(bord_x, k->scale_ord_x);
-        bord_y = ldexp(bord_y, k->scale_ord_y);
-        if (!(bord_x < OUTLINE_MAX && bord_y < OUTLINE_MAX))
-            return;
-        k->border.x = ass_lrint(bord_x / STROKER_PRECISION);
-        k->border.y = ass_lrint(bord_y / STROKER_PRECISION);
-        if (!k->border.x && !k->border.y) {
-            info->bm_o = info->bm;
-            return;
-        }
-
-        for (int i = 0; i < 3; i++) {
-            m[i][0] = ldexp(m2[i][0], -k->scale_ord_x);
-            m[i][1] = ldexp(m2[i][1], -k->scale_ord_y);
-            m[i][2] = m2[i][2];
-        }
-    }
-
-    OutlineHashValue temp_outline = {0};
-    OutlineHashValue *outline_border = NULL;
-    if (distorted) {
-        if (!ass_outline_construct(&ol_key, &temp_outline, render_priv) || !temp_outline.valid)
-            goto cleanup;
-        outline_border = &temp_outline;
-    } else {
-        outline_border = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
-    }
-
-    key.outline = outline_border;
-    if (!key.outline || !key.outline->valid ||
-            !quantize_transform(m, pos_o, offset, false, &key))
-        goto cleanup;
-
-    if (distorted) {
-        memset(&info->distort_bitmap_o, 0, sizeof(info->distort_bitmap_o));
-        if (ass_bitmap_construct(&key, &info->distort_bitmap_o, state) &&
-                info->distort_bitmap_o.buffer) {
-            info->bm_o = &info->distort_bitmap_o;
-            info->has_distort_bitmap = true;
-        } else if (info->bm) {
-            info->bm_o = info->bm;
-        }
-        if (!info->bm_o)
+        if (load_border_bitmap(state, info, &key, &ol_key, m, pos_o, offset,
+                               distorted, &info->distort_bitmap_o, &info->bm_o)) {
+            if (!info->bm)
+                *pos = *pos_o;
+        } else {
             *pos_o = *pos;
-        else if (!info->bm)
-            *pos = *pos_o;
-    } else {
-        info->bm_o = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-        if (!info->bm_o || !info->bm_o->buffer) {
-            info->bm_o = NULL;
-            *pos_o = *pos;
-        } else if (!info->bm)
-            *pos = *pos_o;
+            if (info->bm)
+                info->bm_o = info->bm;
+        }
+        return;
     }
 
-cleanup:
-    if (distorted) {
-        ass_outline_free(&temp_outline.outline[0]);
-        ass_outline_free(&temp_outline.outline[1]);
+    if (!(flags & FILTER_NONZERO_BORDER))
+        return;
+
+    double prev_x = 0;
+    double prev_y = 0;
+    for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+        const BorderLayerState *border = &info->border_layers[layer];
+        if (!border_layer_has_size(border))
+            continue;
+        if (border->size_x <= prev_x && border->size_y <= prev_y)
+            continue;
+
+        OutlineHashKey ol_key;
+        double border_m[3][3];
+        bool zero_border = false;
+        if (!setup_border_outline_key(state, info, outline, m, m2,
+                                      border->size_x, border->size_y,
+                                      &ol_key, border_m, &zero_border))
+            continue;
+
+        Bitmap **target_bm =
+            layer == 0 ? &info->bm_o : &info->bm_border[layer - 1];
+        ASS_Vector *target_pos =
+            layer == 0 ? pos_o : &info->pos_border[layer - 1];
+        if (zero_border) {
+            if (layer == 0) {
+                info->bm_o = info->bm;
+                *pos_o = *pos;
+            }
+            prev_x = border->size_x;
+            prev_y = border->size_y;
+            continue;
+        }
+
+        Bitmap *distort_target =
+            layer == 0 ? &info->distort_bitmap_o :
+                         &info->distort_bitmap_border[layer - 1];
+        if (load_border_bitmap(state, info, &key, &ol_key, border_m,
+                               target_pos, offset, distorted, distort_target,
+                               target_bm)) {
+            if (!info->bm)
+                *pos = *target_pos;
+            prev_x = border->size_x;
+            prev_y = border->size_y;
+        } else if (layer == 0) {
+            *pos_o = *pos;
+        }
     }
 }
 
@@ -2974,8 +3111,10 @@ static void measure_text(RenderContext *state)
         }
         max_asc  = FFMAX(max_asc,  cur->asc);
         max_desc = FFMAX(max_desc, cur->desc);
-        max_border_y = FFMAX(max_border_y, cur->border_y);
-        max_border_x = FFMAX(max_border_x, cur->border_x);
+        max_border_y = FFMAX(max_border_y,
+                             border_layers_max_y(cur->border_layers));
+        max_border_x = FFMAX(max_border_x,
+                             border_layers_max_x(cur->border_layers));
         if (cur->symbol != '\n')
             scale = 1.0 / 64;
     }
@@ -3406,6 +3545,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length)
             last->border_style != info->border_style ||
             last->border_x != info->border_x ||
             last->border_y != info->border_y ||
+            !border_layers_state_equal(last->border_layers, info->border_layers) ||
             last->hspacing != info->hspacing ||
             last->italic != info->italic ||
             last->bold != info->bold ||
@@ -3554,6 +3694,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->border_style = state->border_style;
     info->border_x = state->border_x;
     info->border_y = state->border_y;
+    memcpy(info->border_layers, state->border_layers, sizeof(info->border_layers));
     info->hspacing = hspacing;
     info->bold = state->bold;
     info->italic = state->italic;
@@ -3644,6 +3785,86 @@ static bool append_text_segment(RenderContext *state, char *start, char *end,
         }
     }
     return true;
+}
+
+static inline bool border_layer_has_size(const BorderLayerState *layer)
+{
+    return layer->enabled && (layer->size_x > 0 || layer->size_y > 0);
+}
+
+static bool border_layer_state_equal(const BorderLayerState *a,
+                                     const BorderLayerState *b)
+{
+    return a->enabled == b->enabled &&
+           a->has_color == b->has_color &&
+           a->has_alpha == b->has_alpha &&
+           a->size_x == b->size_x &&
+           a->size_y == b->size_y &&
+           a->color == b->color;
+}
+
+static bool border_layers_state_equal(const BorderLayerState *a,
+                                      const BorderLayerState *b)
+{
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
+        if (!border_layer_state_equal(&a[i], &b[i]))
+            return false;
+    return true;
+}
+
+static bool has_multi_border_layers(const BorderLayerState *layers)
+{
+    double prev_x = 0;
+    double prev_y = 0;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
+        if (!border_layer_has_size(&layers[i]))
+            continue;
+        if (layers[i].size_x <= prev_x && layers[i].size_y <= prev_y)
+            continue;
+        if (i > 0)
+            return true;
+        prev_x = layers[i].size_x;
+        prev_y = layers[i].size_y;
+    }
+    return false;
+}
+
+static double border_layers_max_x(const BorderLayerState *layers)
+{
+    double max = 0;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
+        if (border_layer_has_size(&layers[i]))
+            max = FFMAX(max, layers[i].size_x);
+    return max;
+}
+
+static double border_layers_max_y(const BorderLayerState *layers)
+{
+    double max = 0;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
+        if (border_layer_has_size(&layers[i]))
+            max = FFMAX(max, layers[i].size_y);
+    return max;
+}
+
+static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer)
+{
+    return layer == 0 ? info->bm_o : info->bm_border[layer - 1];
+}
+
+static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer)
+{
+    return layer == 0 ? &value->bm_o : &value->bm_border[layer - 1];
+}
+
+static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer)
+{
+    return layer == 0 ? ref->bm_o : ref->bm_border[layer - 1];
+}
+
+static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer)
+{
+    return layer == 0 ? ref->pos_o : ref->pos_border[layer - 1];
 }
 
 typedef struct {
@@ -3881,8 +4102,11 @@ static void retrieve_glyphs_from_list(RenderContext *state,
                     rnd_pad = FFMAX(rnd_pad, rnd_pad_z);
 
                 double border_pad_x =
-                    info->border_x * state->border_scale_x / state->renderer->par_scale_x;
-                double border_pad_y = info->border_y * state->border_scale_y;
+                    border_layers_max_x(info->border_layers) *
+                    state->border_scale_x / state->renderer->par_scale_x;
+                double border_pad_y =
+                    border_layers_max_y(info->border_layers) *
+                    state->border_scale_y;
                 double border_pad = FFMAX(border_pad_x, border_pad_y);
 
                 double shadow_pad =
@@ -4997,8 +5221,12 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             int flags = 0;
             if (info->border_style == 3)
                 flags |= FILTER_BORDER_STYLE_3;
-            if (info->border_x || info->border_y)
+            if (border_layers_max_x(info->border_layers) ||
+                    border_layers_max_y(info->border_layers))
                 flags |= FILTER_NONZERO_BORDER;
+            if (has_multi_border_layers(info->border_layers) &&
+                    info->border_style != 3)
+                flags |= FILTER_MULTI_BORDER;
             if (info->shadow_x || info->shadow_y)
                 flags |= FILTER_NONZERO_SHADOW;
             if (flags & FILTER_NONZERO_SHADOW &&
@@ -5032,6 +5260,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
                 current_info->gradient = info->gradient;
                 current_info->image_fill = info->image_fill;
+                memcpy(current_info->border_layers, info->border_layers,
+                       sizeof(current_info->border_layers));
                 current_info->fade = info->fade;
                 current_info->line = info->line;
                 current_info->from_drawing = info->drawing_text.str != NULL;
@@ -5065,6 +5295,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
 
                 current_info->x = current_info->y = INT_MAX;
                 current_info->bm = current_info->bm_o = current_info->bm_s = NULL;
+                for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                    current_info->bm_border[j] = NULL;
                 current_info->image = NULL;
 
                 current_info->bitmap_count = current_info->max_bitmap_count = 0;
@@ -5097,7 +5329,10 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             if (info->has_distort_bitmap || info->distorted_outline)
                 current_info->has_distortion = true;
 
-            if (!info->bm && !info->bm_o)
+            bool has_bitmap = info->bm || info->bm_o;
+            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1 && !has_bitmap; j++)
+                has_bitmap = info->bm_border[j] != NULL;
+            if (!has_bitmap)
                 continue;
 
             if (current_info->bitmap_count >= current_info->max_bitmap_count) {
@@ -5107,10 +5342,16 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
 
                 current_info->max_bitmap_count = new_size;
             }
-            current_info->bitmaps[current_info->bitmap_count].bm   = info->bm;
-            current_info->bitmaps[current_info->bitmap_count].bm_o = info->bm_o;
-            current_info->bitmaps[current_info->bitmap_count].pos   = pos;
-            current_info->bitmaps[current_info->bitmap_count].pos_o = pos_o;
+            BitmapRef *ref = &current_info->bitmaps[current_info->bitmap_count];
+            memset(ref, 0, sizeof(*ref));
+            ref->bm   = info->bm;
+            ref->bm_o = info->bm_o;
+            ref->pos   = pos;
+            ref->pos_o = pos_o;
+            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++) {
+                ref->bm_border[j] = info->bm_border[j];
+                ref->pos_border[j] = info->pos_border[j];
+            }
             current_info->bitmap_count++;
 
             current_info->x = FFMIN(current_info->x, pos.x);
@@ -5155,6 +5396,10 @@ static void render_and_combine_glyphs(RenderContext *state,
             info->bitmaps[j].pos.y -= info->y;
             info->bitmaps[j].pos_o.x -= info->x;
             info->bitmaps[j].pos_o.y -= info->y;
+            for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX - 1; layer++) {
+                info->bitmaps[j].pos_border[layer].x -= info->x;
+                info->bitmaps[j].pos_border[layer].y -= info->y;
+            }
         }
 
         if (info->has_distortion) {
@@ -5177,6 +5422,9 @@ static void render_and_combine_glyphs(RenderContext *state,
             }
             info->bm = val->bm.buffer ? &val->bm : NULL;
             info->bm_o = val->bm_o.buffer ? &val->bm_o : NULL;
+            for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX - 1; layer++)
+                info->bm_border[layer] = val->bm_border[layer].buffer ?
+                    &val->bm_border[layer] : NULL;
             info->bm_s = val->bm_s.buffer ? &val->bm_s : NULL;
             info->image = NULL;
             info->temp_image = val;
@@ -5198,6 +5446,9 @@ static void render_and_combine_glyphs(RenderContext *state,
             info->bm = &val->bm;
         if (val->bm_o.buffer)
             info->bm_o = &val->bm_o;
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX - 1; layer++)
+            if (val->bm_border[layer].buffer)
+                info->bm_border[layer] = &val->bm_border[layer];
         if (val->bm_s.buffer)
             info->bm_s = &val->bm_s;
         info->image = val;
@@ -5212,6 +5463,54 @@ static inline void rectangle_combine(ASS_Rect *rect, const Bitmap *bm, ASS_Vecto
     pos.x += bm->left;
     pos.y += bm->top;
     rectangle_update(rect, pos.x, pos.y, pos.x + bm->w, pos.y + bm->h);
+}
+
+static void bitmap_max_into(Bitmap *dst, const Bitmap *src)
+{
+    if (!dst->buffer || !src->buffer)
+        return;
+
+    int32_t l = FFMAX(dst->left, src->left);
+    int32_t t = FFMAX(dst->top,  src->top);
+    int32_t r = FFMIN(dst->left + dst->w, src->left + src->w);
+    int32_t b = FFMIN(dst->top  + dst->h, src->top  + src->h);
+    if (l >= r || t >= b)
+        return;
+
+    uint8_t *d = dst->buffer + (t - dst->top) * dst->stride + (l - dst->left);
+    const uint8_t *s = src->buffer + (t - src->top) * src->stride + (l - src->left);
+    for (int32_t y = 0; y < b - t; y++) {
+        for (int32_t x = 0; x < r - l; x++)
+            d[x] = FFMAX(d[x], s[x]);
+        d += dst->stride;
+        s += src->stride;
+    }
+}
+
+static void ring_subtract_covered(Bitmap *ring, Bitmap *covered)
+{
+    if (!ring->buffer || !covered->buffer)
+        return;
+
+    int32_t l = FFMAX(ring->left, covered->left);
+    int32_t t = FFMAX(ring->top,  covered->top);
+    int32_t r = FFMIN(ring->left + ring->w, covered->left + covered->w);
+    int32_t b = FFMIN(ring->top  + ring->h, covered->top  + covered->h);
+    if (l >= r || t >= b)
+        return;
+
+    uint8_t *rb = ring->buffer + (t - ring->top) * ring->stride + (l - ring->left);
+    uint8_t *cb = covered->buffer + (t - covered->top) * covered->stride + (l - covered->left);
+    for (int32_t y = 0; y < b - t; y++) {
+        for (int32_t x = 0; x < r - l; x++) {
+            uint8_t orig = rb[x];
+            uint8_t cov = cb[x];
+            rb[x] = orig > cov ? orig - cov : 0;
+            cb[x] = FFMAX(cov, orig);
+        }
+        rb += ring->stride;
+        cb += covered->stride;
+    }
 }
 
 /*
@@ -5256,8 +5555,10 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
     rectangle_reset(&rect_l);
     rectangle_reset(&rect_o_l);
 
-    size_t n_bm = 0, n_bm_o = 0;
-    BitmapRef *last = NULL, *last_o = NULL;
+    size_t n_bm = 0;
+    size_t n_bm_o[ASS_BORDER_LAYERS_MAX] = {0};
+    BitmapRef *last = NULL;
+    BitmapRef *last_o[ASS_BORDER_LAYERS_MAX] = {0};
     for (int i = 0; i < k->bitmap_count; i++) {
         BitmapRef *ref = &k->bitmaps[i];
         if (ref->bm) {
@@ -5272,17 +5573,21 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
             last = ref;
             n_bm++;
         }
-        if (ref->bm_o) {
-            rectangle_combine(&rect_o, ref->bm_o, ref->pos_o);
-            int32_t lw = ref->bm_o->logical_w > 0 ? ref->bm_o->logical_w : ref->bm_o->w;
-            int32_t lh = ref->bm_o->logical_h > 0 ? ref->bm_o->logical_h : ref->bm_o->h;
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            Bitmap *bm_o = bitmap_ref_border_bitmap(ref, layer);
+            if (!bm_o)
+                continue;
+            ASS_Vector pos_o = bitmap_ref_border_pos(ref, layer);
+            rectangle_combine(&rect_o, bm_o, pos_o);
+            int32_t lw = bm_o->logical_w > 0 ? bm_o->logical_w : bm_o->w;
+            int32_t lh = bm_o->logical_h > 0 ? bm_o->logical_h : bm_o->h;
             rectangle_update(&rect_o_l,
-                             ref->pos_o.x + ref->bm_o->left,
-                             ref->pos_o.y + ref->bm_o->top,
-                             ref->pos_o.x + ref->bm_o->left + lw,
-                             ref->pos_o.y + ref->bm_o->top + lh);
-            last_o = ref;
-            n_bm_o++;
+                             pos_o.x + bm_o->left,
+                             pos_o.y + bm_o->top,
+                             pos_o.x + bm_o->left + lw,
+                             pos_o.y + bm_o->top + lh);
+            last_o[layer] = ref;
+            n_bm_o[layer]++;
         }
     }
 
@@ -5320,14 +5625,17 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                                             src->w, src->h);
         }
     }
-    if (!bord && n_bm_o == 1) {
-        ass_copy_bitmap(&render_priv->engine, &v->bm_o, last_o->bm_o);
-        v->bm_o.left += last_o->pos_o.x;
-        v->bm_o.top  += last_o->pos_o.y;
-    } else if (n_bm_o && ass_alloc_bitmap(&render_priv->engine, &v->bm_o,
-                                          rect_o.x_max - rect_o.x_min + 2 * bord,
-                                          rect_o.y_max - rect_o.y_min + 2 * bord,
-                                          true)) {
+    int flags = k->filter.flags;
+    bool multi_border = flags & FILTER_MULTI_BORDER;
+    if (!multi_border && !bord && n_bm_o[0] == 1) {
+        ass_copy_bitmap(&render_priv->engine, &v->bm_o, last_o[0]->bm_o);
+        v->bm_o.left += last_o[0]->pos_o.x;
+        v->bm_o.top  += last_o[0]->pos_o.y;
+    } else if (!multi_border && n_bm_o[0] &&
+               ass_alloc_bitmap(&render_priv->engine, &v->bm_o,
+                                rect_o.x_max - rect_o.x_min + 2 * bord,
+                                rect_o.y_max - rect_o.y_min + 2 * bord,
+                                true)) {
         Bitmap *dst = &v->bm_o;
         bool have_subpix = false;
         dst->left = rect_o.x_min - bord;
@@ -5352,22 +5660,83 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                                             src->buffer, src->stride,
                                             src->w, src->h);
         }
+    } else if (multi_border) {
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            if (!n_bm_o[layer])
+                continue;
+            Bitmap *dst = composite_border_bitmap(v, layer);
+            if (!ass_alloc_bitmap(&render_priv->engine, dst,
+                                  rect_o.x_max - rect_o.x_min + 2 * bord,
+                                  rect_o.y_max - rect_o.y_min + 2 * bord,
+                                  true))
+                continue;
+            bool have_subpix = false;
+            dst->left = rect_o.x_min - bord;
+            dst->top  = rect_o.y_min - bord;
+            dst->logical_w = rect_o_l.x_max - rect_o_l.x_min + 2 * bord;
+            dst->logical_h = rect_o_l.y_max - rect_o_l.y_min + 2 * bord;
+            for (int i = 0; i < k->bitmap_count; i++) {
+                BitmapRef *ref = &k->bitmaps[i];
+                Bitmap *src = bitmap_ref_border_bitmap(ref, layer);
+                if (!src)
+                    continue;
+                ASS_Vector pos_o = bitmap_ref_border_pos(ref, layer);
+                if (!have_subpix) {
+                    dst->sub_x = src->sub_x;
+                    dst->sub_y = src->sub_y;
+                    have_subpix = true;
+                }
+                int x = pos_o.x + src->left - dst->left;
+                int y = pos_o.y + src->top  - dst->top;
+                assert(x >= 0 && x + src->w <= dst->w);
+                assert(y >= 0 && y + src->h <= dst->h);
+                unsigned char *buf = dst->buffer + y * dst->stride + x;
+                render_priv->engine.add_bitmaps(buf, dst->stride,
+                                                src->buffer, src->stride,
+                                                src->w, src->h);
+            }
+        }
     }
 
-    int flags = k->filter.flags;
     double r2x = restore_blur(k->filter.blur_x);
     double r2y = restore_blur(k->filter.blur_y);
     if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
         ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
     ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
+    for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX - 1; layer++)
+        ass_synth_blur(&render_priv->engine, &v->bm_border[layer],
+                       k->filter.be, r2x, r2y);
 
-    if (!(flags & FILTER_FILL_IN_BORDER) && !(flags & FILTER_FILL_IN_SHADOW))
+    if (multi_border) {
+        // Multi-border uses the existing global blur/be treatment on each
+        // expanded mask, then cuts rings from the blurred masks. This keeps
+        // transparent outer borders from compositing under inner borders
+        // without introducing per-layer blur state.
+        Bitmap covered = {0};
+        if (rect_o.x_min <= rect_o.x_max && rect_o.y_min <= rect_o.y_max &&
+                ass_alloc_bitmap(&render_priv->engine, &covered,
+                                 rect_o.x_max - rect_o.x_min + 2 * bord,
+                                 rect_o.y_max - rect_o.y_min + 2 * bord,
+                                 true)) {
+            covered.left = rect_o.x_min - bord;
+            covered.top  = rect_o.y_min - bord;
+            covered.logical_w = rect_o_l.x_max - rect_o_l.x_min + 2 * bord;
+            covered.logical_h = rect_o_l.y_max - rect_o_l.y_min + 2 * bord;
+            bitmap_max_into(&covered, &v->bm);
+            for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++)
+                ring_subtract_covered(composite_border_bitmap(v, layer),
+                                      &covered);
+            ass_free_bitmap(&covered);
+        }
+    } else if (!(flags & FILTER_FILL_IN_BORDER) && !(flags & FILTER_FILL_IN_SHADOW)) {
         ass_fix_outline(&v->bm, &v->bm_o);
+    }
 
     if (flags & FILTER_NONZERO_SHADOW) {
         if (flags & FILTER_NONZERO_BORDER) {
             ass_copy_bitmap(&render_priv->engine, &v->bm_s, &v->bm_o);
-            if ((flags & FILTER_FILL_IN_BORDER) && !(flags & FILTER_FILL_IN_SHADOW))
+            if (!multi_border && (flags & FILTER_FILL_IN_BORDER) &&
+                    !(flags & FILTER_FILL_IN_SHADOW))
                 ass_fix_outline(&v->bm, &v->bm_s);
         } else if (flags & FILTER_BORDER_STYLE_3) {
             v->bm_s = v->bm_o;
@@ -5387,12 +5756,18 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         v->bm_s.sub_y = (uint8_t) ((v->bm_s.sub_y + ((shift_y + 4) >> 3)) & 7);
     }
 
-    if ((flags & FILTER_FILL_IN_SHADOW) && !(flags & FILTER_FILL_IN_BORDER))
+    if (!multi_border && (flags & FILTER_FILL_IN_SHADOW) &&
+            !(flags & FILTER_FILL_IN_BORDER))
         ass_fix_outline(&v->bm, &v->bm_o);
 
     return sizeof(CompositeHashKey) + sizeof(CompositeHashValue) +
         k->bitmap_count * sizeof(BitmapRef) +
-        bitmap_size(&v->bm) + bitmap_size(&v->bm_o) + bitmap_size(&v->bm_s);
+        bitmap_size(&v->bm) + bitmap_size(&v->bm_o) + bitmap_size(&v->bm_s) +
+        bitmap_size(&v->bm_border[0]) + bitmap_size(&v->bm_border[1]) +
+        bitmap_size(&v->bm_border[2]) + bitmap_size(&v->bm_border[3]) +
+        bitmap_size(&v->bm_border[4]) + bitmap_size(&v->bm_border[5]) +
+        bitmap_size(&v->bm_border[6]) + bitmap_size(&v->bm_border[7]) +
+        bitmap_size(&v->bm_border[8]);
 }
 
 static void add_background(RenderContext *state, EventImages *event_images,

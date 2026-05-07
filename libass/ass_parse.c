@@ -668,6 +668,254 @@ static uint32_t parse_color_tag(char *str)
     return ass_bswap32((uint32_t) color);
 }
 
+typedef enum {
+    BORDER_TAG_NONE,
+    BORDER_TAG_IGNORE,
+    BORDER_TAG_SIZE,
+    BORDER_TAG_SIZE_X,
+    BORDER_TAG_SIZE_Y,
+    BORDER_TAG_COLOR,
+    BORDER_TAG_ALPHA,
+} NumberedBorderTag;
+
+static bool is_digit_char(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+static bool match_border_suffix(char *p, char *end, const char *suffix,
+                                char **arg_start)
+{
+    char *q = p;
+    while (*suffix && q < end && *q == *suffix) {
+        q++;
+        suffix++;
+    }
+    if (*suffix)
+        return false;
+    *arg_start = q;
+    return true;
+}
+
+static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
+                                                   int *layer,
+                                                   struct arg *inline_arg)
+{
+    if (p >= name_end || !is_digit_char(*p))
+        return BORDER_TAG_NONE;
+
+    int raw_layer = 0;
+    char *q = p;
+    while (q < name_end && is_digit_char(*q)) {
+        if (raw_layer <= 100)
+            raw_layer = raw_layer * 10 + (*q - '0');
+        q++;
+    }
+
+    if (q >= name_end || *q != 'b')
+        return BORDER_TAG_NONE;
+
+    NumberedBorderTag tag = BORDER_TAG_IGNORE;
+    char *arg_start = q;
+    if (match_border_suffix(q, name_end, "bsx", &arg_start))
+        tag = BORDER_TAG_SIZE_X;
+    else if (match_border_suffix(q, name_end, "bsy", &arg_start))
+        tag = BORDER_TAG_SIZE_Y;
+    else if (match_border_suffix(q, name_end, "bs", &arg_start))
+        tag = BORDER_TAG_SIZE;
+    else if (match_border_suffix(q, name_end, "bc", &arg_start))
+        tag = BORDER_TAG_COLOR;
+    else if (match_border_suffix(q, name_end, "ba", &arg_start))
+        tag = BORDER_TAG_ALPHA;
+
+    if (tag == BORDER_TAG_IGNORE || raw_layer < 1 ||
+            raw_layer > ASS_BORDER_LAYERS_MAX)
+        return BORDER_TAG_IGNORE;
+
+    *layer = raw_layer - 1;
+    inline_arg->start = arg_start;
+    inline_arg->end = name_end;
+    rskip_spaces(&inline_arg->end, inline_arg->start);
+    return tag;
+}
+
+static bool parse_double_arg_strict(struct arg arg, double *out)
+{
+    char *ptr = arg.start;
+    if (!mystrtod(&ptr, out))
+        return false;
+    skip_spaces(&ptr);
+    return ptr == arg.end && isfinite(*out);
+}
+
+static int hex_value(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static bool parse_hex_arg_strict(struct arg arg, uint32_t *out)
+{
+    char *ptr = arg.start;
+    while (ptr < arg.end && (*ptr == '&' || *ptr == 'H' || *ptr == 'h'))
+        ptr++;
+
+    uint32_t value = 0;
+    bool have_digit = false;
+    while (ptr < arg.end) {
+        int v = hex_value(*ptr);
+        if (v < 0)
+            break;
+        value = (value << 4) | (uint32_t) v;
+        have_digit = true;
+        ptr++;
+    }
+    if (!have_digit)
+        return false;
+    if (ptr < arg.end && *ptr == '&')
+        ptr++;
+    skip_spaces(&ptr);
+    if (ptr != arg.end)
+        return false;
+
+    *out = value;
+    return true;
+}
+
+static void default_extra_border_color(RenderContext *state, int layer)
+{
+    BorderLayerState *border = &state->border_layers[layer];
+    uint32_t layer1 = state->border_layers[0].color;
+    if (!border->has_color)
+        border->color = (layer1 & 0xFFFFFF00u) | _a(border->color);
+    if (!border->has_alpha)
+        border->color = (border->color & 0xFFFFFF00u) | _a(layer1);
+}
+
+static void sync_layer1_border(RenderContext *state)
+{
+    state->border_layers[0].enabled = state->border_x > 0 || state->border_y > 0;
+    state->border_layers[0].has_color = true;
+    state->border_layers[0].has_alpha = true;
+    state->border_layers[0].size_x = state->border_x;
+    state->border_layers[0].size_y = state->border_y;
+    state->border_layers[0].color = state->c[2];
+}
+
+static void set_border_layer_size(RenderContext *state, int layer,
+                                  bool set_x, bool set_y, double val,
+                                  double pwr)
+{
+    BorderLayerState *border = &state->border_layers[layer];
+    bool was_enabled = border->enabled;
+    if (layer > 0)
+        default_extra_border_color(state, layer);
+
+    if (set_x) {
+        double x = border->size_x * (1 - pwr) + val * pwr;
+        border->size_x = x < 0 ? 0 : x;
+    }
+    if (set_y) {
+        double y = border->size_y * (1 - pwr) + val * pwr;
+        border->size_y = y < 0 ? 0 : y;
+    }
+    border->enabled = border->size_x > 0 || border->size_y > 0;
+    if (layer > 0 && border->enabled && !was_enabled) {
+        border->has_color = true;
+        border->has_alpha = true;
+    }
+
+    if (layer == 0) {
+        state->border_x = border->size_x;
+        state->border_y = border->size_y;
+    }
+}
+
+static void apply_numbered_border_tag(RenderContext *state,
+                                      NumberedBorderTag tag, int layer,
+                                      struct arg *args, int nargs,
+                                      struct arg inline_arg, double pwr)
+{
+    struct arg arg = (inline_arg.start && inline_arg.start < inline_arg.end) ? inline_arg :
+        (nargs ? args[0] : (struct arg) { NULL, NULL });
+
+    switch (tag) {
+    case BORDER_TAG_SIZE:
+    case BORDER_TAG_SIZE_X:
+    case BORDER_TAG_SIZE_Y: {
+        double val;
+        if (!arg.start) {
+            if (layer != 0)
+                return;
+            val = state->style->Outline;
+        } else if (!parse_double_arg_strict(arg, &val)) {
+            return;
+        }
+        set_border_layer_size(state, layer,
+                              tag != BORDER_TAG_SIZE_Y,
+                              tag != BORDER_TAG_SIZE_X,
+                              val, pwr);
+        break;
+    }
+    case BORDER_TAG_COLOR: {
+        uint32_t val;
+        if (layer == 0) {
+            if (arg.start) {
+                if (!parse_hex_arg_strict(arg, &val))
+                    return;
+                change_color(&state->c[2], ass_bswap32(val), pwr);
+            } else {
+                change_color(&state->c[2],
+                             state->style->OutlineColour, 1);
+            }
+            ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
+            if (pwr >= 1.0)
+                disable_image_fill_layer(state, 2);
+            sync_layer1_border(state);
+        } else {
+            if (!arg.start || !parse_hex_arg_strict(arg, &val))
+                return;
+            BorderLayerState *border = &state->border_layers[layer];
+            default_extra_border_color(state, layer);
+            change_color(&border->color, ass_bswap32(val), pwr);
+            border->has_color = true;
+        }
+        break;
+    }
+    case BORDER_TAG_ALPHA: {
+        uint32_t val;
+        if (layer == 0) {
+            if (arg.start) {
+                if (!parse_hex_arg_strict(arg, &val) || val > 0xFF)
+                    return;
+                change_alpha(&state->c[2], val, pwr);
+            } else {
+                change_alpha(&state->c[2],
+                             _a(state->style->OutlineColour), 1);
+            }
+            ass_gradient_disable_alpha(&state->gradient, 2,
+                                       _a(state->c[2]), pwr);
+            sync_layer1_border(state);
+        } else {
+            if (!arg.start || !parse_hex_arg_strict(arg, &val) || val > 0xFF)
+                return;
+            BorderLayerState *border = &state->border_layers[layer];
+            default_extra_border_color(state, layer);
+            change_alpha(&border->color, val, pwr);
+            border->has_alpha = true;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 /**
  * \brief find style by name as in \r
  * \param track track
@@ -798,7 +1046,18 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 #define complex_tag(name) mystrcmp(&p, (name))
 
         // New tags introduced in vsfilter 2.39
-        if (tag("xbord")) {
+        int numbered_border_layer = -1;
+        struct arg numbered_border_arg = { NULL, NULL };
+        NumberedBorderTag numbered_border_tag =
+            parse_numbered_border_tag(p, name_end, &numbered_border_layer,
+                                      &numbered_border_arg);
+        if (numbered_border_tag == BORDER_TAG_IGNORE) {
+            continue;
+        } else if (numbered_border_tag != BORDER_TAG_NONE) {
+            apply_numbered_border_tag(state, numbered_border_tag,
+                                      numbered_border_layer, args, nargs,
+                                      numbered_border_arg, pwr);
+        } else if (tag("xbord")) {
             double val;
             if (nargs) {
                 val = argtod(*args);
@@ -807,6 +1066,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 val = state->style->Outline;
             state->border_x = val;
+            sync_layer1_border(state);
         } else if (tag("ybord")) {
             double val;
             if (nargs) {
@@ -816,6 +1076,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 val = state->style->Outline;
             state->border_y = val;
+            sync_layer1_border(state);
         } else if (tag("xshad")) {
             double val;
             if (nargs) {
@@ -1110,6 +1371,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 xval = yval = state->style->Outline;
             state->border_x = xval;
             state->border_y = yval;
+            sync_layer1_border(state);
         } else if (complex_tag("movevc")) {
             if (nargs == 2 || nargs == 4 || nargs == 6) {
                 MoveVCState mv = { .active = true };
@@ -1287,6 +1549,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             for (i = 0; i < 4; ++i)
                 ass_gradient_disable_alpha(&state->gradient, i,
                                            _a(state->c[i]), pwr);
+            sync_layer1_border(state);
             // FIXME: simplify
         } else if (tag("an")) {
             int32_t val = argtoi32(*args);
@@ -1606,6 +1869,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 2);
+            sync_layer1_border(state);
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -1643,6 +1907,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->style->OutlineColour), 1);
             ass_gradient_disable_alpha(&state->gradient, 2,
                                        _a(state->c[2]), pwr);
+            sync_layer1_border(state);
         } else if (tag("4a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);

@@ -49,6 +49,40 @@ static inline ass_hashcode ass_hash_buf(const void *buf, size_t len, ass_hashcod
 #define CREATE_COMPARISON_FUNCTIONS
 #include "ass_cache_template.h"
 
+static ass_hashcode bitmap_ref_hash(void *buf, ass_hashcode hval)
+{
+    BitmapRef *p = buf;
+    hval = ass_hash_buf(&p->bm, sizeof(p->bm), hval);
+    hval = ass_hash_buf(&p->bm_o, sizeof(p->bm_o), hval);
+    hval = ass_hash_buf(&p->pos.x, sizeof(p->pos.x), hval);
+    hval = ass_hash_buf(&p->pos.y, sizeof(p->pos.y), hval);
+    hval = ass_hash_buf(&p->pos_o.x, sizeof(p->pos_o.x), hval);
+    hval = ass_hash_buf(&p->pos_o.y, sizeof(p->pos_o.y), hval);
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++) {
+        hval = ass_hash_buf(&p->bm_border[i], sizeof(p->bm_border[i]), hval);
+        hval = ass_hash_buf(&p->pos_border[i].x, sizeof(p->pos_border[i].x), hval);
+        hval = ass_hash_buf(&p->pos_border[i].y, sizeof(p->pos_border[i].y), hval);
+    }
+    return hval;
+}
+
+static bool bitmap_ref_compare(void *key1, void *key2)
+{
+    BitmapRef *a = key1;
+    BitmapRef *b = key2;
+    if (a->bm != b->bm || a->bm_o != b->bm_o ||
+            a->pos.x != b->pos.x || a->pos.y != b->pos.y ||
+            a->pos_o.x != b->pos_o.x || a->pos_o.y != b->pos_o.y)
+        return false;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++) {
+        if (a->bm_border[i] != b->bm_border[i] ||
+                a->pos_border[i].x != b->pos_border[i].x ||
+                a->pos_border[i].y != b->pos_border[i].y)
+            return false;
+    }
+    return true;
+}
+
 // font cache
 static bool font_key_move(void *dst, void *src)
 {
@@ -142,6 +176,8 @@ static bool composite_key_move(void *dst, void *src)
         for (size_t i = 0; i < d->bitmap_count; i++) {
             ass_cache_inc_ref(d->bitmaps[i].bm);
             ass_cache_inc_ref(d->bitmaps[i].bm_o);
+            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                ass_cache_inc_ref(d->bitmaps[i].bm_border[j]);
         }
         return true;
     }
@@ -157,9 +193,13 @@ static void composite_destruct(void *key, void *value)
     ass_free_bitmap(&v->bm);
     ass_free_bitmap(&v->bm_o);
     ass_free_bitmap(&v->bm_s);
+    for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+        ass_free_bitmap(&v->bm_border[j]);
     for (size_t i = 0; i < k->bitmap_count; i++) {
         ass_cache_dec_ref(k->bitmaps[i].bm);
         ass_cache_dec_ref(k->bitmaps[i].bm_o);
+        for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+            ass_cache_dec_ref(k->bitmaps[i].bm_border[j]);
     }
     free(k->bitmaps);
 }
