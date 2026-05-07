@@ -2772,14 +2772,15 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
             (width  + 2 * bord.x) / 64,
             (height + 2 * bord.y) / 64,
         };
-        ASS_DVector offset = { -bord.x, -bord.y - info->asc };
+        ASS_DVector box_offset = { -bord.x, -bord.y - info->asc };
         for (int i = 0; i < 3; i++) {
             m[i][0] = m1[i][0] * scale.x;
             m[i][1] = m1[i][1] * scale.y;
-            m[i][2] = m1[i][0] * offset.x + m1[i][1] * offset.y + m1[i][2];
+            m[i][2] = m1[i][0] * box_offset.x +
+                      m1[i][1] * box_offset.y + m1[i][2];
         }
 
-        if (load_border_bitmap(state, info, &key, &ol_key, m, pos_o, &offset,
+        if (load_border_bitmap(state, info, &key, &ol_key, m, pos_o, offset,
                                distorted, &info->distort_bitmap_o, &info->bm_o)) {
             if (!info->bm)
                 *pos = *pos_o;
