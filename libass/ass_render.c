@@ -51,8 +51,9 @@ static inline bool border_layer_has_size(const BorderLayerState *layer);
 static bool border_layers_state_equal(const BorderLayerState *a,
                                       const BorderLayerState *b);
 static bool has_multi_border_layers(const BorderLayerState *layers);
-static double border_layers_max_x(const BorderLayerState *layers);
-static double border_layers_max_y(const BorderLayerState *layers);
+static void sync_glyph_layer1_border(GlyphInfo *info);
+static double glyph_border_max_x(const GlyphInfo *info);
+static double glyph_border_max_y(const GlyphInfo *info);
 static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer);
 static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer);
 static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer);
@@ -2797,17 +2798,21 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     double prev_y = 0;
     for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
         const BorderLayerState *border = &info->border_layers[layer];
-        if (!border_layer_has_size(border))
+        double size_x = layer == 0 ? info->border_x : border->size_x;
+        double size_y = layer == 0 ? info->border_y : border->size_y;
+        bool has_size = layer == 0 ? size_x > 0 || size_y > 0 :
+                                      border_layer_has_size(border);
+        if (!has_size)
             continue;
-        if (border->size_x <= prev_x && border->size_y <= prev_y)
+        if (size_x <= prev_x && size_y <= prev_y)
             continue;
 
         OutlineHashKey ol_key;
         double border_m[3][3];
         bool zero_border = false;
         if (!setup_border_outline_key(state, info, outline, m, m2,
-                                      border->size_x, border->size_y,
-                                      &ol_key, border_m, &zero_border))
+                                      size_x, size_y, &ol_key, border_m,
+                                      &zero_border))
             continue;
 
         Bitmap **target_bm =
@@ -2819,8 +2824,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                 info->bm_o = info->bm;
                 *pos_o = *pos;
             }
-            prev_x = border->size_x;
-            prev_y = border->size_y;
+            prev_x = size_x;
+            prev_y = size_y;
             continue;
         }
 
@@ -2832,8 +2837,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                                target_bm)) {
             if (!info->bm)
                 *pos = *target_pos;
-            prev_x = border->size_x;
-            prev_y = border->size_y;
+            prev_x = size_x;
+            prev_y = size_y;
         } else if (layer == 0) {
             *pos_o = *pos;
         }
@@ -3110,10 +3115,8 @@ static void measure_text(RenderContext *state)
         }
         max_asc  = FFMAX(max_asc,  cur->asc);
         max_desc = FFMAX(max_desc, cur->desc);
-        max_border_y = FFMAX(max_border_y,
-                             border_layers_max_y(cur->border_layers));
-        max_border_x = FFMAX(max_border_x,
-                             border_layers_max_x(cur->border_layers));
+        max_border_y = FFMAX(max_border_y, glyph_border_max_y(cur));
+        max_border_x = FFMAX(max_border_x, glyph_border_max_x(cur));
         if (cur->symbol != '\n')
             scale = 1.0 / 64;
     }
@@ -3694,6 +3697,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->border_x = state->border_x;
     info->border_y = state->border_y;
     memcpy(info->border_layers, state->border_layers, sizeof(info->border_layers));
+    sync_glyph_layer1_border(info);
     info->hspacing = hspacing;
     info->bold = state->bold;
     info->italic = state->italic;
@@ -3828,21 +3832,37 @@ static bool has_multi_border_layers(const BorderLayerState *layers)
     return false;
 }
 
-static double border_layers_max_x(const BorderLayerState *layers)
+static void sync_glyph_layer1_border(GlyphInfo *info)
 {
-    double max = 0;
-    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
-        if (border_layer_has_size(&layers[i]))
-            max = FFMAX(max, layers[i].size_x);
+    /*
+     * Keep the normal ASS border authoritative from the legacy glyph fields.
+     * Existing compatibility paths update border_x/y and c[2]; numbered
+     * extension layers must not perturb layout or bitmap generation when
+     * authors do not use extra border layers.
+     */
+    info->border_layers[0].enabled = info->border_x > 0 || info->border_y > 0;
+    info->border_layers[0].has_color = true;
+    info->border_layers[0].has_alpha = true;
+    info->border_layers[0].size_x = info->border_x;
+    info->border_layers[0].size_y = info->border_y;
+    info->border_layers[0].color = info->c[2];
+}
+
+static double glyph_border_max_x(const GlyphInfo *info)
+{
+    double max = info->border_x > 0 ? info->border_x : 0;
+    for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++)
+        if (border_layer_has_size(&info->border_layers[i]))
+            max = FFMAX(max, info->border_layers[i].size_x);
     return max;
 }
 
-static double border_layers_max_y(const BorderLayerState *layers)
+static double glyph_border_max_y(const GlyphInfo *info)
 {
-    double max = 0;
-    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
-        if (border_layer_has_size(&layers[i]))
-            max = FFMAX(max, layers[i].size_y);
+    double max = info->border_y > 0 ? info->border_y : 0;
+    for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++)
+        if (border_layer_has_size(&info->border_layers[i]))
+            max = FFMAX(max, info->border_layers[i].size_y);
     return max;
 }
 
@@ -4101,10 +4121,10 @@ static void retrieve_glyphs_from_list(RenderContext *state,
                     rnd_pad = FFMAX(rnd_pad, rnd_pad_z);
 
                 double border_pad_x =
-                    border_layers_max_x(info->border_layers) *
+                    glyph_border_max_x(info) *
                     state->border_scale_x / state->renderer->par_scale_x;
                 double border_pad_y =
-                    border_layers_max_y(info->border_layers) *
+                    glyph_border_max_y(info) *
                     state->border_scale_y;
                 double border_pad = FFMAX(border_pad_x, border_pad_y);
 
@@ -5177,8 +5197,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             int flags = 0;
             if (info->border_style == 3)
                 flags |= FILTER_BORDER_STYLE_3;
-            if (border_layers_max_x(info->border_layers) ||
-                    border_layers_max_y(info->border_layers))
+            if (glyph_border_max_x(info) || glyph_border_max_y(info))
                 flags |= FILTER_NONZERO_BORDER;
             if (has_multi_border_layers(info->border_layers) &&
                     info->border_style != 3)
