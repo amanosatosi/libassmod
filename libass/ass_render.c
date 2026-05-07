@@ -38,7 +38,6 @@
 #include "ass_distort.h"
 #include "ass_shaper.h"
 
-static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer);
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
 size_t ass_composite_construct(void *key, void *value, void *priv);
 static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
@@ -2779,7 +2778,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
             m[i][2] = m1[i][0] * offset.x + m1[i][1] * offset.y + m1[i][2];
         }
 
-        if (load_border_bitmap(state, info, &key, &ol_key, m, pos_o, offset,
+        if (load_border_bitmap(state, info, &key, &ol_key, m, pos_o, &offset,
                                distorted, &info->distort_bitmap_o, &info->bm_o)) {
             if (!info->bm)
                 *pos = *pos_o;
@@ -2955,14 +2954,14 @@ static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
     bool has_perspective = k->matrix_z.x || k->matrix_z.y;
     if (!(mag_x || mag_y || (mag_z && has_perspective)))
         return;
-    
-        static bool eff_logged = false;
-        if (lib && !eff_logged) {
-            eff_logged = true;
-            ass_msg(lib, MSGL_V, "rnd eff (scaled): eff_x=%.3f eff_y=%.3f eff_z=%.3f",
-                    mag_x, mag_y, mag_z);
-        }
-    
+
+    static bool eff_logged = false;
+    if (lib && !eff_logged) {
+        eff_logged = true;
+        ass_msg(lib, MSGL_V, "rnd eff (scaled): eff_x=%.3f eff_y=%.3f eff_z=%.3f",
+                mag_x, mag_y, mag_z);
+    }
+
     double max_dx_px = 0.0, max_dy_px = 0.0;
     double max_dx_raw = 0.0, max_dy_raw = 0.0;
     int32_t min_x = INT32_MAX, min_y = INT32_MAX;
@@ -5135,49 +5134,6 @@ static void compute_line_gradient_rects(RenderContext *state)
             }
         }
     }
-}
-
-static GradientRect rect_from_line(const ASS_Rect *rect, bool valid)
-{
-    GradientRect gr = {0, 0, 0, 0, false};
-    if (!valid)
-        return gr;
-
-    gr.x0 = rect->x_min;
-    gr.y0 = rect->y_min;
-    gr.x1 = rect->x_max;
-    gr.y1 = rect->y_max;
-    gr.valid = gr.x1 > gr.x0 && gr.y1 > gr.y0;
-    return gr;
-}
-
-static GradientRect gradient_rect_for_layer(RenderContext *state, int line, int layer)
-{
-    TextInfo *text_info = &state->text_info;
-    GradientRect gr = {0, 0, 0, 0, false};
-    if (line < 0 || line >= text_info->n_lines)
-        return gr;
-
-    LineInfo *ln = &text_info->lines[line];
-    const ASS_Rect *rect = NULL;
-    bool valid = false;
-    switch (layer) {
-    case 0:
-    case 1:
-        rect = &ln->grad_char;
-        valid = ln->grad_char_valid;
-        break;
-    case 2:
-        rect = &ln->grad_outline;
-        valid = ln->grad_outline_valid;
-        break;
-    default:
-        rect = &ln->grad_shadow;
-        valid = ln->grad_shadow_valid;
-        break;
-    }
-
-    return rect_from_line(rect, valid);
 }
 
 static bool text_needs_rgba(const TextInfo *text_info)
