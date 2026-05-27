@@ -3751,10 +3751,8 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
             last_breakable = i;
         }
 
-        if (break_at != -1) {
+        if (break_at != -1 && break_at + 1 < text_info->length) {
             // need to use one more line
-            // marking break_at+1 as start of a new line
-            int lead = break_at + 1;    // the first symbol of the new line
             if (text_info->n_lines >= text_info->max_lines) {
                 // Try to raise the maximum number of lines
                 bool success = false;
@@ -3769,12 +3767,13 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
                     text_info->n_lines--;
                 }
             }
-            if (lead < text_info->length) {
-                text_info->glyphs[lead].linebreak = break_type;
-                last_breakable = -1;
-                s1 = text_info->glyphs + lead;
-                text_info->n_lines++;
-            }
+
+            // marking break_at+1 as start of a new line
+            int lead = break_at + 1; // the first symbol of the new line
+            text_info->glyphs[lead].linebreak = break_type;
+            last_breakable = -1;
+            s1 = text_info->glyphs + lead;
+            text_info->n_lines++;
         }
     }
 }
