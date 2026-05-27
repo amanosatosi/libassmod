@@ -3782,6 +3782,7 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
  * Rewind from a linestart position back to the first non-whitespace (0x20)
  * character. Trailing ASCII whitespace gets trimmed in rendering.
  * Assumes both arguments are part of the same array.
+ * start2 is never dereferenced.
  */
 static inline GlyphInfo *rewind_trailing_spaces(GlyphInfo *start1, GlyphInfo* start2)
 {
@@ -3814,6 +3815,8 @@ wrap_lines_rebalance(RenderContext *state, double max_text_width, char *unibrks)
             if ((i == text_info->length) || cur->linebreak) {
                 s1 = s2;
                 s2 = s3;
+                // WARNING: this may point one past the end and thus
+                // must ONLY be used for pointer comparison; never dereferenced!
                 s3 = cur;
                 if (s1 && (s2->linebreak == 1)) {       // have at least 2 lines, and linebreak is 'soft'
                     double l1, l2, l1_new, l2_new;
