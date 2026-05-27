@@ -3878,13 +3878,21 @@ wrap_lines_measure(RenderContext *state, char *unibrks)
 
     while (i < text_info->length && text_info->glyphs[i].skip)
         ++i;
+
+    if (i == text_info->length) {
+        text_info->lines[0].len = 0;
+        text_info->lines[0].offset = 0;
+        return;
+    }
+
     double pen_shift_x = d6_to_double(-text_info->glyphs[i].pos.x);
     double pen_shift_y = 0.;
 
     for (i = 0; i < text_info->length; ++i) {
         GlyphInfo *cur = text_info->glyphs + i;
+
         if (cur->linebreak) {
-            while (i < text_info->length && cur->skip && !FORCEBREAK(cur->symbol, i))
+            while (i < text_info->length - 1 && cur->skip && !FORCEBREAK(cur->symbol, i))
                 cur = text_info->glyphs + ++i;
             double height =
                 text_info->lines[cur_line - 1].desc +
