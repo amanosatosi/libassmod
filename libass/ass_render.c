@@ -3652,6 +3652,9 @@ static void trim_whitespace(RenderContext *state)
     GlyphInfo *cur;
     TextInfo *ti = &state->text_info;
 
+    if (!ti->length)
+      return;
+
     // Mark trailing spaces
     i = ti->length - 1;
     cur = ti->glyphs + i;
@@ -3673,17 +3676,21 @@ static void trim_whitespace(RenderContext *state)
         cur->starts_new_run = true;
 
     // Mark all extraneous whitespace inbetween
+    // XXX: should this really start at 0 again?
     for (i = 0; i < ti->length; ++i) {
         cur = ti->glyphs + i;
         if (cur->linebreak) {
             // Mark whitespace before
             j = i - 1;
             cur = ti->glyphs + j;
-            while (j && IS_WHITESPACE(cur)) {
+            // Use > instead of >= to avoid UB from moving the pointer outside valid range.
+            // White space at j == 0 was already trimmed in the "leading" loop before anyway.
+            while (j > 0 && IS_WHITESPACE(cur)) {
                 cur->skip = true;
                 cur->is_trimmed_whitespace = true;
                 cur = ti->glyphs + --j;
             }
+
             // A break itself can contain a whitespace, too
             cur = ti->glyphs + i;
             if (cur->symbol == ' ' || cur->symbol == '\n') {
