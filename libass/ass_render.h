@@ -321,6 +321,12 @@ typedef struct {
 } LineInfo;
 
 typedef struct {
+    int row;
+    int column;
+    bool active;
+} ColumnGlyphInfo;
+
+typedef struct {
     GlyphInfo *glyphs;
     FriBidiChar *event_text;
     char *breaks;
@@ -339,6 +345,13 @@ typedef struct {
     FuriGroup *furi_groups;
     int n_furi_groups;
     int max_furi_groups;
+    ColumnGlyphInfo *column_glyphs;
+    int max_column_glyphs;
+    double *column_widths;
+    int *column_align;
+    int max_columns;
+    int column_rows;
+    int column_count;
 } TextInfo;
 
 typedef struct {
@@ -438,6 +451,10 @@ struct render_context {
     bool ortho;                 // orthographic projection toggle
     double rnd_x, rnd_y, rnd_z;
     uint64_t rnd_seed_base;     // per-event seed for rnd* offsets
+    bool column_event;
+    bool column_active;
+    int column_row;
+    int column_index;
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;
@@ -551,6 +568,8 @@ typedef struct {
 } Rect;
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
+void ass_column_set_mode(RenderContext *state, bool active);
+void ass_column_set_align(RenderContext *state, int align);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
 ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,

@@ -134,6 +134,20 @@ static void free_furi_groups(TextInfo *text_info)
     text_info->max_furi_groups = 0;
 }
 
+static void free_column_layout(TextInfo *text_info)
+{
+    free(text_info->column_glyphs);
+    free(text_info->column_widths);
+    free(text_info->column_align);
+    text_info->column_glyphs = NULL;
+    text_info->column_widths = NULL;
+    text_info->column_align = NULL;
+    text_info->max_column_glyphs = 0;
+    text_info->max_columns = 0;
+    text_info->column_rows = 0;
+    text_info->column_count = 0;
+}
+
 static bool text_info_init(TextInfo* text_info)
 {
     text_info->max_bitmaps = MAX_BITMAPS_INITIAL;
@@ -156,6 +170,7 @@ static bool text_info_init(TextInfo* text_info)
 static void text_info_done(TextInfo* text_info)
 {
     free_furi_groups(text_info);
+    free_column_layout(text_info);
     free(text_info->glyphs);
     free(text_info->event_text);
     free(text_info->breaks);
@@ -2226,6 +2241,10 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->jitter = ass_jitter_default_state();
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
+    state->column_event = false;
+    state->column_active = false;
+    state->column_row = 0;
+    state->column_index = 0;
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2245,6 +2264,106 @@ init_render_context(RenderContext *state, ASS_Event *event)
     ass_reset_render_context(state, NULL);
     state->alignment = state->style->Alignment;
     state->justify = state->style->Justify;
+}
+
+static int column_halign_from_numpad(int align)
+{
+    switch (align) {
+    case 2:
+    case 5:
+    case 8:
+        return HALIGN_CENTER;
+    case 3:
+    case 6:
+    case 9:
+        return HALIGN_RIGHT;
+    default:
+        return HALIGN_LEFT;
+    }
+}
+
+static bool ensure_column_count(TextInfo *text_info, int count)
+{
+    if (count <= text_info->max_columns)
+        return true;
+
+    int old_max = text_info->max_columns;
+    int new_max = old_max ? old_max : 8;
+    while (new_max < count) {
+        if (new_max > INT_MAX / 2)
+            return false;
+        new_max *= 2;
+    }
+
+    if (!ASS_REALLOC_ARRAY(text_info->column_widths, new_max) ||
+            !ASS_REALLOC_ARRAY(text_info->column_align, new_max))
+        return false;
+
+    for (int i = old_max; i < new_max; i++) {
+        text_info->column_widths[i] = 0.0;
+        text_info->column_align[i] = HALIGN_LEFT;
+    }
+    text_info->max_columns = new_max;
+    return true;
+}
+
+static bool begin_column_layout(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+
+    if (!text_info->column_glyphs) {
+        text_info->column_glyphs =
+            malloc(text_info->max_glyphs * sizeof(*text_info->column_glyphs));
+        if (!text_info->column_glyphs)
+            return false;
+        text_info->max_column_glyphs = text_info->max_glyphs;
+    }
+
+    if (!ensure_column_count(text_info, 1))
+        return false;
+
+    state->column_event = true;
+    state->column_active = false;
+    state->column_row = 0;
+    state->column_index = 0;
+    text_info->column_rows = 1;
+    text_info->column_count = 1;
+    return true;
+}
+
+static bool ensure_column_glyph_capacity(TextInfo *text_info)
+{
+    if (text_info->length < text_info->max_column_glyphs)
+        return true;
+
+    int new_max = text_info->max_glyphs;
+    if (new_max <= text_info->max_column_glyphs)
+        return false;
+    if (!ASS_REALLOC_ARRAY(text_info->column_glyphs, new_max))
+        return false;
+    text_info->max_column_glyphs = new_max;
+    return true;
+}
+
+void ass_column_set_mode(RenderContext *state, bool active)
+{
+    if (!state->column_event)
+        return;
+
+    state->column_active = active;
+}
+
+void ass_column_set_align(RenderContext *state, int align)
+{
+    if (!state->column_event || !state->column_active)
+        return;
+
+    TextInfo *text_info = &state->text_info;
+    int column = state->column_index;
+    if (column < 0 || !ensure_column_count(text_info, column + 1))
+        return;
+
+    text_info->column_align[column] = column_halign_from_numpad(align);
 }
 
 static void free_distortion_resources(RenderContext *state)
@@ -2296,12 +2415,17 @@ static void free_render_context(RenderContext *state)
 {
     free_distortion_resources(state);
     free_furi_groups(&state->text_info);
+    free_column_layout(&state->text_info);
     state->font = NULL;
     state->family.str = NULL;
     state->family.len = 0;
     state->clip_drawing_text.str = NULL;
     state->clip_drawing_text.len = 0;
     state->text_info.length = 0;
+    state->column_event = false;
+    state->column_active = false;
+    state->column_row = 0;
+    state->column_index = 0;
 }
 
 /**
@@ -3659,6 +3783,14 @@ static bool append_glyph_to_target(RenderContext *state,
     if (!ensure_glyph_capacity(glyphs, event_text, breaks, length, max_glyphs))
         return false;
 
+    bool main_text = glyphs == &state->text_info.glyphs;
+    if (state->column_event && main_text) {
+        if (!ensure_column_glyph_capacity(&state->text_info))
+            return false;
+        if (!ensure_column_count(&state->text_info, state->column_index + 1))
+            return false;
+    }
+
     GlyphInfo *info = &(*glyphs)[*length];
     memset(info, 0, sizeof(GlyphInfo));
 
@@ -3758,6 +3890,20 @@ static bool append_glyph_to_target(RenderContext *state,
                 state->screen_scale_x / render_priv->par_scale_x *
                 info->scale_x);
         fix_glyph_scaling(render_priv, info);
+    }
+
+    if (state->column_event && main_text) {
+        state->text_info.column_glyphs[*length] = (ColumnGlyphInfo) {
+            .row = state->column_row,
+            .column = state->column_index,
+            .active = state->column_active,
+        };
+        if (state->column_active) {
+            state->text_info.column_rows =
+                FFMAX(state->text_info.column_rows, state->column_row + 1);
+            state->text_info.column_count =
+                FFMAX(state->text_info.column_count, state->column_index + 1);
+        }
     }
 
     (*length)++;
@@ -4013,6 +4159,85 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
     return group->length > 0;
 }
 
+static char *skip_column_tag_args(char *p, char *end)
+{
+    if (p >= end || *p != '(')
+        return p;
+
+    int depth = 1;
+    p++;
+    while (p < end && depth > 0) {
+        if (*p == '(')
+            depth++;
+        else if (*p == ')')
+            depth--;
+        p++;
+    }
+    return p;
+}
+
+static int parse_column_tag_value(char *start, char *end)
+{
+    skip_spaces(&start);
+    rskip_spaces(&end, start);
+    if (end - start != 1 || (*start != '0' && *start != '1'))
+        return -1;
+    return *start - '0';
+}
+
+static void scan_column_override_block(char *p, char *end, bool *active,
+                                       bool *seen_active)
+{
+    while (p < end) {
+        while (p < end && *p != '\\')
+            p++;
+        if (p >= end)
+            break;
+
+        p++;
+        skip_spaces(&p);
+        char *name = p;
+        while (p < end && *p != '\\' && *p != '(')
+            p++;
+        char *name_end = p;
+
+        if (name_end - name >= 6 && !strncmp(name, "column", 6)) {
+            int value = parse_column_tag_value(name + 6, name_end);
+            if (value == 0) {
+                *active = false;
+            } else if (value == 1) {
+                *active = true;
+                *seen_active = true;
+            }
+        }
+
+        p = skip_column_tag_args(p, end);
+    }
+}
+
+static bool event_has_active_column(char *text)
+{
+    bool active = false;
+    bool seen_active = false;
+    char *p = text;
+
+    while (*p) {
+        if (*p == '\\' && p[1]) {
+            p += 2;
+        } else if (*p == '{') {
+            char *end = strchr(p, '}');
+            if (!end)
+                break;
+            scan_column_override_block(p + 1, end, &active, &seen_active);
+            p = end + 1;
+        } else {
+            p++;
+        }
+    }
+
+    return seen_active;
+}
+
 // Parse event text.
 // Fill render_priv->text_info.
 static bool parse_events(RenderContext *state, ASS_Event *event)
@@ -4020,6 +4245,9 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
     TextInfo *text_info = &state->text_info;
 
     char *p = event->Text, *q;
+
+    if (event_has_active_column(event->Text) && !begin_column_layout(state))
+        goto fail;
 
     // Event parsing.
     while (true) {
@@ -4044,6 +4272,13 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
                 code = 0xfffc; // object replacement character
                 p = q;
                 break;
+            } else if (state->column_event && state->column_active && *p == '|') {
+                state->column_index++;
+                if (!ensure_column_count(text_info, state->column_index + 1))
+                    goto fail;
+                text_info->column_count =
+                    FFMAX(text_info->column_count, state->column_index + 1);
+                p++;
             } else {
                 if (state->furi_enabled && *p == '<') {
                     FuriCandidate candidate;
@@ -4085,6 +4320,13 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
                                     &text_info->max_glyphs,
                                     code, drawing_text, false, -1))
             goto fail;
+
+        if (state->column_event && code == '\n') {
+            state->column_row++;
+            state->column_index = 0;
+            text_info->column_rows =
+                FFMAX(text_info->column_rows, state->column_row + 1);
+        }
 
         state->effect_type = EF_NONE;
         state->effect_timing = 0;
@@ -5004,6 +5246,133 @@ static void align_lines(RenderContext *state, double max_text_width)
     }
 }
 
+typedef struct {
+    double min_x;
+    double max_x;
+    bool seen;
+} ColumnCellMeasure;
+
+static bool measure_column_glyph(const GlyphInfo *info, double *min_x, double *max_x)
+{
+    if (info->skip || info->symbol == '\n' || info->symbol == 0)
+        return false;
+
+    double x0 = d6_to_double(info->pos.x);
+    double x1 = d6_to_double(info->pos.x + info->cluster_advance.x);
+
+    if (info->outline) {
+        x0 = FFMIN(x0, d6_to_double(info->pos.x + info->bbox.x_min));
+        x1 = FFMAX(x1, d6_to_double(info->pos.x + info->bbox.x_max));
+    }
+
+    *min_x = FFMIN(x0, x1);
+    *max_x = FFMAX(x0, x1);
+    return true;
+}
+
+static void apply_column_layout(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    if (!state->column_event || !text_info->column_glyphs ||
+            text_info->column_rows <= 0 || text_info->column_count <= 1)
+        return;
+
+    int rows = text_info->column_rows;
+    int columns = text_info->column_count;
+    if (rows > INT_MAX / columns)
+        return;
+
+    int cell_count = rows * columns;
+    ColumnCellMeasure *cells = calloc(cell_count, sizeof(*cells));
+    double *row_origins = malloc(rows * sizeof(*row_origins));
+    if (!cells || !row_origins) {
+        free(cells);
+        free(row_origins);
+        return;
+    }
+
+    for (int i = 0; i < cell_count; i++) {
+        cells[i].min_x = DBL_MAX;
+        cells[i].max_x = -DBL_MAX;
+    }
+    for (int i = 0; i < rows; i++)
+        row_origins[i] = DBL_MAX;
+    for (int i = 0; i < columns; i++)
+        text_info->column_widths[i] = 0.0;
+
+    for (int i = 0; i < text_info->length; i++) {
+        ColumnGlyphInfo meta = text_info->column_glyphs[i];
+        if (!meta.active || meta.row < 0 || meta.row >= rows ||
+                meta.column < 0 || meta.column >= columns)
+            continue;
+
+        double min_x, max_x;
+        if (!measure_column_glyph(&text_info->glyphs[i], &min_x, &max_x))
+            continue;
+
+        ColumnCellMeasure *cell = &cells[meta.row * columns + meta.column];
+        cell->min_x = FFMIN(cell->min_x, min_x);
+        cell->max_x = FFMAX(cell->max_x, max_x);
+        cell->seen = true;
+        row_origins[meta.row] = FFMIN(row_origins[meta.row], min_x);
+    }
+
+    double table_origin = DBL_MAX;
+    for (int row = 0; row < rows; row++) {
+        if (row_origins[row] < DBL_MAX)
+            table_origin = FFMIN(table_origin, row_origins[row]);
+        for (int column = 0; column < columns; column++) {
+            ColumnCellMeasure *cell = &cells[row * columns + column];
+            if (cell->seen) {
+                double width = cell->max_x - cell->min_x;
+                text_info->column_widths[column] =
+                    FFMAX(text_info->column_widths[column], width);
+            }
+        }
+    }
+
+    if (table_origin == DBL_MAX) {
+        free(cells);
+        free(row_origins);
+        return;
+    }
+
+    double column_start = 0.0;
+    for (int column = 0; column < columns; column++) {
+        double width = text_info->column_widths[column];
+        int halign = text_info->column_align[column];
+
+        for (int row = 0; row < rows; row++) {
+            ColumnCellMeasure *cell = &cells[row * columns + column];
+            if (!cell->seen)
+                continue;
+
+            double cell_width = cell->max_x - cell->min_x;
+            double align_shift = 0.0;
+            if (halign == HALIGN_CENTER)
+                align_shift = (width - cell_width) / 2.0;
+            else if (halign == HALIGN_RIGHT)
+                align_shift = width - cell_width;
+
+            double target = table_origin + column_start + align_shift;
+            double shift = target - cell->min_x;
+            int32_t shift_d6 = double_to_d6(shift);
+            for (int i = 0; i < text_info->length; i++) {
+                ColumnGlyphInfo meta = text_info->column_glyphs[i];
+                if (!meta.active || meta.row != row || meta.column != column)
+                    continue;
+                for (GlyphInfo *info = &text_info->glyphs[i]; info; info = info->next)
+                    info->pos.x += shift_d6;
+            }
+        }
+
+        column_start += width;
+    }
+
+    free(cells);
+    free(row_origins);
+}
+
 static void calculate_rotation_params_list(RenderContext *state,
                                            GlyphInfo *glyphs, int length,
                                            ASS_DVector center,
@@ -5908,6 +6277,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     reorder_text(state);
 
     align_lines(state, max_text_width);
+    apply_column_layout(state);
 
     if (text_info->n_furi_groups)
         position_furi_groups(state);

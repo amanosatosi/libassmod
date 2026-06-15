@@ -1156,6 +1156,18 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             apply_numbered_border_tag(state, numbered_border_tag,
                                       numbered_border_layer, args, nargs,
                                       numbered_border_arg, pwr);
+        } else if (tag("column")) {
+            if (nargs) {
+                int32_t val = argtoi32(*args);
+                if (val == 0 || val == 1)
+                    ass_column_set_mode(state, val == 1);
+            }
+        } else if (tag("align")) {
+            if (nargs) {
+                int32_t val = argtoi32(*args);
+                if (val >= 1 && val <= 9)
+                    ass_column_set_align(state, val);
+            }
         } else if (tag("xbord")) {
             double val;
             if (nargs) {
