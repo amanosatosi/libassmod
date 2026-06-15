@@ -668,6 +668,48 @@ static uint32_t parse_color_tag(char *str)
     return ass_bswap32((uint32_t) color);
 }
 
+static bool parse_hex_override_arg(struct arg arg, int32_t *value)
+{
+    char *p = arg.start;
+    while (p < arg.end && (*p == '&' || *p == 'H' || *p == 'h'))
+        p++;
+
+    char *start = p;
+    while (p < arg.end &&
+           ((*p >= '0' && *p <= '9') ||
+            (*p >= 'a' && *p <= 'f') ||
+            (*p >= 'A' && *p <= 'F')))
+        p++;
+    if (p == start)
+        return false;
+
+    char *parse = start;
+    if (!mystrtoi32(&parse, 16, value) || parse != p)
+        return false;
+
+    while (p < arg.end && *p == '&')
+        p++;
+    return p == arg.end;
+}
+
+static bool parse_decoration_color_arg(struct arg arg, uint32_t *color)
+{
+    int32_t value;
+    if (!parse_hex_override_arg(arg, &value))
+        return false;
+    *color = ass_bswap32((uint32_t) value);
+    return true;
+}
+
+static bool parse_decoration_alpha_arg(struct arg arg, uint32_t *alpha)
+{
+    int32_t value;
+    if (!parse_hex_override_arg(arg, &value))
+        return false;
+    *alpha = value;
+    return true;
+}
+
 typedef enum {
     BORDER_TAG_NONE,
     BORDER_TAG_IGNORE,
@@ -1950,6 +1992,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 ass_gradient_disable_alpha(&state->gradient, 3,
                                            _a(state->c[3]), pwr);
             }
+        } else if (tag("5c")) {
+            if (nargs) {
+                uint32_t val;
+                if (parse_decoration_color_arg(*args, &val)) {
+                    state->decoration_color = val;
+                    state->decoration_color_set = true;
+                }
+            } else {
+                state->decoration_color_set = false;
+            }
         } else if (tag("c") || tag("1c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -2028,6 +2080,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->style->BackColour), 1);
             ass_gradient_disable_alpha(&state->gradient, 3,
                                        _a(state->c[3]), pwr);
+        } else if (tag("5a")) {
+            if (nargs) {
+                uint32_t val;
+                if (parse_decoration_alpha_arg(*args, &val)) {
+                    state->decoration_alpha = val;
+                    state->decoration_alpha_set = true;
+                }
+            } else {
+                state->decoration_alpha_set = false;
+            }
         } else if (tag("r")) {
             if (nargs) {
                 int len = args->end - args->start;

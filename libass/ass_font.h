@@ -38,6 +38,7 @@ typedef struct ass_font ASS_Font;
 #define DECO_UNDERLINE     1
 #define DECO_STRIKETHROUGH 2
 #define DECO_ROTATE        4
+#define DECO_ONLY          8
 
 struct ass_font {
     ASS_FontDesc desc;

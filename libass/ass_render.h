@@ -269,6 +269,9 @@ typedef struct glyph_info {
     unsigned italic;
     unsigned bold;
     int flags;
+    int decoration_flags;
+    bool has_custom_decoration;
+    uint32_t decoration_c[4];
     int fade;
 
     int shape_run_id;
@@ -399,6 +402,10 @@ struct render_context {
     double font_size;
     int parsed_tags;
     int flags;                  // decoration flags (underline/strike-through)
+    bool decoration_color_set;
+    bool decoration_alpha_set;
+    uint32_t decoration_color;
+    uint32_t decoration_alpha;
 
     int alignment;              // alignment overrides go here; if zero, style value will be used
     int justify;                // justify instructions

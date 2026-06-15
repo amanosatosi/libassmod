@@ -2136,6 +2136,10 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->flags =
         (style->Underline ? DECO_UNDERLINE : 0) |
         (style->StrikeOut ? DECO_STRIKETHROUGH : 0);
+    state->decoration_color_set = false;
+    state->decoration_alpha_set = false;
+    state->decoration_color = 0;
+    state->decoration_alpha = 0;
     state->font_size = style->FontSize;
 
     state->family.str = style->FontName;
@@ -3840,6 +3844,23 @@ static bool append_glyph_to_target(RenderContext *state,
     info->flags = state->flags;
     if (info->font->desc.vertical && code >= VERTICAL_LOWER_BOUND)
         info->flags |= DECO_ROTATE;
+    int decoration_flags = info->flags & (DECO_UNDERLINE | DECO_STRIKETHROUGH);
+    info->has_custom_decoration =
+        decoration_flags && (state->decoration_color_set ||
+                             state->decoration_alpha_set);
+    if (info->has_custom_decoration) {
+        info->decoration_flags = decoration_flags | (info->flags & DECO_ROTATE);
+        memcpy(info->decoration_c, info->c, sizeof(info->decoration_c));
+        uint32_t decoration = state->decoration_color_set ?
+            (state->decoration_color & 0xFFFFFF00) | _a(info->c[0]) :
+            info->c[0];
+        if (state->decoration_alpha_set)
+            decoration = (decoration & 0xFFFFFF00) |
+                         (state->decoration_alpha & 0xFF);
+        info->decoration_c[0] = decoration;
+        info->decoration_c[1] = decoration;
+        info->flags &= ~(DECO_UNDERLINE | DECO_STRIKETHROUGH);
+    }
     info->frx = state->frx;
     info->fry = state->fry;
     info->frs = state->frs;
@@ -5722,6 +5743,149 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
     }
 }
 
+static int decoration_filter_flags(const GlyphInfo *info)
+{
+    int flags = 0;
+    if (info->border_style == 3)
+        flags |= FILTER_BORDER_STYLE_3;
+    if (glyph_border_max_x(info) || glyph_border_max_y(info))
+        flags |= FILTER_NONZERO_BORDER;
+    if (has_multi_border_layers(info->border_layers) &&
+            info->border_style != 3)
+        flags |= FILTER_MULTI_BORDER;
+    if (info->shadow_x || info->shadow_y)
+        flags |= FILTER_NONZERO_SHADOW;
+    if (flags & FILTER_NONZERO_SHADOW &&
+        (info->effect_type == EF_KARAOKE_KF ||
+         info->effect_type == EF_KARAOKE_KO ||
+         _a(info->c[0]) != 0xFF ||
+         info->border_style == 3))
+        flags |= FILTER_FILL_IN_SHADOW;
+    if (!(flags & FILTER_NONZERO_BORDER) &&
+        !(flags & FILTER_FILL_IN_SHADOW))
+        flags &= ~FILTER_NONZERO_SHADOW;
+    if ((flags & FILTER_NONZERO_BORDER &&
+         _a(info->c[0]) == 0 &&
+         _a(info->c[1]) == 0 &&
+         info->fade == 0) ||
+        info->border_style == 3)
+        flags |= FILTER_FILL_IN_BORDER;
+    return flags;
+}
+
+static bool append_decoration_bitmap_info(RenderContext *state,
+                                          GlyphInfo *info,
+                                          unsigned *nb_bitmaps,
+                                          CombinedBitmapInfo **combined_info)
+{
+    TextInfo *text_info = &state->text_info;
+    GlyphInfo deco = *info;
+    deco.next = NULL;
+    deco.flags = info->decoration_flags | DECO_ONLY;
+    memcpy(deco.c, info->decoration_c, sizeof(deco.c));
+    deco.outline = NULL;
+    deco.distorted_outline = NULL;
+    deco.has_distort_bitmap = false;
+    deco.has_distort_outline = false;
+    deco.bm = deco.bm_o = NULL;
+    for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+        deco.bm_border[j] = NULL;
+
+    get_outline_glyph(state, &deco);
+    if (!deco.outline)
+        return true;
+
+    int flags = decoration_filter_flags(&deco);
+    ASS_Vector pos, pos_o;
+    ASS_DVector offset;
+    int32_t leftmost_x = OUTLINE_MAX;
+    get_bitmap_glyph(state, &deco, &leftmost_x, &pos, &pos_o,
+                     &offset, true, flags);
+
+    bool has_bitmap = deco.bm || deco.bm_o;
+    for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1 && !has_bitmap; j++)
+        has_bitmap = deco.bm_border[j] != NULL;
+    if (!has_bitmap)
+        return true;
+
+    if (*nb_bitmaps >= text_info->max_bitmaps) {
+        size_t new_size = 2 * text_info->max_bitmaps;
+        if (!ASS_REALLOC_ARRAY(text_info->combined_bitmaps, new_size))
+            return false;
+        text_info->max_bitmaps = new_size;
+        *combined_info = text_info->combined_bitmaps;
+    }
+
+    CombinedBitmapInfo *current_info = &(*combined_info)[(*nb_bitmaps)++];
+    memset(current_info, 0, sizeof(*current_info));
+    memcpy(&current_info->c, &deco.c, sizeof(deco.c));
+    memcpy(&current_info->base_c, &deco.c, sizeof(deco.c));
+    current_info->gradient = deco.gradient;
+    current_info->image_fill = deco.image_fill;
+    memcpy(current_info->border_layers, deco.border_layers,
+           sizeof(current_info->border_layers));
+    current_info->fade = deco.fade;
+    current_info->line = deco.line;
+    for (int j = 0; j < 4; j++)
+        ass_apply_fade(&current_info->c[j], deco.fade);
+    current_info->effect_type = deco.effect_type;
+    current_info->effect_timing = deco.effect_timing;
+    current_info->leftmost_x = leftmost_x;
+    current_info->filter.flags = flags;
+    current_info->filter.be = deco.be;
+
+    int32_t shadow_mask_x, shadow_mask_y;
+    double blur_radius_scale = 2 / sqrt(log(256));
+    double blur_scale_x = state->blur_scale_x * blur_radius_scale;
+    double blur_scale_y = state->blur_scale_y * blur_radius_scale;
+    current_info->filter.blur_x =
+        quantize_blur(deco.blur_x * blur_scale_x, &shadow_mask_x);
+    current_info->filter.blur_y =
+        quantize_blur(deco.blur_y * blur_scale_y, &shadow_mask_y);
+    if (flags & FILTER_NONZERO_SHADOW) {
+        int32_t x = double_to_d6(deco.shadow_x * state->border_scale_x);
+        int32_t y = double_to_d6(deco.shadow_y * state->border_scale_y);
+        current_info->filter.shadow.x =
+            (x + (shadow_mask_x >> 1)) & ~shadow_mask_x;
+        current_info->filter.shadow.y =
+            (y + (shadow_mask_y >> 1)) & ~shadow_mask_y;
+    }
+
+    current_info->x = pos.x;
+    current_info->y = pos.y;
+    current_info->bitmaps = malloc(sizeof(BitmapRef));
+    if (!current_info->bitmaps)
+        return false;
+    current_info->bitmap_count = current_info->max_bitmap_count = 1;
+
+    BitmapRef *ref = current_info->bitmaps;
+    memset(ref, 0, sizeof(*ref));
+    ref->bm = deco.bm;
+    ref->bm_o = deco.bm_o;
+    ref->pos = pos;
+    ref->pos_o = pos_o;
+    for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++) {
+        ref->bm_border[j] = deco.bm_border[j];
+        ref->pos_border[j] = deco.pos_border[j];
+    }
+    return true;
+}
+
+static void render_decoration_list_to_bitmaps(RenderContext *state,
+                                              GlyphInfo *glyphs, int length,
+                                              unsigned *nb_bitmaps,
+                                              CombinedBitmapInfo **combined_info)
+{
+    for (int i = 0; i < length; i++) {
+        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
+            if (!info->has_custom_decoration || info->skip)
+                continue;
+            append_decoration_bitmap_info(state, info, nb_bitmaps,
+                                          combined_info);
+        }
+    }
+}
+
 // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
 static void render_and_combine_glyphs(RenderContext *state,
                                       double device_x, double device_y)
@@ -5740,6 +5904,14 @@ static void render_and_combine_glyphs(RenderContext *state,
         render_glyph_list_to_bitmaps(state, group->glyphs, group->length,
                                      device_x, device_y, &nb_bitmaps,
                                      &combined_info);
+    }
+    render_decoration_list_to_bitmaps(state, text_info->glyphs,
+                                      text_info->length, &nb_bitmaps,
+                                      &combined_info);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        render_decoration_list_to_bitmaps(state, group->glyphs, group->length,
+                                          &nb_bitmaps, &combined_info);
     }
 
     for (int i = 0; i < nb_bitmaps; i++) {

@@ -804,20 +804,21 @@ bool ass_get_glyph_outline(ASS_Outline *outline, int32_t *advance,
 
     assert(face->glyph->format == FT_GLYPH_FORMAT_OUTLINE);
     FT_Outline *source = &face->glyph->outline;
-    if (!source->n_points && !n_lines) {
+    if ((!source->n_points || (flags & DECO_ONLY)) && !n_lines) {
         ass_outline_clear(outline);
         return true;
     }
 
-    size_t max_points = 2 * source->n_points + 4 * n_lines;
-    size_t max_segments = source->n_points + 4 * n_lines;
+    size_t source_points = (flags & DECO_ONLY) ? 0 : source->n_points;
+    size_t max_points = 2 * source_points + 4 * n_lines;
+    size_t max_segments = source_points + 4 * n_lines;
     if (!ass_outline_alloc(outline, max_points, max_segments))
         return false;
 
-    if (!ass_outline_convert(outline, source))
+    if (!(flags & DECO_ONLY) && !ass_outline_convert(outline, source))
         goto fail;
 
-    if (flags & DECO_ROTATE) {
+    if ((flags & DECO_ROTATE) && !(flags & DECO_ONLY)) {
         TT_OS2 *os2 = FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
         int64_t desc = 0;
         if (os2) {
