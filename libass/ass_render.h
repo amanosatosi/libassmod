@@ -435,6 +435,7 @@ struct render_context {
         EVENT_VSCROLL = 4       // "Scroll up", "Scroll down" transition effects
     } evt_type;
     int border_style;
+    bool bs4_box_mode;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
     ImageFillState image_fill;

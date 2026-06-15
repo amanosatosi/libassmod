@@ -2090,6 +2090,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else {
                 state->decoration_alpha_set = false;
             }
+        } else if (tag("box")) {
+            if (nargs) {
+                int32_t val = argtoi32(*args);
+                if (val == 0 || val == 1)
+                    state->bs4_box_mode = val == 1;
+            }
         } else if (tag("r")) {
             if (nargs) {
                 int len = args->end - args->start;

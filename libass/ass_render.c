@@ -1847,7 +1847,7 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
         CombinedBitmapInfo *info = &bitmaps[i];
-        if (!info->bm_s || state->border_style == 4)
+        if (!info->bm_s || state->bs4_box_mode)
             continue;
 
         tail =
@@ -2150,6 +2150,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     ass_update_font(state);
 
     state->border_style = style->BorderStyle;
+    state->bs4_box_mode = style->BorderStyle == 4;
     state->border_x = style->Outline;
     state->border_y = style->Outline;
     state->border_layers[0] = (BorderLayerState) {
@@ -5538,10 +5539,10 @@ static void compute_line_gradient_rects(RenderContext *state)
         }
     }
 
-    // For BorderStyle=4, the "shadow" is the opaque background box. If there
+    // For BorderStyle=4-style boxes, the "shadow" is the opaque background box. If there
     // is no separate shadow bitmap, anchor its gradient to the character box
     // so the box uses the same line-space rectangle.
-    if (state->border_style == 4) {
+    if (state->bs4_box_mode) {
         for (int i = 0; i < text_info->n_lines; i++) {
             LineInfo *ln = &text_info->lines[i];
             if (!ln->grad_shadow_valid && ln->grad_char_valid) {
@@ -6646,7 +6647,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     ASS_ImageRGBA **rgba_ptr = want_rgba ? &event_images->imgs_rgba : NULL;
     event_images->imgs = render_text(state, rgba_ptr);
 
-    if (state->border_style == 4)
+    if (state->bs4_box_mode)
         add_background(state, event_images,
                        rgba_out ? &event_images->imgs_rgba : NULL);
 
