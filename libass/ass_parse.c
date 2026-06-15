@@ -2090,6 +2090,26 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else {
                 state->decoration_alpha_set = false;
             }
+        } else if (tag("boxpx")) {
+            if (nargs) {
+                double val;
+                if (parse_double_arg_strict(*args, &val))
+                    state->box_extra_x = FFMAX(val, 0);
+            }
+        } else if (tag("boxpy")) {
+            if (nargs) {
+                double val;
+                if (parse_double_arg_strict(*args, &val))
+                    state->box_extra_y = FFMAX(val, 0);
+            }
+        } else if (tag("boxp")) {
+            if (nargs) {
+                double val;
+                if (parse_double_arg_strict(*args, &val)) {
+                    state->box_extra_x = FFMAX(val, 0);
+                    state->box_extra_y = FFMAX(val, 0);
+                }
+            }
         } else if (tag("box")) {
             if (nargs) {
                 int32_t val = argtoi32(*args);

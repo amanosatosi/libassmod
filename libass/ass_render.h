@@ -436,6 +436,8 @@ struct render_context {
     } evt_type;
     int border_style;
     bool bs4_box_mode;
+    double box_extra_x;
+    double box_extra_y;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
     ImageFillState image_fill;

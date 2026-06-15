@@ -2151,6 +2151,8 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
 
     state->border_style = style->BorderStyle;
     state->bs4_box_mode = style->BorderStyle == 4;
+    state->box_extra_x = 0;
+    state->box_extra_y = 0;
     state->border_x = style->Outline;
     state->border_y = style->Outline;
     state->border_layers[0] = (BorderLayerState) {
@@ -6317,6 +6319,12 @@ static void add_background(RenderContext *state, EventImages *event_images,
     int top     = event_images->top  - size_y;
     int right   = event_images->left + event_images->width  + size_x;
     int bottom  = event_images->top  + event_images->height + size_y;
+    int extra_x = lround(state->box_extra_x * state->border_scale_x);
+    int extra_y = lround(state->box_extra_y * state->border_scale_y);
+    left       -= extra_x;
+    right      += extra_x;
+    top        -= extra_y;
+    bottom     += extra_y;
     left        = FFMINMAX(left,   0, render_priv->width);
     top         = FFMINMAX(top,    0, render_priv->height);
     right       = FFMINMAX(right,  0, render_priv->width);
