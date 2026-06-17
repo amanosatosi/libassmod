@@ -2150,6 +2150,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             ass_update_font(state);
         } else if (tag("kt")) {
             // v4++
+            if (state->column_event && state->column_active)
+                continue;
             double val = 0;
             if (nargs)
                 val = argtod(*args) * 10;
@@ -2157,6 +2159,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->effect_timing = 0;
             state->reset_effect = true;
         } else if (tag("kf") || tag("K")) {
+            if (state->column_event && state->column_active)
+                continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
@@ -2165,6 +2169,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     (uint32_t) state->effect_timing;
             state->effect_timing = dtoi32(val * 10);
         } else if (tag("ko")) {
+            if (state->column_event && state->column_active)
+                continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
@@ -2173,6 +2179,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     (uint32_t) state->effect_timing;
             state->effect_timing = dtoi32(val * 10);
         } else if (tag("k")) {
+            if (state->column_event && state->column_active)
+                continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);

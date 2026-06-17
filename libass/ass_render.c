@@ -3824,10 +3824,17 @@ static bool append_glyph_to_target(RenderContext *state,
     info->image_fill = state->image_fill;
     info->line = 0;
 
-    info->effect_type = state->effect_type;
-    info->effect_timing = state->effect_timing;
-    info->effect_skip_timing = state->effect_skip_timing;
-    info->reset_effect = state->reset_effect;
+    if (main_text && state->column_event && state->column_active) {
+        info->effect_type = EF_NONE;
+        info->effect_timing = 0;
+        info->effect_skip_timing = 0;
+        info->reset_effect = false;
+    } else {
+        info->effect_type = state->effect_type;
+        info->effect_timing = state->effect_timing;
+        info->effect_skip_timing = state->effect_skip_timing;
+        info->reset_effect = state->reset_effect;
+    }
     info->font_size = fabs(state->font_size * state->screen_scale_y);
     info->be = state->be;
     info->blur_x = state->blur_x;
