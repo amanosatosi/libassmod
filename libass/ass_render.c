@@ -137,9 +137,11 @@ static void free_furi_groups(TextInfo *text_info)
 static void free_column_layout(TextInfo *text_info)
 {
     free(text_info->column_glyphs);
+    free(text_info->column_defaults);
     free(text_info->column_widths);
     free(text_info->column_align);
     text_info->column_glyphs = NULL;
+    text_info->column_defaults = NULL;
     text_info->column_widths = NULL;
     text_info->column_align = NULL;
     text_info->max_column_glyphs = 0;
@@ -2252,6 +2254,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->column_active = false;
     state->column_row = 0;
     state->column_index = 0;
+    state->column_base_style = (ColumnStyleState) {0};
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
@@ -2302,11 +2305,13 @@ static bool ensure_column_count(TextInfo *text_info, int count)
         new_max *= 2;
     }
 
-    if (!ASS_REALLOC_ARRAY(text_info->column_widths, new_max) ||
+    if (!ASS_REALLOC_ARRAY(text_info->column_defaults, new_max) ||
+            !ASS_REALLOC_ARRAY(text_info->column_widths, new_max) ||
             !ASS_REALLOC_ARRAY(text_info->column_align, new_max))
         return false;
 
     for (int i = old_max; i < new_max; i++) {
+        text_info->column_defaults[i] = (ColumnStyleDefault) {0};
         text_info->column_widths[i] = 0.0;
         text_info->column_align[i] = HALIGN_LEFT;
     }
@@ -2352,12 +2357,251 @@ static bool ensure_column_glyph_capacity(TextInfo *text_info)
     return true;
 }
 
+static void capture_column_style(RenderContext *state, ColumnStyleState *style,
+                                 unsigned fields)
+{
+    style->mask |= fields;
+
+    if (fields & COLUMN_STYLE_FONT_NAME)
+        style->family = state->family;
+    if (fields & COLUMN_STYLE_FONT_SIZE)
+        style->font_size = state->font_size;
+    if (fields & COLUMN_STYLE_BOLD)
+        style->bold = state->bold;
+    if (fields & COLUMN_STYLE_ITALIC)
+        style->italic = state->italic;
+    if (fields & (COLUMN_STYLE_UNDERLINE | COLUMN_STYLE_STRIKEOUT))
+        style->flags = state->flags;
+
+    for (int i = 0; i < 4; i++)
+        if (fields & (COLUMN_STYLE_COLOR_MASK(i) | COLUMN_STYLE_ALPHA_MASK(i)))
+            style->c[i] = state->c[i];
+
+    if (fields & COLUMN_STYLE_DECORATION_COLOR) {
+        style->decoration_color_set = state->decoration_color_set;
+        style->decoration_color = state->decoration_color;
+    }
+    if (fields & COLUMN_STYLE_DECORATION_ALPHA) {
+        style->decoration_alpha_set = state->decoration_alpha_set;
+        style->decoration_alpha = state->decoration_alpha;
+    }
+    if (fields & COLUMN_STYLE_BORDER_X)
+        style->border_x = state->border_x;
+    if (fields & COLUMN_STYLE_BORDER_Y)
+        style->border_y = state->border_y;
+    if (fields & COLUMN_STYLE_SHADOW_X)
+        style->shadow_x = state->shadow_x;
+    if (fields & COLUMN_STYLE_SHADOW_Y)
+        style->shadow_y = state->shadow_y;
+    if (fields & COLUMN_STYLE_BLUR) {
+        style->blur_x = state->blur_x;
+        style->blur_y = state->blur_y;
+    }
+    if (fields & COLUMN_STYLE_BE)
+        style->be = state->be;
+}
+
+static void sync_state_layer1_border(RenderContext *state)
+{
+    state->border_layers[0].enabled = state->border_x > 0 || state->border_y > 0;
+    state->border_layers[0].has_color = true;
+    state->border_layers[0].has_alpha = true;
+    state->border_layers[0].size_x = state->border_x;
+    state->border_layers[0].size_y = state->border_y;
+    state->border_layers[0].color = state->c[2];
+    state->border_layers[0].gradient = state->gradient.layer[2];
+}
+
+static void capture_column_base_style(RenderContext *state)
+{
+    ColumnStyleState *style = &state->column_base_style;
+    *style = (ColumnStyleState) {0};
+    capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
+    style->gradient = state->gradient;
+    style->image_fill = state->image_fill;
+    memcpy(style->border_layers, state->border_layers,
+           sizeof(style->border_layers));
+}
+
+static void apply_column_base_style(RenderContext *state)
+{
+    const ColumnStyleState *style = &state->column_base_style;
+    state->family = style->family;
+    state->font_size = style->font_size;
+    state->bold = style->bold;
+    state->italic = style->italic;
+    state->flags = (state->flags & ~(DECO_UNDERLINE | DECO_STRIKETHROUGH)) |
+                   (style->flags & (DECO_UNDERLINE | DECO_STRIKETHROUGH));
+    memcpy(state->c, style->c, sizeof(state->c));
+    state->gradient = style->gradient;
+    state->image_fill = style->image_fill;
+    state->decoration_color_set = style->decoration_color_set;
+    state->decoration_alpha_set = style->decoration_alpha_set;
+    state->decoration_color = style->decoration_color;
+    state->decoration_alpha = style->decoration_alpha;
+    state->border_x = style->border_x;
+    state->border_y = style->border_y;
+    memcpy(state->border_layers, style->border_layers,
+           sizeof(state->border_layers));
+    state->shadow_x = style->shadow_x;
+    state->shadow_y = style->shadow_y;
+    state->blur_x = style->blur_x;
+    state->blur_y = style->blur_y;
+    state->be = style->be;
+    ass_update_font(state);
+}
+
+static void apply_column_default_style(RenderContext *state,
+                                       const ColumnStyleState *style)
+{
+    unsigned fields = style->mask;
+    bool update_font = false;
+    bool sync_border = false;
+
+    if (fields & COLUMN_STYLE_FONT_NAME) {
+        state->family = style->family;
+        update_font = true;
+    }
+    if (fields & COLUMN_STYLE_FONT_SIZE)
+        state->font_size = style->font_size;
+    if (fields & COLUMN_STYLE_BOLD) {
+        state->bold = style->bold;
+        update_font = true;
+    }
+    if (fields & COLUMN_STYLE_ITALIC) {
+        state->italic = style->italic;
+        update_font = true;
+    }
+    if (fields & COLUMN_STYLE_UNDERLINE) {
+        if (style->flags & DECO_UNDERLINE)
+            state->flags |= DECO_UNDERLINE;
+        else
+            state->flags &= ~DECO_UNDERLINE;
+    }
+    if (fields & COLUMN_STYLE_STRIKEOUT) {
+        if (style->flags & DECO_STRIKETHROUGH)
+            state->flags |= DECO_STRIKETHROUGH;
+        else
+            state->flags &= ~DECO_STRIKETHROUGH;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        if (fields & COLUMN_STYLE_COLOR_MASK(i)) {
+            state->c[i] = (style->c[i] & 0xFFFFFF00) | _a(state->c[i]);
+            ass_gradient_disable_color(&state->gradient, i, state->c[i], 1);
+            clear_image_fill_layer(&state->image_fill.layer[i]);
+            if (i == 2)
+                sync_border = true;
+        }
+        if (fields & COLUMN_STYLE_ALPHA_MASK(i)) {
+            state->c[i] = (state->c[i] & 0xFFFFFF00) | _a(style->c[i]);
+            ass_gradient_disable_alpha(&state->gradient, i,
+                                       _a(state->c[i]), 1);
+            if (i == 2)
+                sync_border = true;
+        }
+    }
+
+    if (fields & COLUMN_STYLE_DECORATION_COLOR) {
+        state->decoration_color_set = style->decoration_color_set;
+        state->decoration_color = style->decoration_color;
+    }
+    if (fields & COLUMN_STYLE_DECORATION_ALPHA) {
+        state->decoration_alpha_set = style->decoration_alpha_set;
+        state->decoration_alpha = style->decoration_alpha;
+    }
+    if (fields & COLUMN_STYLE_BORDER_X) {
+        state->border_x = style->border_x;
+        sync_border = true;
+    }
+    if (fields & COLUMN_STYLE_BORDER_Y) {
+        state->border_y = style->border_y;
+        sync_border = true;
+    }
+    if (sync_border)
+        sync_state_layer1_border(state);
+    if (fields & COLUMN_STYLE_SHADOW_X)
+        state->shadow_x = style->shadow_x;
+    if (fields & COLUMN_STYLE_SHADOW_Y)
+        state->shadow_y = style->shadow_y;
+    if (fields & COLUMN_STYLE_BLUR) {
+        state->blur_x = style->blur_x;
+        state->blur_y = style->blur_y;
+    }
+    if (fields & COLUMN_STYLE_BE)
+        state->be = style->be;
+
+    if (update_font)
+        ass_update_font(state);
+}
+
+static ColumnStyleDefault *get_column_default(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    int column = state->column_index;
+    if (column < 0 || !ensure_column_count(text_info, column + 1))
+        return NULL;
+    return &text_info->column_defaults[column];
+}
+
+static void finish_column_cell(RenderContext *state)
+{
+    if (!state->column_event || !state->column_active)
+        return;
+
+    ColumnStyleDefault *def = get_column_default(state);
+    if (def && !def->set && def->style.mask)
+        def->set = true;
+}
+
+static void apply_column_cell_style(RenderContext *state)
+{
+    if (!state->column_event || !state->column_active)
+        return;
+
+    apply_column_base_style(state);
+
+    ColumnStyleDefault *def = get_column_default(state);
+    if (def && def->set)
+        apply_column_default_style(state, &def->style);
+}
+
+static void clear_column_defaults(TextInfo *text_info)
+{
+    for (int i = 0; i < text_info->max_columns; i++)
+        text_info->column_defaults[i] = (ColumnStyleDefault) {0};
+}
+
+void ass_column_update_default(RenderContext *state, unsigned fields)
+{
+    if (!state->column_event || !state->column_active || !fields)
+        return;
+
+    ColumnStyleDefault *def = get_column_default(state);
+    if (!def || def->set)
+        return;
+
+    capture_column_style(state, &def->style, fields);
+}
+
 void ass_column_set_mode(RenderContext *state, bool active)
 {
     if (!state->column_event)
         return;
 
-    state->column_active = active;
+    if (state->column_active == active)
+        return;
+
+    if (active) {
+        capture_column_base_style(state);
+        state->column_active = true;
+        apply_column_cell_style(state);
+    } else {
+        finish_column_cell(state);
+        state->column_active = false;
+        clear_column_defaults(&state->text_info);
+        apply_column_base_style(state);
+    }
 }
 
 void ass_column_set_align(RenderContext *state, int align)
@@ -2370,6 +2614,11 @@ void ass_column_set_align(RenderContext *state, int align)
     if (column < 0 || !ensure_column_count(text_info, column + 1))
         return;
 
+    ColumnStyleDefault *def = &text_info->column_defaults[column];
+    if (def->set)
+        return;
+
+    def->style.mask |= COLUMN_STYLE_ALIGN;
     text_info->column_align[column] = column_halign_from_numpad(align);
 }
 
@@ -2433,6 +2682,7 @@ static void free_render_context(RenderContext *state)
     state->column_active = false;
     state->column_row = 0;
     state->column_index = 0;
+    state->column_base_style = (ColumnStyleState) {0};
 }
 
 /**
@@ -4304,11 +4554,13 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
                 p = q;
                 break;
             } else if (state->column_event && state->column_active && *p == '|') {
+                finish_column_cell(state);
                 state->column_index++;
                 if (!ensure_column_count(text_info, state->column_index + 1))
                     goto fail;
                 text_info->column_count =
                     FFMAX(text_info->column_count, state->column_index + 1);
+                apply_column_cell_style(state);
                 p++;
             } else {
                 if (state->furi_enabled && *p == '<') {
@@ -4353,10 +4605,12 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
             goto fail;
 
         if (state->column_event && code == '\n') {
+            finish_column_cell(state);
             state->column_row++;
             state->column_index = 0;
             text_info->column_rows =
                 FFMAX(text_info->column_rows, state->column_row + 1);
+            apply_column_cell_style(state);
         }
 
         state->effect_type = EF_NONE;

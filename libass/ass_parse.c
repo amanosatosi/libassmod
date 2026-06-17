@@ -1185,6 +1185,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 
 #define tag(name) (mystrcmp(&p, (name)) && (push_arg(args, &nargs, p, name_end), 1))
 #define complex_tag(name) mystrcmp(&p, (name))
+#define column_default(fields) do { \
+            if (!nested) \
+                ass_column_update_default(state, (fields)); \
+        } while (0)
 
         // New tags introduced in vsfilter 2.39
         int numbered_border_layer = -1;
@@ -1220,6 +1224,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = state->style->Outline;
             state->border_x = val;
             sync_layer1_border(state);
+            column_default(COLUMN_STYLE_BORDER_X);
         } else if (tag("ybord")) {
             double val;
             if (nargs) {
@@ -1230,6 +1235,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = state->style->Outline;
             state->border_y = val;
             sync_layer1_border(state);
+            column_default(COLUMN_STYLE_BORDER_Y);
         } else if (tag("xshad")) {
             double val;
             if (nargs) {
@@ -1238,6 +1244,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 val = state->style->Shadow;
             state->shadow_x = val;
+            column_default(COLUMN_STYLE_SHADOW_X);
         } else if (tag("yshad")) {
             double val;
             if (nargs) {
@@ -1246,6 +1253,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 val = state->style->Shadow;
             state->shadow_y = val;
+            column_default(COLUMN_STYLE_SHADOW_Y);
         } else if (tag("fax")) {
             double val;
             if (nargs) {
@@ -1393,6 +1401,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 
             state->blur_x = val_x;
             state->blur_y = val_y;
+            column_default(COLUMN_STYLE_BLUR);
         } else if (tag("xblur")) {
             double val;
             if (nargs) {
@@ -1512,6 +1521,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (val <= 0)
                 val = state->style->FontSize;
             state->font_size = val;
+            column_default(COLUMN_STYLE_FONT_SIZE);
         } else if (tag("bord")) {
             double val, xval, yval;
             if (nargs) {
@@ -1525,6 +1535,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->border_x = xval;
             state->border_y = yval;
             sync_layer1_border(state);
+            column_default(COLUMN_STYLE_BORDER_X | COLUMN_STYLE_BORDER_Y);
         } else if (complex_tag("movevc")) {
             if (nargs == 2 || nargs == 4 || nargs == 6) {
                 MoveVCState mv = { .active = true };
@@ -1683,6 +1694,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->family.len = strlen(state->style->FontName);
             }
             ass_update_font(state);
+            column_default(COLUMN_STYLE_FONT_NAME);
         } else if (tag("alpha")) {
             int i;
             if (nargs) {
@@ -1703,6 +1715,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 ass_gradient_disable_alpha(&state->gradient, i,
                                            _a(state->c[i]), pwr);
             sync_layer1_border(state);
+            column_default(COLUMN_STYLE_ALL_ALPHAS);
             // FIXME: simplify
         } else if (tag("an")) {
             int32_t val = argtoi32(*args);
@@ -1998,9 +2011,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 if (parse_decoration_color_arg(*args, &val)) {
                     state->decoration_color = val;
                     state->decoration_color_set = true;
+                    column_default(COLUMN_STYLE_DECORATION_COLOR);
                 }
             } else {
                 state->decoration_color_set = false;
+                column_default(COLUMN_STYLE_DECORATION_COLOR);
             }
         } else if (tag("c") || tag("1c")) {
             if (nargs) {
@@ -2012,6 +2027,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 0);
+            column_default(COLUMN_STYLE_COLOR0);
         } else if (tag("2c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -2022,6 +2038,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 1);
+            column_default(COLUMN_STYLE_COLOR1);
         } else if (tag("3c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -2033,6 +2050,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 2);
             sync_layer1_border(state);
+            column_default(COLUMN_STYLE_COLOR2);
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args->start);
@@ -2043,6 +2061,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 3);
+            column_default(COLUMN_STYLE_COLOR3);
         } else if (tag("1a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -2052,6 +2071,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->style->PrimaryColour), 1);
             ass_gradient_disable_alpha(&state->gradient, 0,
                                        _a(state->c[0]), pwr);
+            column_default(COLUMN_STYLE_ALPHA0);
         } else if (tag("2a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -2061,6 +2081,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->style->SecondaryColour), 1);
             ass_gradient_disable_alpha(&state->gradient, 1,
                                        _a(state->c[1]), pwr);
+            column_default(COLUMN_STYLE_ALPHA1);
         } else if (tag("3a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -2071,6 +2092,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             ass_gradient_disable_alpha(&state->gradient, 2,
                                        _a(state->c[2]), pwr);
             sync_layer1_border(state);
+            column_default(COLUMN_STYLE_ALPHA2);
         } else if (tag("4a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args->start);
@@ -2080,15 +2102,18 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->style->BackColour), 1);
             ass_gradient_disable_alpha(&state->gradient, 3,
                                        _a(state->c[3]), pwr);
+            column_default(COLUMN_STYLE_ALPHA3);
         } else if (tag("5a")) {
             if (nargs) {
                 uint32_t val;
                 if (parse_decoration_alpha_arg(*args, &val)) {
                     state->decoration_alpha = val;
                     state->decoration_alpha_set = true;
+                    column_default(COLUMN_STYLE_DECORATION_ALPHA);
                 }
             } else {
                 state->decoration_alpha_set = false;
+                column_default(COLUMN_STYLE_DECORATION_ALPHA);
             }
         } else if (tag("boxpx")) {
             if (nargs) {
@@ -2136,18 +2161,21 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->be = val;
             } else
                 state->be = 0;
+            column_default(COLUMN_STYLE_BE);
         } else if (tag("b")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1 || val >= 100))
                 val = state->style->Bold;
             state->bold = val;
             ass_update_font(state);
+            column_default(COLUMN_STYLE_BOLD);
         } else if (tag("i")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
                 val = state->style->Italic;
             state->italic = val;
             ass_update_font(state);
+            column_default(COLUMN_STYLE_ITALIC);
         } else if (tag("kt")) {
             // v4++
             if (state->column_event && state->column_active)
@@ -2201,6 +2229,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 xval = yval = state->style->Shadow;
             state->shadow_x = xval;
             state->shadow_y = yval;
+            column_default(COLUMN_STYLE_SHADOW_X | COLUMN_STYLE_SHADOW_Y);
         } else if (tag("s")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
@@ -2209,6 +2238,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->flags |= DECO_STRIKETHROUGH;
             else
                 state->flags &= ~DECO_STRIKETHROUGH;
+            column_default(COLUMN_STYLE_STRIKEOUT);
         } else if (tag("u")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
@@ -2217,6 +2247,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->flags |= DECO_UNDERLINE;
             else
                 state->flags &= ~DECO_UNDERLINE;
+            column_default(COLUMN_STYLE_UNDERLINE);
         } else if (tag("pbo")) {
             double val = argtod(*args);
             state->pbo = val;

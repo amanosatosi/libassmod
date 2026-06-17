@@ -329,6 +329,79 @@ typedef struct {
     bool active;
 } ColumnGlyphInfo;
 
+enum {
+    COLUMN_STYLE_FONT_NAME = 1u << 0,
+    COLUMN_STYLE_FONT_SIZE = 1u << 1,
+    COLUMN_STYLE_BOLD = 1u << 2,
+    COLUMN_STYLE_ITALIC = 1u << 3,
+    COLUMN_STYLE_UNDERLINE = 1u << 4,
+    COLUMN_STYLE_STRIKEOUT = 1u << 5,
+    COLUMN_STYLE_COLOR0 = 1u << 6,
+    COLUMN_STYLE_COLOR1 = 1u << 7,
+    COLUMN_STYLE_COLOR2 = 1u << 8,
+    COLUMN_STYLE_COLOR3 = 1u << 9,
+    COLUMN_STYLE_ALPHA0 = 1u << 10,
+    COLUMN_STYLE_ALPHA1 = 1u << 11,
+    COLUMN_STYLE_ALPHA2 = 1u << 12,
+    COLUMN_STYLE_ALPHA3 = 1u << 13,
+    COLUMN_STYLE_DECORATION_COLOR = 1u << 14,
+    COLUMN_STYLE_DECORATION_ALPHA = 1u << 15,
+    COLUMN_STYLE_BORDER_X = 1u << 16,
+    COLUMN_STYLE_BORDER_Y = 1u << 17,
+    COLUMN_STYLE_SHADOW_X = 1u << 18,
+    COLUMN_STYLE_SHADOW_Y = 1u << 19,
+    COLUMN_STYLE_BLUR = 1u << 20,
+    COLUMN_STYLE_BE = 1u << 21,
+    COLUMN_STYLE_ALIGN = 1u << 22,
+};
+
+#define COLUMN_STYLE_COLOR_MASK(layer) (COLUMN_STYLE_COLOR0 << (layer))
+#define COLUMN_STYLE_ALPHA_MASK(layer) (COLUMN_STYLE_ALPHA0 << (layer))
+#define COLUMN_STYLE_ALL_COLORS \
+    (COLUMN_STYLE_COLOR0 | COLUMN_STYLE_COLOR1 | \
+     COLUMN_STYLE_COLOR2 | COLUMN_STYLE_COLOR3)
+#define COLUMN_STYLE_ALL_ALPHAS \
+    (COLUMN_STYLE_ALPHA0 | COLUMN_STYLE_ALPHA1 | \
+     COLUMN_STYLE_ALPHA2 | COLUMN_STYLE_ALPHA3)
+#define COLUMN_STYLE_ALL_FIELDS \
+    (COLUMN_STYLE_FONT_NAME | COLUMN_STYLE_FONT_SIZE | \
+     COLUMN_STYLE_BOLD | COLUMN_STYLE_ITALIC | \
+     COLUMN_STYLE_UNDERLINE | COLUMN_STYLE_STRIKEOUT | \
+     COLUMN_STYLE_ALL_COLORS | COLUMN_STYLE_ALL_ALPHAS | \
+     COLUMN_STYLE_DECORATION_COLOR | COLUMN_STYLE_DECORATION_ALPHA | \
+     COLUMN_STYLE_BORDER_X | COLUMN_STYLE_BORDER_Y | \
+     COLUMN_STYLE_SHADOW_X | COLUMN_STYLE_SHADOW_Y | \
+     COLUMN_STYLE_BLUR | COLUMN_STYLE_BE)
+
+typedef struct {
+    unsigned mask;
+    ASS_StringView family;
+    unsigned bold;
+    unsigned italic;
+    double font_size;
+    int flags;
+    uint32_t c[4];
+    GradientState gradient;
+    ImageFillState image_fill;
+    bool decoration_color_set;
+    bool decoration_alpha_set;
+    uint32_t decoration_color;
+    uint32_t decoration_alpha;
+    double border_x;
+    double border_y;
+    BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
+    double shadow_x;
+    double shadow_y;
+    double blur_x;
+    double blur_y;
+    char be;
+} ColumnStyleState;
+
+typedef struct {
+    bool set;
+    ColumnStyleState style;
+} ColumnStyleDefault;
+
 typedef struct {
     GlyphInfo *glyphs;
     FriBidiChar *event_text;
@@ -349,6 +422,7 @@ typedef struct {
     int n_furi_groups;
     int max_furi_groups;
     ColumnGlyphInfo *column_glyphs;
+    ColumnStyleDefault *column_defaults;
     int max_column_glyphs;
     double *column_widths;
     int *column_align;
@@ -465,6 +539,7 @@ struct render_context {
     bool column_active;
     int column_row;
     int column_index;
+    ColumnStyleState column_base_style;
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;
@@ -580,6 +655,7 @@ typedef struct {
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 void ass_column_set_mode(RenderContext *state, bool active);
 void ass_column_set_align(RenderContext *state, int align);
+void ass_column_update_default(RenderContext *state, unsigned fields);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
 ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
