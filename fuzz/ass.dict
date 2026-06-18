@@ -152,6 +152,9 @@
 "\\ortho"
 "\\t"
 "\\movevc"
+"\\col"
+"\\colan"
+"\\colsp"
 ### Animateable Commands
 "\\fsc"
 "\\fsvp"

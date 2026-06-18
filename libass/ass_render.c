@@ -139,10 +139,12 @@ static void free_column_layout(TextInfo *text_info)
     free(text_info->column_glyphs);
     free(text_info->column_defaults);
     free(text_info->column_widths);
+    free(text_info->column_spacing);
     free(text_info->column_align);
     text_info->column_glyphs = NULL;
     text_info->column_defaults = NULL;
     text_info->column_widths = NULL;
+    text_info->column_spacing = NULL;
     text_info->column_align = NULL;
     text_info->max_column_glyphs = 0;
     text_info->max_columns = 0;
@@ -2307,12 +2309,14 @@ static bool ensure_column_count(TextInfo *text_info, int count)
 
     if (!ASS_REALLOC_ARRAY(text_info->column_defaults, new_max) ||
             !ASS_REALLOC_ARRAY(text_info->column_widths, new_max) ||
+            !ASS_REALLOC_ARRAY(text_info->column_spacing, new_max) ||
             !ASS_REALLOC_ARRAY(text_info->column_align, new_max))
         return false;
 
     for (int i = old_max; i < new_max; i++) {
         text_info->column_defaults[i] = (ColumnStyleDefault) {0};
         text_info->column_widths[i] = 0.0;
+        text_info->column_spacing[i] = 1.0;
         text_info->column_align[i] = HALIGN_LEFT;
     }
     text_info->max_columns = new_max;
@@ -2620,6 +2624,19 @@ void ass_column_set_align(RenderContext *state, int align)
 
     def->style.mask |= COLUMN_STYLE_ALIGN;
     text_info->column_align[column] = column_halign_from_numpad(align);
+}
+
+void ass_column_set_spacing(RenderContext *state, double spacing)
+{
+    if (!state->column_event || !state->column_active)
+        return;
+
+    TextInfo *text_info = &state->text_info;
+    int column = state->column_index;
+    if (column < 0 || !ensure_column_count(text_info, column + 1))
+        return;
+
+    text_info->column_spacing[column] = spacing <= 0 ? 1.0 : spacing;
 }
 
 static void free_distortion_resources(RenderContext *state)
@@ -4482,8 +4499,8 @@ static void scan_column_override_block(char *p, char *end, bool *active,
             p++;
         char *name_end = p;
 
-        if (name_end - name >= 6 && !strncmp(name, "column", 6)) {
-            int value = parse_column_tag_value(name + 6, name_end);
+        if (name_end - name >= 3 && !strncmp(name, "col", 3)) {
+            int value = parse_column_tag_value(name + 3, name_end);
             if (value == 0) {
                 *active = false;
             } else if (value == 1) {
@@ -5651,7 +5668,7 @@ static void apply_column_layout(RenderContext *state)
             }
         }
 
-        column_start += width;
+        column_start += width + text_info->column_spacing[column];
     }
 
     free(cells);

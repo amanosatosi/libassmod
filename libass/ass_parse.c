@@ -796,6 +796,15 @@ static bool parse_double_arg_strict(struct arg arg, double *out)
     return ptr == arg.end && isfinite(*out);
 }
 
+static bool parse_int32_arg_strict(struct arg arg, int32_t *out)
+{
+    char *ptr = arg.start;
+    if (!mystrtoi32(&ptr, 10, out))
+        return false;
+    skip_spaces(&ptr);
+    return ptr == arg.end;
+}
+
 static int hex_value(char c)
 {
     if (c >= '0' && c <= '9')
@@ -1202,17 +1211,24 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             apply_numbered_border_tag(state, numbered_border_tag,
                                       numbered_border_layer, args, nargs,
                                       numbered_border_arg, pwr);
-        } else if (tag("column")) {
+        } else if (tag("colsp")) {
             if (nargs) {
-                int32_t val = argtoi32(*args);
-                if (val == 0 || val == 1)
-                    ass_column_set_mode(state, val == 1);
+                double val;
+                if (parse_double_arg_strict(*args, &val))
+                    ass_column_set_spacing(state, val);
             }
-        } else if (tag("align")) {
+        } else if (tag("colan")) {
             if (nargs) {
-                int32_t val = argtoi32(*args);
-                if (val >= 1 && val <= 9)
+                int32_t val;
+                if (parse_int32_arg_strict(*args, &val) && val >= 1 && val <= 9)
                     ass_column_set_align(state, val);
+            }
+        } else if (tag("col")) {
+            if (nargs) {
+                int32_t val;
+                if (parse_int32_arg_strict(*args, &val) &&
+                        (val == 0 || val == 1))
+                    ass_column_set_mode(state, val == 1);
             }
         } else if (tag("xbord")) {
             double val;

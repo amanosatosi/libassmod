@@ -425,6 +425,7 @@ typedef struct {
     ColumnStyleDefault *column_defaults;
     int max_column_glyphs;
     double *column_widths;
+    double *column_spacing;
     int *column_align;
     int max_columns;
     int column_rows;
@@ -655,6 +656,7 @@ typedef struct {
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 void ass_column_set_mode(RenderContext *state, bool active);
 void ass_column_set_align(RenderContext *state, int align);
+void ass_column_set_spacing(RenderContext *state, double spacing);
 void ass_column_update_default(RenderContext *state, unsigned fields);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
