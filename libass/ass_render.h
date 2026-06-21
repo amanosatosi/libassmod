@@ -118,6 +118,12 @@ typedef struct {
 } ImageFillLayer;
 
 typedef struct {
+    bool active;
+    uint32_t color;
+    double amount;
+} FadeColorState;
+
+typedef struct {
     ImageFillLayer layer[4];
 } ImageFillState;
 
@@ -169,6 +175,7 @@ typedef struct {
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t base_c[4];
     int fade;
+    FadeColorState fade_color;
     int line;
     uint8_t draw_sub_x;
     uint8_t draw_sub_y;
@@ -273,6 +280,7 @@ typedef struct glyph_info {
     bool has_custom_decoration;
     uint32_t decoration_c[4];
     int fade;
+    FadeColorState fade_color;
 
     int shape_run_id;
 
@@ -523,6 +531,7 @@ struct render_context {
     char detect_collisions;
     char be;                    // blur edges
     int fade;                   // alpha from \fad
+    FadeColorState fade_color;  // RGB color pass from extended \fad
     double blur_x;              // gaussian blur horizontal radius
     double blur_y;              // gaussian blur vertical radius
     double shadow_x;

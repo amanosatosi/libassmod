@@ -254,6 +254,27 @@ void ass_apply_fade(uint32_t *clr, int fade)
         change_alpha(clr, mult_alpha(_a(*clr), fade), 1);
 }
 
+void ass_apply_fade_color(uint32_t *clr, FadeColorState fade_color)
+{
+    if (!fade_color.active || fade_color.amount <= 0)
+        return;
+
+    if (fade_color.amount >= 1) {
+        *clr = (fade_color.color & 0xFFFFFF00u) | _a(*clr);
+        return;
+    }
+
+    uint32_t out = *clr;
+    change_color(&out, fade_color.color, fade_color.amount);
+    *clr = out;
+}
+
+void ass_apply_fades(uint32_t *clr, int fade, FadeColorState fade_color)
+{
+    ass_apply_fade(clr, fade);
+    ass_apply_fade_color(clr, fade_color);
+}
+
 static void disable_image_fill_layer(RenderContext *state, int layer)
 {
     if (layer < 0 || layer > 3)
@@ -428,6 +449,32 @@ interpolate_alpha(long long now, int32_t t1, int32_t t2, int32_t t3,
     }
 
     return a;
+}
+
+static double interpolate_fad_color_amount(long long now, int32_t t1,
+                                           int32_t t2, int32_t t3,
+                                           int32_t t4, bool *fade_in)
+{
+    if (now < t1) {
+        *fade_in = true;
+        return 1.0;
+    } else if (now < t2) {
+        double cf = ((double) (int32_t) ((uint32_t) now - t1)) /
+                    (int32_t) ((uint32_t) t2 - t1);
+        *fade_in = true;
+        return 1.0 - cf;
+    } else if (now < t3) {
+        *fade_in = false;
+        return 0.0;
+    } else if (now < t4) {
+        double cf = ((double) (int32_t) ((uint32_t) now - t3)) /
+                    (int32_t) ((uint32_t) t4 - t3);
+        *fade_in = false;
+        return cf;
+    } else {
+        *fade_in = false;
+        return 1.0;
+    }
 }
 
 enum ClipType {
@@ -708,6 +755,82 @@ static bool parse_decoration_alpha_arg(struct arg arg, uint32_t *alpha)
     if (!parse_hex_override_arg(arg, &value))
         return false;
     *alpha = value;
+    return true;
+}
+
+typedef struct {
+    bool has_color;
+    bool alpha_fade;
+    uint32_t color;
+} FadColorArg;
+
+static bool split_fad_raw_args(char *start, char *end,
+                               struct arg *args, int *nargs)
+{
+    *nargs = 0;
+    char *arg_start = start;
+    while (*nargs < 4) {
+        char *arg_end = arg_start;
+        while (arg_end < end && *arg_end != ',')
+            arg_end++;
+        args[*nargs] = (struct arg) { arg_start, arg_end };
+        trim_arg_inline(&args[*nargs]);
+        (*nargs)++;
+        if (arg_end >= end)
+            return true;
+        arg_start = arg_end + 1;
+    }
+
+    return false;
+}
+
+static FadColorArg parse_fad_color_arg(struct arg arg)
+{
+    FadColorArg out = { .alpha_fade = true };
+    trim_arg_inline(&arg);
+    if (arg.start >= arg.end)
+        return out;
+
+    out.alpha_fade = false;
+    if (arg.end - arg.start >= 2 &&
+            arg.end[-2] == '+' &&
+            (arg.end[-1] == 'a' || arg.end[-1] == 'A')) {
+        out.alpha_fade = true;
+        arg.end -= 2;
+        trim_arg_inline(&arg);
+    }
+
+    if (parse_decoration_color_arg(arg, &out.color))
+        out.has_color = true;
+    else
+        out.alpha_fade = true;
+    return out;
+}
+
+static bool parse_extended_fad(char *start, char *end, int *fade_in,
+                               int *fade_out, FadColorArg *start_color,
+                               FadColorArg *end_color)
+{
+    struct arg raw[4];
+    int raw_nargs = 0;
+    if (!split_fad_raw_args(start, end, raw, &raw_nargs))
+        return false;
+    if (raw_nargs != 2 && raw_nargs != 4)
+        return false;
+
+    int32_t in, out;
+    if (!parse_int32_arg_strict(raw[0], &in) ||
+            !parse_int32_arg_strict(raw[1], &out))
+        return false;
+
+    *fade_in = in;
+    *fade_out = out;
+    *start_color = (FadColorArg) { .alpha_fade = true };
+    *end_color = (FadColorArg) { .alpha_fade = true };
+    if (raw_nargs == 4) {
+        *start_color = parse_fad_color_arg(raw[2]);
+        *end_color = parse_fad_color_arg(raw[3]);
+    }
     return true;
 }
 
@@ -1886,19 +2009,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 }
                 apply_jitter(state, jit, pwr);
             }
-        } else if (complex_tag("fade") || complex_tag("fad")) {
+        } else if (complex_tag("fade")) {
             int32_t a1, a2, a3;
             int32_t t1, t2, t3, t4;
-            if (nargs == 2) {
-                // 2-argument version (\fad, according to specs)
-                a1 = 0xFF;
-                a2 = 0;
-                a3 = 0xFF;
-                t1 = -1;
-                t2 = argtoi32(args[0]);
-                t3 = argtoi32(args[1]);
-                t4 = -1;
-            } else if (nargs == 7) {
+            if (nargs == 7) {
                 // 7-argument version (\fade)
                 a1 = argtoi32(args[0]);
                 a2 = argtoi32(args[1]);
@@ -1919,6 +2033,50 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     interpolate_alpha(render_priv->time -
                             state->event->Start, t1, t2,
                             t3, t4, a1, a2, a3);
+                state->parsed_tags |= PARSED_FADE;
+            }
+        } else if (complex_tag("fad")) {
+            char *raw_start = name_end < q && *name_end == '(' ?
+                              name_end + 1 : NULL;
+            char *raw_end = q;
+            if (raw_start && raw_end > raw_start && raw_end[-1] == ')')
+                raw_end--;
+
+            int32_t t1, t2, t3, t4;
+            int fade_in, fade_out;
+            FadColorArg start_color, end_color;
+            if (!raw_start || !parse_extended_fad(raw_start, raw_end,
+                                                  &fade_in, &fade_out,
+                                                  &start_color, &end_color))
+                continue;
+            t1 = 0;
+            t2 = fade_in;
+            t4 = state->event->Duration;
+            t3 = (uint32_t) t4 - fade_out;
+
+            if ((state->parsed_tags & PARSED_FADE) == 0) {
+                int a1 = start_color.alpha_fade ? 0xFF : 0;
+                int a2 = 0;
+                int a3 = end_color.alpha_fade ? 0xFF : 0;
+                long long now = render_priv->time - state->event->Start;
+                state->fade = interpolate_alpha(now, t1, t2, t3, t4,
+                                                a1, a2, a3);
+
+                bool fade_in_side = false;
+                double amount = interpolate_fad_color_amount(now, t1, t2,
+                                                             t3, t4,
+                                                             &fade_in_side);
+                FadColorArg active =
+                    fade_in_side ? start_color : end_color;
+                if (active.has_color && amount > 0) {
+                    state->fade_color = (FadeColorState) {
+                        .active = true,
+                        .color = active.color,
+                        .amount = amount,
+                    };
+                } else {
+                    state->fade_color = (FadeColorState) {0};
+                }
                 state->parsed_tags |= PARSED_FADE;
             }
         } else if (complex_tag("org")) {

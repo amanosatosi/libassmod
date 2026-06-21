@@ -718,6 +718,12 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                  vis_h - 1 - y + image_fill->yoffset + clip_diff + tex_phase_bias_y,
                                  subpix_x, subpix_y,
                                  &sr, &sg, &sb, &sa);
+                uint32_t image_color = ((uint32_t) sr << 24) |
+                    ((uint32_t) sg << 16) | ((uint32_t) sb << 8) | sa;
+                ass_apply_fade_color(&image_color, info->fade_color);
+                sr = _r(image_color);
+                sg = _g(image_color);
+                sb = _b(image_color);
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
                 uint8_t A = draw_img_compat ?
                     (uint8_t) ((cov64 * layer_opacity) >> 6) :
@@ -735,6 +741,7 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             }
             uint32_t color = (vals->color_enabled) ?
                 ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
+            ass_apply_fade_color(&color, info->fade_color);
             uint8_t alpha = (vals->alpha_enabled) ?
                 ass_gradient_sample_alpha_fixed(vals, uf, vf) : base_alpha;
             if (fade > 0)
@@ -1113,7 +1120,7 @@ static ASS_Image **render_border_layer(RenderContext *state,
     }
 
     uint32_t color = info->border_layers[layer].color;
-    ass_apply_fade(&color, info->fade);
+    ass_apply_fades(&color, info->fade, info->fade_color);
 
     uint32_t saved_base = info->base_c[2];
     GradientValues saved_gradient = info->gradient.layer[2];
@@ -2358,6 +2365,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
     state->reset_effect = false;
+    state->fade_color = (FadeColorState) {0};
     state->distort_enabled = false;
     state->distort_u1 = 1.0;
     state->distort_v1 = 0.0;
@@ -4027,6 +4035,10 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length)
             last->c[1] != info->c[1] ||
             last->c[2] != info->c[2] ||
             last->c[3] != info->c[3] ||
+            last->fade != info->fade ||
+            last->fade_color.active != info->fade_color.active ||
+            last->fade_color.color != info->fade_color.color ||
+            last->fade_color.amount != info->fade_color.amount ||
             !ass_gradient_equal(&last->gradient, &info->gradient) ||
             !image_fill_state_equal(&last->image_fill, &info->image_fill) ||
             last->be != info->be ||
@@ -4276,6 +4288,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->has_distort_outline = false;
     info->is_furi = is_furi;
     info->furi_group = furi_group;
+    info->fade_color = state->fade_color;
 
     info->hspacing_scaled = 0;
     info->scale_fix = 1;
@@ -6024,12 +6037,14 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 memcpy(current_info->border_layers, info->border_layers,
                        sizeof(current_info->border_layers));
                 current_info->fade = info->fade;
+                current_info->fade_color = info->fade_color;
                 current_info->line = info->line;
                 current_info->from_drawing = info->drawing_text.str != NULL;
                 current_info->draw_sub_x = 0;
                 current_info->draw_sub_y = 0;
                 for (int j = 0; j < 4; j++)
-                    ass_apply_fade(&current_info->c[j], info->fade);
+                    ass_apply_fades(&current_info->c[j], info->fade,
+                                    info->fade_color);
 
                 current_info->effect_type = info->effect_type;
                 current_info->effect_timing = info->effect_timing;
@@ -6203,9 +6218,10 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     memcpy(current_info->border_layers, deco.border_layers,
            sizeof(current_info->border_layers));
     current_info->fade = deco.fade;
+    current_info->fade_color = deco.fade_color;
     current_info->line = deco.line;
     for (int j = 0; j < 4; j++)
-        ass_apply_fade(&current_info->c[j], deco.fade);
+        ass_apply_fades(&current_info->c[j], deco.fade, deco.fade_color);
     current_info->effect_type = deco.effect_type;
     current_info->effect_timing = deco.effect_timing;
     current_info->leftmost_x = leftmost_x;
@@ -6713,7 +6729,7 @@ static void add_background(RenderContext *state, EventImages *event_images,
         return;
     memset(nbuffer, 0xFF, w * h);
     uint32_t clr = state->c[3];
-    ass_apply_fade(&clr, state->fade);
+    ass_apply_fades(&clr, state->fade, state->fade_color);
     ASS_Image *img = my_draw_bitmap(nbuffer, w, h, w, left, top,
                                     clr, NULL);
     if (img) {

@@ -41,6 +41,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested);
 int ass_event_has_hard_overrides(char *str);
 void ass_apply_fade(uint32_t *clr, int fade);
+void ass_apply_fade_color(uint32_t *clr, FadeColorState fade_color);
+void ass_apply_fades(uint32_t *clr, int fade, FadeColorState fade_color);
 
 
 #endif /* LIBASS_PARSE_H */
