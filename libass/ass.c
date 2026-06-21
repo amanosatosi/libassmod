@@ -59,9 +59,119 @@ static const char *const ssa_event_format =
 
 #define ASS_STYLES_ALLOC 20
 
+#define COLORCODE_EFFECT "mangetsu-colorcoding"
+#define COLORCODE_APPLIED_STYLES "mangetsu-colorcode-applied-styles"
+
 int ass_library_version(void)
 {
     return LIBASS_VERSION;
+}
+
+static void clear_colorcode_applied_styles(ASS_Track *track)
+{
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    for (int i = 0; i < cfg->n_applied_styles; i++)
+        free(cfg->applied_styles[i]);
+    cfg->n_applied_styles = 0;
+}
+
+static void free_colorcode_config(ASS_Track *track)
+{
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    for (int i = 0; i < cfg->n_actors; i++) {
+        free(cfg->actors[i].Name);
+        free(cfg->actors[i].Text);
+    }
+    free(cfg->actors);
+    clear_colorcode_applied_styles(track);
+    free(cfg->applied_styles);
+}
+
+static ASS_ActorColorcode *find_colorcode_actor(ASS_Track *track,
+                                                const char *name)
+{
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    for (int i = 0; i < cfg->n_actors; i++)
+        if (!strcmp(cfg->actors[i].Name, name))
+            return &cfg->actors[i];
+    return NULL;
+}
+
+static int set_colorcode_actor(ASS_Track *track, const char *name,
+                               const char *text)
+{
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    ASS_ActorColorcode *actor = find_colorcode_actor(track, name);
+
+    if (!actor) {
+        if (cfg->n_actors == cfg->max_actors) {
+            if (cfg->max_actors >= FFMIN(SIZE_MAX, INT_MAX) / 2)
+                return -1;
+            int new_max = cfg->max_actors ? cfg->max_actors * 2 : 8;
+            if (!ASS_REALLOC_ARRAY(cfg->actors, new_max))
+                return -1;
+            memset(cfg->actors + cfg->max_actors, 0,
+                   (new_max - cfg->max_actors) * sizeof(*cfg->actors));
+            cfg->max_actors = new_max;
+        }
+
+        actor = &cfg->actors[cfg->n_actors++];
+        actor->Name = strdup(name);
+        if (!actor->Name) {
+            cfg->n_actors--;
+            return -1;
+        }
+    }
+
+    char *new_text = strdup(text ? text : "");
+    if (!new_text)
+        return -1;
+    free(actor->Text);
+    actor->Text = new_text;
+    return 0;
+}
+
+static int add_colorcode_applied_style(ASS_Track *track,
+                                       const char *start, size_t len)
+{
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    if (cfg->n_applied_styles == cfg->max_applied_styles) {
+        if (cfg->max_applied_styles >= FFMIN(SIZE_MAX, INT_MAX) / 2)
+            return -1;
+        int new_max = cfg->max_applied_styles ? cfg->max_applied_styles * 2 : 8;
+        if (!ASS_REALLOC_ARRAY(cfg->applied_styles, new_max))
+            return -1;
+        memset(cfg->applied_styles + cfg->max_applied_styles, 0,
+               (new_max - cfg->max_applied_styles) * sizeof(*cfg->applied_styles));
+        cfg->max_applied_styles = new_max;
+    }
+
+    char *style = strndup(start, len);
+    if (!style)
+        return -1;
+    cfg->applied_styles[cfg->n_applied_styles++] = style;
+    return 0;
+}
+
+static int set_colorcode_applied_styles(ASS_Track *track, const char *text)
+{
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    clear_colorcode_applied_styles(track);
+    cfg->has_applied_styles = true;
+
+    const char *p = text ? text : "";
+    while ((p = strchr(p, '{'))) {
+        const char *start = p + 1;
+        const char *end = strchr(start, '}');
+        if (!end)
+            break;
+        if (end > start && add_colorcode_applied_style(track, start,
+                                                       end - start) < 0)
+            return -1;
+        p = end + 1;
+    }
+
+    return 0;
 }
 
 void ass_free_track(ASS_Track *track)
@@ -91,6 +201,7 @@ void ass_free_track(ASS_Track *track)
     }
     free(track->events);
     free(track->name);
+    free_colorcode_config(track);
     free(track);
 }
 
@@ -523,6 +634,57 @@ static int process_event_tail(ASS_Track *track, ASS_Event *event,
     }
     free(format);
     return 1;
+}
+
+static bool colorcode_effect_matches(const char *effect)
+{
+    if (!effect)
+        return false;
+
+    const char *start = effect;
+    while (*start && ass_isspace(*start))
+        start++;
+
+    const char *end = start + strlen(start);
+    while (end > start && ass_isspace(end[-1]))
+        end--;
+
+    size_t len = end - start;
+    return len == strlen(COLORCODE_EFFECT) &&
+           !strncmp(start, COLORCODE_EFFECT, len);
+}
+
+static int process_colorcode_comment(ASS_Track *track, char *str)
+{
+    if (!track->event_format)
+        return 0;
+
+    ASS_Event event = {0};
+    int ret = process_event_tail(track, &event, str, 0);
+    if (ret)
+        goto done;
+
+    if (!event.Name || !event.Name[0] ||
+            !colorcode_effect_matches(event.Effect)) {
+        ret = 0;
+        goto done;
+    }
+
+    if (!strcmp(event.Name, COLORCODE_APPLIED_STYLES))
+        ret = set_colorcode_applied_styles(track, event.Text);
+    else
+        ret = set_colorcode_actor(track, event.Name, event.Text);
+    if (ret < 0)
+        ass_msg(track->library, MSGL_WARN,
+                "Failed to store mangetsu colorcoding metadata");
+    else
+        ret = 1;
+
+done:
+    free(event.Name);
+    free(event.Effect);
+    free(event.Text);
+    return ret;
 }
 
 static void set_style_alpha(ASS_Style *style, int32_t front_alpha, int32_t back_alpha)
@@ -999,6 +1161,7 @@ static int process_events_line(ASS_Track *track, char *str)
             custom_format_line_compatibility(track, p, ass_event_format);
         else
             custom_format_line_compatibility(track, p, ssa_event_format);
+        track->parser_priv->colorcode_scan_top = 1;
 
         // Guess if we are dealing with legacy ffmpeg subs and change accordingly
         // If file has no event format it was probably not created by ffmpeg/libav
@@ -1008,6 +1171,7 @@ static int process_events_line(ASS_Track *track, char *str)
                     "Track treated as legacy ffmpeg sub.");
         }
     } else if (!strncmp(str, "Dialogue:", 9)) {
+        track->parser_priv->colorcode_scan_top = 0;
         // This should never be reached for embedded subtitles.
         // They have slightly different format and are parsed in ass_process_chunk,
         // called directly from demuxer
@@ -1039,8 +1203,19 @@ static int process_events_line(ASS_Track *track, char *str)
         track->n_events--;
         return ret;
     } else if (!strncmp(str, "Comment:", 8)) {
-        // Ignore Comments
+        if (track->parser_priv->colorcode_scan_top) {
+            char *p = str + 8;
+            skip_spaces(&p);
+            int ret = process_colorcode_comment(track, p);
+            if (ret < 0)
+                return ret;
+            if (ret > 0)
+                return 0;
+            track->parser_priv->colorcode_scan_top = 0;
+        }
+        // Ignore non-colorcoding Comments
     } else {
+        track->parser_priv->colorcode_scan_top = 0;
         ass_msg(track->library, MSGL_V, "Not understood: '%.30s'", str);
     }
     return 0;
@@ -1180,6 +1355,7 @@ static int process_line(ASS_Track *track, char *str)
         track->track_type = TRACK_TYPE_ASS;
     } else if (!ass_strncasecmp(str, "[Events]", 8)) {
         track->parser_priv->state = PST_EVENTS;
+        track->parser_priv->colorcode_scan_top = 0;
     } else if (!ass_strncasecmp(str, "[Fonts]", 7)) {
         track->parser_priv->state = PST_FONTS;
     } else {

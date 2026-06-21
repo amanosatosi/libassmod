@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "ass_library.h"
 #include "ass_render.h"
@@ -787,6 +788,35 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
     return tag;
 }
 
+static bool tag_name_matches(char *p, char *name_end, const char *name)
+{
+    size_t len = strlen(name);
+    if (len > (size_t) (name_end - p) || strncmp(p, name, len))
+        return false;
+    if (p + len < name_end && isalpha((unsigned char) p[len]) &&
+            strcmp(name, "fn"))
+        return false;
+    return true;
+}
+
+static bool colorcode_tag_allowed(char *p, char *name_end)
+{
+    static const char *const allowed[] = {
+        "bord", "xbord", "ybord",
+        "shad", "xshad", "yshad",
+        "blur", "be",
+        "alpha", "1a", "2a", "3a", "4a",
+        "fn", "fs",
+        "1c", "2c", "3c", "4c", "c",
+        "b", "i", "u", "s",
+    };
+
+    for (int i = 0; i < (int) (sizeof(allowed) / sizeof(allowed[0])); i++)
+        if (tag_name_matches(p, name_end, allowed[i]))
+            return true;
+    return false;
+}
+
 static bool parse_double_arg_strict(struct arg arg, double *out)
 {
     char *ptr = arg.start;
@@ -904,9 +934,10 @@ static void apply_all_border_alpha(RenderContext *state, uint32_t alpha,
     }
 }
 
-static void set_border_layer_size(RenderContext *state, int layer,
-                                  bool set_x, bool set_y, double val,
-                                  double pwr)
+static void set_border_layer_size_pair(RenderContext *state, int layer,
+                                       bool set_x, bool set_y,
+                                       double val_x, double val_y,
+                                       double pwr)
 {
     BorderLayerState *border = &state->border_layers[layer];
     bool was_enabled = border->enabled;
@@ -914,11 +945,11 @@ static void set_border_layer_size(RenderContext *state, int layer,
         default_extra_border_color(state, layer);
 
     if (set_x) {
-        double x = border->size_x * (1 - pwr) + val * pwr;
+        double x = border->size_x * (1 - pwr) + val_x * pwr;
         border->size_x = x < 0 ? 0 : x;
     }
     if (set_y) {
-        double y = border->size_y * (1 - pwr) + val * pwr;
+        double y = border->size_y * (1 - pwr) + val_y * pwr;
         border->size_y = y < 0 ? 0 : y;
     }
     border->enabled = border->size_x > 0 || border->size_y > 0;
@@ -931,6 +962,20 @@ static void set_border_layer_size(RenderContext *state, int layer,
         state->border_x = border->size_x;
         state->border_y = border->size_y;
     }
+}
+
+static void set_border_layer_size(RenderContext *state, int layer,
+                                  bool set_x, bool set_y, double val,
+                                  double pwr)
+{
+    set_border_layer_size_pair(state, layer, set_x, set_y, val, val, pwr);
+}
+
+static void copy_gradient_color(GradientValues *dst, const GradientValues *src)
+{
+    dst->color_enabled = src->color_enabled;
+    for (int i = 0; i < 4; i++)
+        dst->color[i] = src->color[i];
 }
 
 static void apply_numbered_border_tag(RenderContext *state,
@@ -947,9 +992,13 @@ static void apply_numbered_border_tag(RenderContext *state,
     case BORDER_TAG_SIZE_Y: {
         double val;
         if (!arg.start) {
-            if (layer != 0)
-                return;
-            val = state->style->Outline;
+            const BorderLayerState *def =
+                &state->default_style.border_layers[layer];
+            set_border_layer_size_pair(state, layer,
+                                       tag != BORDER_TAG_SIZE_Y,
+                                       tag != BORDER_TAG_SIZE_X,
+                                       def->size_x, def->size_y, pwr);
+            break;
         } else if (!parse_double_arg_strict(arg, &val)) {
             return;
         }
@@ -966,23 +1015,35 @@ static void apply_numbered_border_tag(RenderContext *state,
                 if (!parse_hex_arg_strict(arg, &val))
                     return;
                 change_color(&state->c[2], ass_bswap32(val), pwr);
+                ass_gradient_disable_color(&state->gradient, 2,
+                                           state->c[2], pwr);
             } else {
                 change_color(&state->c[2],
-                             state->style->OutlineColour, 1);
+                             state->default_style.c[2], 1);
+                copy_gradient_color(&state->gradient.layer[2],
+                                    &state->default_style.gradient.layer[2]);
             }
-            ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 2);
             sync_layer1_border(state);
         } else {
-            if (!arg.start || !parse_hex_arg_strict(arg, &val))
-                return;
             BorderLayerState *border = &state->border_layers[layer];
-            default_extra_border_color(state, layer);
-            change_color(&border->color, ass_bswap32(val), pwr);
-            ass_gradient_values_disable_color(&border->gradient,
-                                              border->color, pwr);
-            border->has_color = true;
+            if (arg.start) {
+                if (!parse_hex_arg_strict(arg, &val))
+                    return;
+                default_extra_border_color(state, layer);
+                change_color(&border->color, ass_bswap32(val), pwr);
+                ass_gradient_values_disable_color(&border->gradient,
+                                                  border->color, pwr);
+                border->has_color = true;
+            } else {
+                const BorderLayerState *def =
+                    &state->default_style.border_layers[layer];
+                border->color = (def->color & 0xFFFFFF00u) |
+                                _a(border->color);
+                copy_gradient_color(&border->gradient, &def->gradient);
+                border->has_color = def->has_color;
+            }
         }
         break;
     }
@@ -995,20 +1056,30 @@ static void apply_numbered_border_tag(RenderContext *state,
                 change_alpha(&state->c[2], val, pwr);
             } else {
                 change_alpha(&state->c[2],
-                             _a(state->style->OutlineColour), 1);
+                             _a(state->default_style.c[2]), 1);
             }
             ass_gradient_disable_alpha(&state->gradient, 2,
                                        _a(state->c[2]), pwr);
             sync_layer1_border(state);
         } else {
-            if (!arg.start || !parse_hex_arg_strict(arg, &val) || val > 0xFF)
-                return;
             BorderLayerState *border = &state->border_layers[layer];
-            default_extra_border_color(state, layer);
-            change_alpha(&border->color, val, pwr);
-            ass_gradient_values_disable_alpha(&border->gradient,
-                                              _a(border->color), pwr);
-            border->has_alpha = true;
+            if (arg.start) {
+                if (!parse_hex_arg_strict(arg, &val) || val > 0xFF)
+                    return;
+                default_extra_border_color(state, layer);
+                change_alpha(&border->color, val, pwr);
+                ass_gradient_values_disable_alpha(&border->gradient,
+                                                  _a(border->color), pwr);
+                border->has_alpha = true;
+            } else {
+                const BorderLayerState *def =
+                    &state->default_style.border_layers[layer];
+                border->color = (border->color & 0xFFFFFF00u) |
+                                _a(def->color);
+                ass_gradient_values_disable_alpha(&border->gradient,
+                                                  _a(border->color), pwr);
+                border->has_alpha = def->has_alpha;
+            }
         }
         break;
     }
@@ -1212,7 +1283,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 #define tag(name) (mystrcmp(&p, (name)) && (push_arg(args, &nargs, p, name_end), 1))
 #define complex_tag(name) mystrcmp(&p, (name))
 #define column_default(fields) do { \
-            if (!nested) \
+            if (!nested && !state->colorcode_parse) \
                 ass_column_update_default(state, (fields)); \
         } while (0)
 
@@ -1228,6 +1299,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             apply_numbered_border_tag(state, numbered_border_tag,
                                       numbered_border_layer, args, nargs,
                                       numbered_border_arg, pwr);
+        } else if (state->colorcode_parse &&
+                   !colorcode_tag_allowed(p, name_end)) {
+            continue;
         } else if (tag("colsp")) {
             if (nargs) {
                 double val;
@@ -1254,7 +1328,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = state->border_x * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
             } else
-                val = state->style->Outline;
+                val = state->default_style.border_x;
             state->border_x = val;
             sync_layer1_border(state);
             column_default(COLUMN_STYLE_BORDER_X);
@@ -1265,7 +1339,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = state->border_y * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
             } else
-                val = state->style->Outline;
+                val = state->default_style.border_y;
             state->border_y = val;
             sync_layer1_border(state);
             column_default(COLUMN_STYLE_BORDER_Y);
@@ -1275,7 +1349,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = argtod(*args);
                 val = state->shadow_x * (1 - pwr) + val * pwr;
             } else
-                val = state->style->Shadow;
+                val = state->default_style.shadow_x;
             state->shadow_x = val;
             column_default(COLUMN_STYLE_SHADOW_X);
         } else if (tag("yshad")) {
@@ -1284,7 +1358,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = argtod(*args);
                 val = state->shadow_y * (1 - pwr) + val * pwr;
             } else
-                val = state->style->Shadow;
+                val = state->default_style.shadow_y;
             state->shadow_y = val;
             column_default(COLUMN_STYLE_SHADOW_Y);
         } else if (tag("fax")) {
@@ -1423,9 +1497,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("iclip")) {
             apply_clip_tag(state, "iclip", true, name_end, q, end, pwr);
         } else if (tag("blur")) {
-            double target = nargs ? argtod(*args) : 0.0;
+            double target = nargs ? argtod(*args) :
+                            state->default_style.blur_x;
+            double target_y = nargs ? target : state->default_style.blur_y;
             double val_x = state->blur_x * (1 - pwr) + target * pwr;
-            double val_y = state->blur_y * (1 - pwr) + target * pwr;
+            double val_y = state->blur_y * (1 - pwr) + target_y * pwr;
 
             val_x = (val_x < 0) ? 0 : val_x;
             val_x = (val_x > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val_x;
@@ -1552,7 +1628,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     val = state->font_size * (1 - pwr) + val * pwr;
             }
             if (val <= 0)
-                val = state->style->FontSize;
+                val = state->default_style.font_size;
             state->font_size = val;
             column_default(COLUMN_STYLE_FONT_SIZE);
         } else if (tag("bord")) {
@@ -1563,8 +1639,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 yval = state->border_y * (1 - pwr) + val * pwr;
                 xval = (xval < 0) ? 0 : xval;
                 yval = (yval < 0) ? 0 : yval;
-            } else
-                xval = yval = state->style->Outline;
+            } else {
+                xval = state->default_style.border_x;
+                yval = state->default_style.border_y;
+            }
             state->border_x = xval;
             state->border_y = yval;
             sync_layer1_border(state);
@@ -1723,8 +1801,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->family.str = start;
                 state->family.len = args->end - start;
             } else {
-                state->family.str = state->style->FontName;
-                state->family.len = strlen(state->style->FontName);
+                state->family = state->default_style.family;
             }
             ass_update_font(state);
             column_default(COLUMN_STYLE_FONT_NAME);
@@ -1736,13 +1813,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     change_alpha(&state->c[i], a, pwr);
             } else {
                 change_alpha(&state->c[0],
-                             _a(state->style->PrimaryColour), 1);
+                             _a(state->default_style.c[0]), 1);
                 change_alpha(&state->c[1],
-                             _a(state->style->SecondaryColour), 1);
+                             _a(state->default_style.c[1]), 1);
                 change_alpha(&state->c[2],
-                             _a(state->style->OutlineColour), 1);
+                             _a(state->default_style.c[2]), 1);
                 change_alpha(&state->c[3],
-                             _a(state->style->BackColour), 1);
+                             _a(state->default_style.c[3]), 1);
             }
             for (i = 0; i < 4; ++i)
                 ass_gradient_disable_alpha(&state->gradient, i,
@@ -2056,7 +2133,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[0], val, pwr);
             } else
                 change_color(&state->c[0],
-                             state->style->PrimaryColour, 1);
+                             state->default_style.c[0], 1);
             ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 0);
@@ -2067,7 +2144,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[1], val, pwr);
             } else
                 change_color(&state->c[1],
-                             state->style->SecondaryColour, 1);
+                             state->default_style.c[1], 1);
             ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 1);
@@ -2078,7 +2155,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[2], val, pwr);
             } else
                 change_color(&state->c[2],
-                             state->style->OutlineColour, 1);
+                             state->default_style.c[2], 1);
             ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 2);
@@ -2090,7 +2167,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->c[3], val, pwr);
             } else
                 change_color(&state->c[3],
-                             state->style->BackColour, 1);
+                             state->default_style.c[3], 1);
             ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 3);
@@ -2101,7 +2178,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_alpha(&state->c[0], val, pwr);
             } else
                 change_alpha(&state->c[0],
-                             _a(state->style->PrimaryColour), 1);
+                             _a(state->default_style.c[0]), 1);
             ass_gradient_disable_alpha(&state->gradient, 0,
                                        _a(state->c[0]), pwr);
             column_default(COLUMN_STYLE_ALPHA0);
@@ -2111,7 +2188,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_alpha(&state->c[1], val, pwr);
             } else
                 change_alpha(&state->c[1],
-                             _a(state->style->SecondaryColour), 1);
+                             _a(state->default_style.c[1]), 1);
             ass_gradient_disable_alpha(&state->gradient, 1,
                                        _a(state->c[1]), pwr);
             column_default(COLUMN_STYLE_ALPHA1);
@@ -2122,7 +2199,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 apply_all_border_alpha(state, val, pwr);
             } else
                 apply_all_border_alpha(state,
-                                       _a(state->style->OutlineColour), 1);
+                                       _a(state->default_style.c[2]), 1);
             column_default(COLUMN_STYLE_ALPHA2);
         } else if (tag("4a")) {
             if (nargs) {
@@ -2130,7 +2207,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_alpha(&state->c[3], val, pwr);
             } else
                 change_alpha(&state->c[3],
-                             _a(state->style->BackColour), 1);
+                             _a(state->default_style.c[3]), 1);
             ass_gradient_disable_alpha(&state->gradient, 3,
                                        _a(state->c[3]), pwr);
             column_default(COLUMN_STYLE_ALPHA3);
@@ -2191,19 +2268,19 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = (val > MAX_BE) ? MAX_BE : val;
                 state->be = val;
             } else
-                state->be = 0;
+                state->be = state->default_style.be;
             column_default(COLUMN_STYLE_BE);
         } else if (tag("b")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1 || val >= 100))
-                val = state->style->Bold;
+                val = state->default_style.bold;
             state->bold = val;
             ass_update_font(state);
             column_default(COLUMN_STYLE_BOLD);
         } else if (tag("i")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
-                val = state->style->Italic;
+                val = state->default_style.italic;
             state->italic = val;
             ass_update_font(state);
             column_default(COLUMN_STYLE_ITALIC);
@@ -2256,15 +2333,17 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 // VSFilter compatibility: clip for \shad but not for \[xy]shad
                 xval = (xval < 0) ? 0 : xval;
                 yval = (yval < 0) ? 0 : yval;
-            } else
-                xval = yval = state->style->Shadow;
+            } else {
+                xval = state->default_style.shadow_x;
+                yval = state->default_style.shadow_y;
+            }
             state->shadow_x = xval;
             state->shadow_y = yval;
             column_default(COLUMN_STYLE_SHADOW_X | COLUMN_STYLE_SHADOW_Y);
         } else if (tag("s")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
-                val = state->style->StrikeOut;
+                val = !!(state->default_style.flags & DECO_STRIKETHROUGH);
             if (val)
                 state->flags |= DECO_STRIKETHROUGH;
             else
@@ -2273,7 +2352,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("u")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
-                val = state->style->Underline;
+                val = !!(state->default_style.flags & DECO_UNDERLINE);
             if (val)
                 state->flags |= DECO_UNDERLINE;
             else

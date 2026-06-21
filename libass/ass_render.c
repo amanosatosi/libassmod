@@ -52,6 +52,8 @@ static bool border_layers_state_equal(const BorderLayerState *a,
                                       const BorderLayerState *b);
 static bool has_multi_border_layers(const BorderLayerState *layers);
 static void sync_glyph_layer1_border(GlyphInfo *info);
+static void capture_column_style(RenderContext *state, ColumnStyleState *style,
+                                 unsigned fields);
 static double glyph_border_max_x(const GlyphInfo *info);
 static double glyph_border_max_y(const GlyphInfo *info);
 static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer);
@@ -2120,12 +2122,102 @@ static void init_font_scale(RenderContext *state)
     }
 }
 
+static ASS_ActorColorcode *find_actor_colorcode(ASS_Track *track,
+                                                const char *name)
+{
+    if (!name || !*name)
+        return NULL;
+
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    for (int i = 0; i < cfg->n_actors; i++)
+        if (!strcmp(cfg->actors[i].Name, name))
+            return &cfg->actors[i];
+    return NULL;
+}
+
+static bool colorcode_style_allowed(ASS_Track *track, const char *style_name)
+{
+    if (!style_name)
+        return false;
+
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    if (!cfg->has_applied_styles)
+        return true;
+
+    for (int i = 0; i < cfg->n_applied_styles; i++)
+        if (!strcmp(cfg->applied_styles[i], style_name))
+            return true;
+    return false;
+}
+
+static void capture_effective_default_state(RenderContext *state)
+{
+    ColumnStyleState *style = &state->default_style;
+    *style = (ColumnStyleState) {0};
+    capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
+    style->gradient = state->gradient;
+    style->image_fill = state->image_fill;
+    memcpy(style->border_layers, state->border_layers,
+           sizeof(style->border_layers));
+}
+
+static void apply_colorcode_text(RenderContext *state, char *text)
+{
+    if (!text || !*text)
+        return;
+
+    bool old_mode = state->colorcode_parse;
+    state->colorcode_parse = true;
+
+    char *p = text;
+    while (*p) {
+        if (*p == '{') {
+            char *end = strchr(p, '}');
+            if (!end)
+                break;
+            ass_parse_tags(state, p + 1, end, 1.0, false);
+            p = end + 1;
+        } else if (*p == '\\') {
+            char *end = strchr(p, '{');
+            if (!end)
+                end = p + strlen(p);
+            ass_parse_tags(state, p, end, 1.0, false);
+            p = end;
+        } else {
+            p++;
+        }
+    }
+
+    state->colorcode_parse = old_mode;
+}
+
+static void apply_actor_colorcoding(RenderContext *state,
+                                    bool explicit_style_reset)
+{
+    ASS_Track *track = state->renderer->track;
+    ASS_ColorcodeConfig *cfg = &track->colorcode;
+    if (!cfg->n_actors)
+        return;
+
+    if (!cfg->has_applied_styles && explicit_style_reset)
+        return;
+    if (!colorcode_style_allowed(track, state->style->Name))
+        return;
+
+    ASS_ActorColorcode *actor = find_actor_colorcode(track, state->event->Name);
+    if (!actor)
+        return;
+
+    apply_colorcode_text(state, actor->Text);
+}
+
 /**
  * \brief partially reset render_context to style values
  * Works like {\r}: resets some style overrides
  */
 void ass_reset_render_context(RenderContext *state, ASS_Style *style)
 {
+    bool explicit_style_reset = style != NULL;
     style = handle_selective_style_overrides(state, style);
 
     init_font_scale(state);
@@ -2216,6 +2308,10 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->distort_v2 = 1.0;
     state->distort_u3 = 0.0;
     state->distort_v3 = 1.0;
+
+    capture_effective_default_state(state);
+    apply_actor_colorcoding(state, explicit_style_reset);
+    capture_effective_default_state(state);
 }
 
 /**
@@ -2257,6 +2353,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->column_row = 0;
     state->column_index = 0;
     state->column_base_style = (ColumnStyleState) {0};
+    state->colorcode_parse = false;
     state->effect_type = EF_NONE;
     state->effect_timing = 0;
     state->effect_skip_timing = 0;

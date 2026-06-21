@@ -20,6 +20,7 @@
 #ifndef LIBASS_TYPES_H
 #define LIBASS_TYPES_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /**
@@ -153,6 +154,22 @@ typedef struct ass_event {
 
     ASS_RenderPriv *render_priv;
 } ASS_Event;
+
+typedef struct ass_actor_colorcode {
+    char *Name;
+    char *Text;
+} ASS_ActorColorcode;
+
+typedef struct ass_colorcode_config {
+    ASS_ActorColorcode *actors;
+    int n_actors;
+    int max_actors;
+
+    char **applied_styles;
+    int n_applied_styles;
+    int max_applied_styles;
+    bool has_applied_styles;
+} ASS_ColorcodeConfig;
 
 /**
  * Support for (xy-)VSFilter mangled colors
@@ -303,6 +320,8 @@ typedef struct ass_track {
     int LayoutResY;  // also takes precedence over ass_set_pixel_aspect
 
     int has_rgba;            // track contains features needing RGBA output
+
+    ASS_ColorcodeConfig colorcode;
 
     // New fields can be added here in new ABI-compatible library releases.
 } ASS_Track;

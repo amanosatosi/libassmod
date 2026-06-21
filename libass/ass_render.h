@@ -541,6 +541,8 @@ struct render_context {
     int column_row;
     int column_index;
     ColumnStyleState column_base_style;
+    ColumnStyleState default_style;
+    bool colorcode_parse;
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;

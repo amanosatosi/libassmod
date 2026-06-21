@@ -66,6 +66,8 @@ struct parser_priv {
 
     uint32_t feature_flags;
 
+    int colorcode_scan_top;
+
     long long prune_delay;
     long long prune_next_ts;
 };

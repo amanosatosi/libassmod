@@ -45,7 +45,17 @@ multiborder_unit = executable(
     link_with: libass_for_tools,
 )
 
+colorcoding_unit = executable(
+    'colorcoding_unit',
+    files('colorcoding_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 test('distortion-warp', distort_unit)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit)
 test('multi-border-extension', multiborder_unit)
+test('actor-colorcoding', colorcoding_unit)
