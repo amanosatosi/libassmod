@@ -208,7 +208,7 @@ int main(void)
     ass_set_fonts(renderer, NULL, "sans-serif",
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
-    RenderSig legacy, numbered, multi, invalid;
+    RenderSig legacy, numbered, multi, invalid, expected;
     RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
     bool ok = true;
 
@@ -242,6 +242,59 @@ int main(void)
                !has_color(&multi, 0xFFFFFF00u) ||
                !has_color(&multi, 0x00000080u))) {
         fprintf(stderr, "two-border render did not expose both outline colors\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\3a&H80&}AllAlpha",
+                      &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\1ba&H80&\\2ba&H80&}AllAlpha",
+                      &expected);
+    if (ok && !same_sig(&legacy, &expected)) {
+        fprintf(stderr, "\\3a did not apply to every enabled border layer\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\3a&H80&\\2bs8}DeferredAlpha",
+                      &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\1ba&H80&\\2ba&H80&\\2bs8}DeferredAlpha",
+                      &expected);
+    if (ok && !same_sig(&legacy, &expected)) {
+        fprintf(stderr, "\\3a before \\2bs was not remembered by layer 2\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\3a&H80&\\2ba&H20&}LayerAlpha",
+                      &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\1ba&H80&\\2ba&H20&}LayerAlpha",
+                      &expected);
+    if (ok && !same_sig(&legacy, &expected)) {
+        fprintf(stderr, "later \\2ba did not override prior \\3a\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\2ba&H20&\\3a&H80&}LayerAlpha",
+                      &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\1ba&H80&\\2ba&H80&}LayerAlpha",
+                      &expected);
+    if (ok && !same_sig(&legacy, &expected)) {
+        fprintf(stderr, "later \\3a did not override prior \\2ba\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord2\\2bs8\\1ba&H80&}LayerOneAlpha",
+                      &legacy);
+    if (ok && (!has_color(&legacy, 0x00000080u) ||
+               !has_color(&legacy, 0x00000000u))) {
+        fprintf(stderr, "\\1ba changed an extra border layer alpha\n");
         ok = false;
     }
 

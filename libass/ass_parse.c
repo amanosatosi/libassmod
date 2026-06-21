@@ -887,6 +887,23 @@ static void sync_layer1_border(RenderContext *state)
     state->border_layers[0].gradient = state->gradient.layer[2];
 }
 
+static void apply_all_border_alpha(RenderContext *state, uint32_t alpha,
+                                   double pwr)
+{
+    change_alpha(&state->c[2], alpha, pwr);
+    ass_gradient_disable_alpha(&state->gradient, 2, _a(state->c[2]), pwr);
+    sync_layer1_border(state);
+
+    for (int layer = 1; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+        BorderLayerState *border = &state->border_layers[layer];
+        default_extra_border_color(state, layer);
+        change_alpha(&border->color, alpha, pwr);
+        ass_gradient_values_disable_alpha(&border->gradient,
+                                          _a(border->color), pwr);
+        border->has_alpha = true;
+    }
+}
+
 static void set_border_layer_size(RenderContext *state, int layer,
                                   bool set_x, bool set_y, double val,
                                   double pwr)
@@ -2099,15 +2116,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                        _a(state->c[1]), pwr);
             column_default(COLUMN_STYLE_ALPHA1);
         } else if (tag("3a")) {
+            uint32_t val;
             if (nargs) {
-                uint32_t val = parse_alpha_tag(args->start);
-                change_alpha(&state->c[2], val, pwr);
+                val = parse_alpha_tag(args->start);
+                apply_all_border_alpha(state, val, pwr);
             } else
-                change_alpha(&state->c[2],
-                             _a(state->style->OutlineColour), 1);
-            ass_gradient_disable_alpha(&state->gradient, 2,
-                                       _a(state->c[2]), pwr);
-            sync_layer1_border(state);
+                apply_all_border_alpha(state,
+                                       _a(state->style->OutlineColour), 1);
             column_default(COLUMN_STYLE_ALPHA2);
         } else if (tag("4a")) {
             if (nargs) {

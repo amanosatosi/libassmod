@@ -23,10 +23,18 @@ Layer-1 tags are aliases for existing ASS tags:
 \xbord == \1bsx
 \ybord == \1bsy
 \3c    == \1bc
-\3a    == \1ba
 \3vc   == \1bvc
 \3va   == \1bva
 ```
+
+The legacy ASS outline alpha tag `\3a` controls transparency for all native
+border layers, from layer 1 through layer 10. For example, `\3a&H80&` makes
+every native border layer semitransparent, and bare `\3a` resets every native
+border layer to the active style `OutlineColour` alpha. It does not enable
+extra border layers or change their sizes.
+
+Numbered border alpha tags remain layer-specific. `\1ba` controls only layer 1,
+and `\Nba` controls only layer `N`.
 
 Alpha uses normal ASS inverse-alpha semantics:
 
@@ -43,7 +51,8 @@ under an inner border.
 Border gradients use the same four-corner vector-gradient format as `\1vc`
 through `\4vc` and `\1va` through `\4va`, with normal ASS BGR colors and
 inverse-alpha values. `\Nbc` disables the color gradient for layer `N`, and
-`\Nba` disables the alpha gradient for layer `N`. Gradients require the RGBA
+`\Nba` disables the alpha gradient for layer `N`. The legacy `\3a` tag disables
+alpha gradients for every native border layer. Gradients require the RGBA
 rendering path; legacy `ASS_Image` output keeps a flat fallback color.
 
 Examples:
