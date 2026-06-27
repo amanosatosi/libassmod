@@ -37,6 +37,8 @@ struct arg {
     char *start, *end;
 };
 
+static bool parse_int32_arg_strict(struct arg arg, int32_t *out);
+
 static inline int32_t argtoi32(struct arg arg)
 {
     int32_t value;
