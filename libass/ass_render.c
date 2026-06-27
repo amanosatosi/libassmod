@@ -5962,6 +5962,8 @@ static bool text_needs_rgba(const TextInfo *text_info)
             has_bitmap = info->bm_border[layer] != NULL;
         if (!info->bitmap_count || !has_bitmap)
             continue;
+        if (info->fade_color.active && info->fade_color.amount > 0)
+            return true;
         for (int layer = 0; layer < 4; layer++) {
             if (info->image_fill.layer[layer].enabled)
                 return true;

@@ -166,7 +166,7 @@ jobs:
           ART_REG_SKIP: ${{ matrix.config.art_reg_skip }}
         run: |
           ${{ matrix.config.devenv }}
-          meson test -C build
+          meson test -C build --print-errorlogs
 
       - name: Dump Meson Debug Info
         if: failure()
