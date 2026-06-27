@@ -354,7 +354,7 @@ static uint32_t finalize_legacy_color(const CombinedBitmapInfo *combined,
                                       uint32_t color)
 {
     if (combined)
-        ass_apply_fades(&color, combined->fade, combined->fade_color);
+        ass_apply_fade_color(&color, combined->fade_color);
     return color;
 }
 
@@ -1134,8 +1134,10 @@ static ASS_Image **render_border_layer(RenderContext *state,
     info->gradient.layer[2] = info->border_layers[layer].gradient;
     clear_image_fill_layer(&info->image_fill.layer[2]);
 
-    tail = render_glyph(state, info, bm, info->x, info->y,
-                        info->border_layers[layer].color,
+    uint32_t color = info->border_layers[layer].color;
+    ass_apply_fade(&color, info->fade);
+
+    tail = render_glyph(state, info, bm, info->x, info->y, color,
                         0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
                         2, 2, rgba_tail);
 
@@ -6048,6 +6050,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info->from_drawing = info->drawing_text.str != NULL;
                 current_info->draw_sub_x = 0;
                 current_info->draw_sub_y = 0;
+                for (int j = 0; j < 4; j++)
+                    ass_apply_fade(&current_info->c[j], info->fade);
 
                 current_info->effect_type = info->effect_type;
                 current_info->effect_timing = info->effect_timing;
@@ -6223,6 +6227,8 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     current_info->fade = deco.fade;
     current_info->fade_color = deco.fade_color;
     current_info->line = deco.line;
+    for (int j = 0; j < 4; j++)
+        ass_apply_fade(&current_info->c[j], deco.fade);
     current_info->effect_type = deco.effect_type;
     current_info->effect_timing = deco.effect_timing;
     current_info->leftmost_x = leftmost_x;
