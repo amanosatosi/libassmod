@@ -13,6 +13,7 @@ typedef struct {
     uint64_t green;
     uint64_t blue;
     int images;
+    int outlines;
 } RgbaStats;
 
 typedef struct {
@@ -175,6 +176,8 @@ static bool render_stats(ASS_Library *lib, ASS_Renderer *renderer,
 
     for (ASS_ImageRGBA *cur = img; cur; cur = cur->next) {
         stats->images++;
+        if (cur->type == IMAGE_TYPE_OUTLINE)
+            stats->outlines++;
         for (int y = 0; y < cur->h; y++) {
             const uint8_t *row = cur->rgba + y * cur->stride;
             for (int x = 0; x < cur->w; x++) {
@@ -304,7 +307,7 @@ int main(void)
                        "{\\bord2\\2bc&H0000FF&\\fad(300,300,&HFFFFFF&,&H000000&)}MB",
                        0, &mb_disabled);
     ok &= expect(mostly_white(&mb_enabled) &&
-                 mb_enabled.alpha > mb_disabled.alpha,
+                 mb_enabled.outlines > mb_disabled.outlines,
                  "enabled native border layer did not participate, or disabled layer appeared");
 
     ok &= render_stats(lib, renderer,
