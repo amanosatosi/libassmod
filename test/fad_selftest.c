@@ -131,44 +131,50 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     bool ok = true;
-    RgbaStats classic_start, normal, color_start, color_alpha_start;
-    RgbaStats empty_start, empty_end, black_end, transform_start;
+    RgbaStats classic_start, classic_normal, color_start, color_normal;
+    RgbaStats color_alpha_start, color_alpha_normal, empty_start, empty_normal;
+    RgbaStats empty_end, empty_end_normal, black_end, black_normal, transform_start;
     RgbaStats mb_enabled, mb_disabled, gradient_start, box_enabled, box_disabled;
 
     ok &= render_stats(lib, renderer, "{\\fad(300,300)}Classic", 0, &classic_start);
-    ok &= render_stats(lib, renderer, "Classic", 1000, &normal);
-    ok &= expect(classic_start.alpha < normal.alpha / 8,
+    ok &= render_stats(lib, renderer, "Classic", 1000, &classic_normal);
+    ok &= expect(classic_start.alpha < classic_normal.alpha / 8,
                  "classic \\fad did not keep alpha fade-in behavior");
 
     ok &= render_stats(lib, renderer,
                        "{\\fad(300,300,&HFFFFFF&,&H000000&)}Color",
                        0, &color_start);
-    ok &= expect(color_start.alpha > normal.alpha / 2 &&
+    ok &= render_stats(lib, renderer, "Color", 1000, &color_normal);
+    ok &= expect(color_start.alpha > color_normal.alpha / 2 &&
                  mostly_white(&color_start),
                  "extended color-only fade-in was not visible white");
 
     ok &= render_stats(lib, renderer,
                        "{\\fad(300,300,&HFFFFFF&+a,&H000000&+a)}ColorAlpha",
                        0, &color_alpha_start);
-    ok &= expect(color_alpha_start.alpha < color_start.alpha / 8,
+    ok &= render_stats(lib, renderer, "ColorAlpha", 1000, &color_alpha_normal);
+    ok &= expect(color_alpha_start.alpha < color_alpha_normal.alpha / 8,
                  "extended +a did not combine color fade with alpha fade");
 
     ok &= render_stats(lib, renderer,
                        "{\\fad(300,300,,&H000000&)}EmptyStart",
                        0, &empty_start);
-    ok &= expect(empty_start.alpha < normal.alpha / 8,
+    ok &= render_stats(lib, renderer, "EmptyStart", 1000, &empty_normal);
+    ok &= expect(empty_start.alpha < empty_normal.alpha / 8,
                  "empty start color did not keep classic alpha fade-in");
 
     ok &= render_stats(lib, renderer,
                        "{\\fad(300,300,&HFFFFFF&,)}EmptyEnd",
                        1999, &empty_end);
-    ok &= expect(empty_end.alpha < normal.alpha / 8,
+    ok &= render_stats(lib, renderer, "EmptyEnd", 1000, &empty_end_normal);
+    ok &= expect(empty_end.alpha < empty_end_normal.alpha / 8,
                  "empty end color did not keep classic alpha fade-out");
 
     ok &= render_stats(lib, renderer,
                        "{\\fad(300,300,&HFFFFFF&,&H000000&)}BlackEnd",
                        1999, &black_end);
-    ok &= expect(black_end.alpha > normal.alpha / 2 &&
+    ok &= render_stats(lib, renderer, "BlackEnd", 1000, &black_normal);
+    ok &= expect(black_end.alpha > black_normal.alpha / 2 &&
                  mostly_black(&black_end),
                  "extended color-only fade-out was not visible black");
 
