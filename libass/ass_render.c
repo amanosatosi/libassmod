@@ -3652,6 +3652,9 @@ static void trim_whitespace(RenderContext *state)
     GlyphInfo *cur;
     TextInfo *ti = &state->text_info;
 
+    if (!ti->length)
+      return;
+
     // Mark trailing spaces
     i = ti->length - 1;
     cur = ti->glyphs + i;
@@ -3673,17 +3676,21 @@ static void trim_whitespace(RenderContext *state)
         cur->starts_new_run = true;
 
     // Mark all extraneous whitespace inbetween
+    // XXX: should this really start at 0 again?
     for (i = 0; i < ti->length; ++i) {
         cur = ti->glyphs + i;
         if (cur->linebreak) {
             // Mark whitespace before
             j = i - 1;
             cur = ti->glyphs + j;
-            while (j && IS_WHITESPACE(cur)) {
+            // Use > instead of >= to avoid UB from moving the pointer outside valid range.
+            // White space at j == 0 was already trimmed in the "leading" loop before anyway.
+            while (j > 0 && IS_WHITESPACE(cur)) {
                 cur->skip = true;
                 cur->is_trimmed_whitespace = true;
                 cur = ti->glyphs + --j;
             }
+
             // A break itself can contain a whitespace, too
             cur = ti->glyphs + i;
             if (cur->symbol == ' ' || cur->symbol == '\n') {
@@ -3751,10 +3758,8 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
             last_breakable = i;
         }
 
-        if (break_at != -1) {
+        if (break_at != -1 && break_at + 1 < text_info->length) {
             // need to use one more line
-            // marking break_at+1 as start of a new line
-            int lead = break_at + 1;    // the first symbol of the new line
             if (text_info->n_lines >= text_info->max_lines) {
                 // Try to raise the maximum number of lines
                 bool success = false;
@@ -3769,12 +3774,13 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
                     text_info->n_lines--;
                 }
             }
-            if (lead < text_info->length) {
-                text_info->glyphs[lead].linebreak = break_type;
-                last_breakable = -1;
-                s1 = text_info->glyphs + lead;
-                text_info->n_lines++;
-            }
+
+            // marking break_at+1 as start of a new line
+            int lead = break_at + 1; // the first symbol of the new line
+            text_info->glyphs[lead].linebreak = break_type;
+            last_breakable = -1;
+            s1 = text_info->glyphs + lead;
+            text_info->n_lines++;
         }
     }
 }
@@ -3783,6 +3789,7 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
  * Rewind from a linestart position back to the first non-whitespace (0x20)
  * character. Trailing ASCII whitespace gets trimmed in rendering.
  * Assumes both arguments are part of the same array.
+ * start2 is never dereferenced.
  */
 static inline GlyphInfo *rewind_trailing_spaces(GlyphInfo *start1, GlyphInfo* start2)
 {
@@ -3815,6 +3822,8 @@ wrap_lines_rebalance(RenderContext *state, double max_text_width, char *unibrks)
             if ((i == text_info->length) || cur->linebreak) {
                 s1 = s2;
                 s2 = s3;
+                // WARNING: this may point one past the end and thus
+                // must ONLY be used for pointer comparison; never dereferenced!
                 s3 = cur;
                 if (s1 && (s2->linebreak == 1)) {       // have at least 2 lines, and linebreak is 'soft'
                     double l1, l2, l1_new, l2_new;
@@ -3876,13 +3885,21 @@ wrap_lines_measure(RenderContext *state, char *unibrks)
 
     while (i < text_info->length && text_info->glyphs[i].skip)
         ++i;
+
+    if (i == text_info->length) {
+        text_info->lines[0].len = 0;
+        text_info->lines[0].offset = 0;
+        return;
+    }
+
     double pen_shift_x = d6_to_double(-text_info->glyphs[i].pos.x);
     double pen_shift_y = 0.;
 
     for (i = 0; i < text_info->length; ++i) {
         GlyphInfo *cur = text_info->glyphs + i;
+
         if (cur->linebreak) {
-            while (i < text_info->length && cur->skip && !FORCEBREAK(cur->symbol, i))
+            while (i < text_info->length - 1 && cur->skip && !FORCEBREAK(cur->symbol, i))
                 cur = text_info->glyphs + ++i;
             double height =
                 text_info->lines[cur_line - 1].desc +
