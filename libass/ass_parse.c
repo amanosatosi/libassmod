@@ -558,9 +558,11 @@ static bool parse_clip_scale(RenderContext *state, struct arg token, int *scale)
 {
     char *ptr = token.start;
     errno = 0;
-    long long parsed = strtoll(token.start, &ptr, 10);
+    int32_t parsed;
+    bool ok = mystrtoi32(&ptr, 10, &parsed);
 
-    if (ptr != token.end || errno == ERANGE || parsed < 1 || parsed > 31) {
+    if (!ok || ptr != token.end || errno == ERANGE ||
+            parsed < 1 || parsed > 31) {
         ass_msg(state->renderer->library, MSGL_DBG2,
                 "PARSE clip vector scale rejected: '%.*s'",
                 (int) (token.end - token.start), token.start);

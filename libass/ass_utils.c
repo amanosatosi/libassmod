@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #include "ass_library.h"
 #include "ass.h"
@@ -182,6 +183,182 @@ unsigned ass_utf8_put_char(char *dest, uint32_t ch)
 
     *dest = '\0';
     return dest - orig_dest;
+}
+
+static int unicode_decimal_value(unsigned c)
+{
+    static const struct {
+        unsigned first;
+        unsigned last;
+    } ranges[] = {
+        { 0x0030, 0x0039 },
+        { 0x0660, 0x0669 },
+        { 0x06F0, 0x06F9 },
+        { 0x0966, 0x096F },
+        { 0x09E6, 0x09EF },
+        { 0x0A66, 0x0A6F },
+        { 0x0AE6, 0x0AEF },
+        { 0x0B66, 0x0B6F },
+        { 0x0BE6, 0x0BEF },
+        { 0x0C66, 0x0C6F },
+        { 0x0CE6, 0x0CEF },
+        { 0x0D66, 0x0D6F },
+        { 0x0E50, 0x0E59 },
+        { 0x0ED0, 0x0ED9 },
+        { 0x0F20, 0x0F29 },
+        { 0x1040, 0x1049 },
+        { 0x17E0, 0x17E9 },
+        { 0x1810, 0x1819 },
+        { 0xFF10, 0xFF19 },
+    };
+
+    for (int i = 0; i < (int) (sizeof(ranges) / sizeof(ranges[0])); i++)
+        if (c >= ranges[i].first && c <= ranges[i].last)
+            return c - ranges[i].first;
+    return -1;
+}
+
+static bool decimal_syntax_char(char c)
+{
+    return c == '+' || c == '-' || c == '.' || c == 'e' || c == 'E' ||
+           c == ' ' || c == '\t' || c == '\n' || c == '\v' ||
+           c == '\f' || c == '\r';
+}
+
+static bool integer_syntax_char(char c)
+{
+    return c == '+' || c == '-' ||
+           c == ' ' || c == '\t' || c == '\n' || c == '\v' ||
+           c == '\f' || c == '\r';
+}
+
+typedef bool (*syntax_char_func)(char c);
+
+static bool normalize_decimal_number(char *start, syntax_char_func syntax_char,
+                                     char *stack_buf, char **stack_ends,
+                                     size_t stack_cap, char **buf, char ***ends)
+{
+    size_t cap = stack_cap;
+    char *tmp = stack_buf;
+    char **map = stack_ends;
+
+    size_t len = 0;
+    char *p = start;
+    while (*p) {
+        char *next = p;
+        unsigned c = ass_utf8_get_char(&next);
+        int digit = unicode_decimal_value(c);
+        char out;
+
+        if (digit >= 0)
+            out = '0' + digit;
+        else if (c < 0x80 && syntax_char((char) c))
+            out = (char) c;
+        else
+            break;
+
+        if (len + 1 >= cap) {
+            if (cap > SIZE_MAX / 2 || cap * 2 > SIZE_MAX / sizeof(*map))
+                goto fail;
+            size_t old_cap = cap;
+            cap *= 2;
+            char *new_tmp;
+            if (tmp == stack_buf) {
+                new_tmp = malloc(cap);
+                if (new_tmp)
+                    memcpy(new_tmp, tmp, old_cap);
+            } else {
+                new_tmp = realloc(tmp, cap);
+            }
+            if (!new_tmp)
+                goto fail;
+            tmp = new_tmp;
+            char **new_map;
+            if (map == stack_ends) {
+                new_map = malloc(cap * sizeof(*map));
+                if (new_map)
+                    memcpy(new_map, map, old_cap * sizeof(*map));
+            } else {
+                new_map = realloc(map, cap * sizeof(*map));
+            }
+            if (!new_map)
+                goto fail;
+            map = new_map;
+        }
+
+        tmp[len] = out;
+        map[len] = next;
+        len++;
+        p = next;
+    }
+    tmp[len] = '\0';
+
+    *buf = tmp;
+    *ends = map;
+    return true;
+
+fail:
+    if (tmp != stack_buf)
+        free(tmp);
+    if (map != stack_ends)
+        free(map);
+    return false;
+}
+
+int ass_strtod_decimal(char **p, double *res)
+{
+    char *start = *p;
+    char stack_buf[64];
+    char *stack_ends[64];
+    char *buf = stack_buf;
+    char **ends = stack_ends;
+    if (!normalize_decimal_number(start, decimal_syntax_char, stack_buf,
+                                  stack_ends, 64, &buf, &ends)) {
+        *res = ass_strtod(*p, p);
+        return *p != start;
+    }
+
+    char *end = NULL;
+    *res = ass_strtod(buf, &end);
+    if (end != buf)
+        *p = ends[end - buf - 1];
+    else
+        *p = start;
+
+    if (buf != stack_buf)
+        free(buf);
+    if (ends != stack_ends)
+        free(ends);
+    return *p != start;
+}
+
+int ass_strtoi32_decimal(char **p, int32_t *res)
+{
+    char *start = *p;
+    char stack_buf[64];
+    char *stack_ends[64];
+    char *buf = stack_buf;
+    char **ends = stack_ends;
+    if (!normalize_decimal_number(start, integer_syntax_char, stack_buf,
+                                  stack_ends, 64, &buf, &ends)) {
+        long long temp_res = strtoll(*p, p, 10);
+        *res = FFMINMAX(temp_res, INT32_MIN, INT32_MAX);
+        return *p != start;
+    }
+
+    char *end = NULL;
+    long long temp_res = strtoll(buf, &end, 10);
+    *res = FFMINMAX(temp_res, INT32_MIN, INT32_MAX);
+    if (end != buf)
+        *p = ends[end - buf - 1];
+    else
+        *p = start;
+
+    if (buf != stack_buf)
+        free(buf);
+    if (ends != stack_ends)
+        free(ends);
+    return *p != start;
 }
 
 /**

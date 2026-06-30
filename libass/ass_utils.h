@@ -124,6 +124,10 @@ int ass_lookup_style(ASS_Track *track, char *name);
 /* defined in ass_strtod.c */
 double ass_strtod(const char *string, char **endPtr);
 
+/* defined in ass_utils.c */
+int ass_strtod_decimal(char **p, double *res);
+int ass_strtoi32_decimal(char **p, int32_t *res);
+
 static inline void skip_spaces(char **str)
 {
     char *p = *str;
@@ -253,13 +257,14 @@ static inline int32_t lshiftwrapi(int32_t i, int32_t shift)
 
 static inline int mystrtod(char **p, double *res)
 {
-    char *start = *p;
-    *res = ass_strtod(*p, p);
-    return *p != start;
+    return ass_strtod_decimal(p, res);
 }
 
 static inline int mystrtoi32(char **p, int base, int32_t *res)
 {
+    if (base == 10)
+        return ass_strtoi32_decimal(p, res);
+
     char *start = *p;
     long long temp_res = strtoll(*p, p, base);
     *res = FFMINMAX(temp_res, INT32_MIN, INT32_MAX);
