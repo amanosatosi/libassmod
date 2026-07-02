@@ -65,6 +65,7 @@ These appearance tags are supported in colorcoding metadata:
 \blur \be
 \c \1c \2c \3c \4c
 \alpha \1a \2a \3a \4a
+\1grd(...)
 \1bs..\10bs \1bsx..\10bsx \1bsy..\10bsy
 \1bc..\10bc \1ba..\10ba
 \1bvc(..)..\10bvc(..)
@@ -74,6 +75,10 @@ These appearance tags are supported in colorcoding metadata:
 Forbidden, unknown, layout, timing, drawing, transition, clipping, karaoke, and
 motion tags are ignored inside colorcoding blocks. For example, in
 `{\1c&HFFB6D9&\pos(100,100)}`, the color is applied and `\pos` is ignored.
+
+`\1grd(angle,color0,color1)` and its multi-stop form set Mangetsu's attached
+linear primary-fill gradient as an actor default. `\1grd()` and `\1grd0`
+disable it, and inline `\c` or `\1c` replaces it with a solid primary color.
 
 ## Reset Behavior
 

@@ -747,8 +747,16 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 int64_t num_u = ((int64_t) (src_x + x)) << 16;
                 uf = (int32_t) (num_u / denom_w);
             }
-            uint32_t color = (vals->color_enabled) ?
-                ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
+            const MangetsuGradientLayer *mangetsu =
+                &info->mangetsu_gradient.layer[layer];
+            uint32_t color;
+            if (layer == 0 && mangetsu->active && mangetsu->rect.valid) {
+                color = ass_mangetsu_gradient_sample_color(
+                    mangetsu, dst_x + x + 0.5, dst_y + y + 0.5);
+            } else {
+                color = (vals->color_enabled) ?
+                    ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
+            }
             ass_apply_fade_color(&color, info->fade_color);
             uint8_t alpha = (vals->alpha_enabled) ?
                 ass_gradient_sample_alpha_fixed(vals, uf, vf) : base_alpha;
@@ -2171,6 +2179,7 @@ static void capture_effective_default_state(RenderContext *state)
     *style = (ColumnStyleState) {0};
     capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
     style->gradient = state->gradient;
+    style->mangetsu_gradient = state->mangetsu_gradient;
     style->image_fill = state->image_fill;
     memcpy(style->border_layers, state->border_layers,
            sizeof(style->border_layers));
@@ -2242,6 +2251,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->c[2] = style->OutlineColour;
     state->c[3] = style->BackColour;
     ass_gradient_state_reset(&state->gradient, state->c);
+    ass_mangetsu_gradient_state_reset(&state->mangetsu_gradient);
     for (int i = 0; i < 4; i++)
         clear_image_fill_layer(&state->image_fill.layer[i]);
     state->flags =
@@ -2363,6 +2373,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->jitter = ass_jitter_default_state();
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
+    state->mangetsu_gradient_next_id = 0;
     state->column_event = false;
     state->column_active = false;
     state->column_row = 0;
@@ -2535,6 +2546,7 @@ static void capture_column_base_style(RenderContext *state)
     *style = (ColumnStyleState) {0};
     capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
     style->gradient = state->gradient;
+    style->mangetsu_gradient = state->mangetsu_gradient;
     style->image_fill = state->image_fill;
     memcpy(style->border_layers, state->border_layers,
            sizeof(style->border_layers));
@@ -2551,6 +2563,7 @@ static void apply_column_base_style(RenderContext *state)
                    (style->flags & (DECO_UNDERLINE | DECO_STRIKETHROUGH));
     memcpy(state->c, style->c, sizeof(state->c));
     state->gradient = style->gradient;
+    state->mangetsu_gradient = style->mangetsu_gradient;
     state->image_fill = style->image_fill;
     state->decoration_color_set = style->decoration_color_set;
     state->decoration_alpha_set = style->decoration_alpha_set;
@@ -2606,6 +2619,7 @@ static void apply_column_default_style(RenderContext *state,
         if (fields & COLUMN_STYLE_COLOR_MASK(i)) {
             state->c[i] = (style->c[i] & 0xFFFFFF00) | _a(state->c[i]);
             ass_gradient_disable_color(&state->gradient, i, state->c[i], 1);
+            ass_mangetsu_gradient_layer_reset(&state->mangetsu_gradient.layer[i]);
             clear_image_fill_layer(&state->image_fill.layer[i]);
             if (i == 2)
                 sync_border = true;
@@ -4065,6 +4079,8 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length)
             last->fade_color.color != info->fade_color.color ||
             last->fade_color.amount != info->fade_color.amount ||
             !ass_gradient_equal(&last->gradient, &info->gradient) ||
+            !ass_mangetsu_gradient_state_equal(&last->mangetsu_gradient,
+                                               &info->mangetsu_gradient) ||
             !image_fill_state_equal(&last->image_fill, &info->image_fill) ||
             last->be != info->be ||
             last->blur_x != info->blur_x ||
@@ -4222,6 +4238,7 @@ static bool append_glyph_to_target(RenderContext *state,
     for (int i = 0; i < 4; i++)
         info->c[i] = state->c[i];
     info->gradient = state->gradient;
+    info->mangetsu_gradient = state->mangetsu_gradient;
     info->image_fill = state->image_fill;
     info->line = 0;
 
@@ -5968,6 +5985,73 @@ static void compute_line_gradient_rects(RenderContext *state)
     }
 }
 
+static void update_mangetsu_rect(GradientRect *rect,
+                                 int x0, int y0, int x1, int y1)
+{
+    if (x1 <= x0 || y1 <= y0)
+        return;
+
+    if (!rect->valid) {
+        rect->x0 = x0;
+        rect->y0 = y0;
+        rect->x1 = x1;
+        rect->y1 = y1;
+        rect->valid = true;
+        return;
+    }
+
+    rect->x0 = FFMIN(rect->x0, x0);
+    rect->y0 = FFMIN(rect->y0, y0);
+    rect->x1 = FFMAX(rect->x1, x1);
+    rect->y1 = FFMAX(rect->y1, y1);
+}
+
+static void update_mangetsu_rect_from_bitmap(GradientRect *rect,
+                                             const CombinedBitmapInfo *info,
+                                             const Bitmap *bm)
+{
+    if (!bm)
+        return;
+
+    int logical_w = bm->logical_w > 0 ? bm->logical_w : bm->w;
+    int logical_h = bm->logical_h > 0 ? bm->logical_h : bm->h;
+    update_mangetsu_rect(rect,
+                         info->x + bm->left,
+                         info->y + bm->top,
+                         info->x + bm->left + logical_w,
+                         info->y + bm->top + logical_h);
+}
+
+static void compute_mangetsu_gradient_rects(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+
+    for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        MangetsuGradientLayer *layer =
+            &text_info->combined_bitmaps[i].mangetsu_gradient.layer[0];
+        layer->rect = (GradientRect) {0};
+    }
+
+    for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
+        MangetsuGradientLayer *layer = &info->mangetsu_gradient.layer[0];
+        if (!layer->active)
+            continue;
+
+        GradientRect rect = {0};
+        for (unsigned j = 0; j < text_info->n_bitmaps; j++) {
+            CombinedBitmapInfo *other = &text_info->combined_bitmaps[j];
+            const MangetsuGradientLayer *other_layer =
+                &other->mangetsu_gradient.layer[0];
+            if (!other_layer->active ||
+                    other_layer->segment_id != layer->segment_id)
+                continue;
+            update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
+        }
+        layer->rect = rect;
+    }
+}
+
 static bool text_needs_rgba(const TextInfo *text_info)
 {
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
@@ -5982,6 +6066,8 @@ static bool text_needs_rgba(const TextInfo *text_info)
         if (info->fade_color.active && info->fade_color.amount > 0)
             return true;
         for (int layer = 0; layer < 4; layer++) {
+            if (info->mangetsu_gradient.layer[layer].active)
+                return true;
             if (info->image_fill.layer[layer].enabled)
                 return true;
             const GradientValues *vals = &info->gradient.layer[layer];
@@ -6060,6 +6146,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
                 current_info->gradient = info->gradient;
+                current_info->mangetsu_gradient = info->mangetsu_gradient;
                 current_info->image_fill = info->image_fill;
                 memcpy(current_info->border_layers, info->border_layers,
                        sizeof(current_info->border_layers));
@@ -6240,6 +6327,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     memcpy(&current_info->c, &deco.c, sizeof(deco.c));
     memcpy(&current_info->base_c, &deco.c, sizeof(deco.c));
     current_info->gradient = deco.gradient;
+    current_info->mangetsu_gradient = deco.mangetsu_gradient;
     current_info->image_fill = deco.image_fill;
     memcpy(current_info->border_layers, deco.border_layers,
            sizeof(current_info->border_layers));
@@ -7043,6 +7131,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);
+    compute_mangetsu_gradient_rects(state);
     state->needs_rgba = text_needs_rgba(text_info);
 
     memset(event_images, 0, sizeof(*event_images));

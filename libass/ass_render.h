@@ -171,6 +171,7 @@ typedef struct {
     Bitmap *bm_border[ASS_BORDER_LAYERS_MAX - 1];
     CompositeHashValue *image;
     GradientState gradient;
+    MangetsuGradientState mangetsu_gradient;
     ImageFillState image_fill;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t base_c[4];
@@ -234,6 +235,7 @@ typedef struct glyph_info {
     bool starts_new_run;
     uint32_t c[4];              // colors
     GradientState gradient;
+    MangetsuGradientState mangetsu_gradient;
     ImageFillState image_fill;
     int line;
     ASS_Vector advance;         // 26.6
@@ -390,6 +392,7 @@ typedef struct {
     int flags;
     uint32_t c[4];
     GradientState gradient;
+    MangetsuGradientState mangetsu_gradient;
     ImageFillState image_fill;
     bool decoration_color_set;
     bool decoration_alpha_set;
@@ -523,6 +526,8 @@ struct render_context {
     double box_extra_y;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
+    MangetsuGradientState mangetsu_gradient;
+    int mangetsu_gradient_next_id;
     ImageFillState image_fill;
     bool needs_rgba;
     int clip_x0, clip_y0, clip_x1, clip_y1;

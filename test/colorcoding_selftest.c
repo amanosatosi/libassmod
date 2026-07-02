@@ -321,6 +321,38 @@ int main(void)
         ok = false;
     }
 
+    ok &= render_rgba_case(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1grd(0,&H0000FF&,&HFF0000&)}\n",
+        "Grad",
+        &rgba_actor);
+    ok &= render_rgba_case(
+        lib, renderer,
+        "",
+        "{\\1grd(0,&H0000FF&,&HFF0000&)}Grad",
+        &rgba_explicit);
+    if (ok && (!rgba_actor.needs_rgba ||
+               !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+        fprintf(stderr, "actor Mangetsu gradient did not match explicit gradient\n");
+        ok = false;
+    }
+
+    ok &= render_rgba_case(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1grd(0,&H0000FF&,&HFF0000&)}\n",
+        "{\\1c&H00FF00&}Flat",
+        &rgba_actor);
+    ok &= render_rgba_case(
+        lib, renderer,
+        "",
+        "{\\1c&H00FF00&}Flat",
+        &rgba_explicit);
+    if (ok && (rgba_actor.needs_rgba ||
+               !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+        fprintf(stderr, "inline \\1c did not replace actor Mangetsu gradient\n");
+        ok = false;
+    }
+
     ass_renderer_done(renderer);
     ass_library_done(lib);
     return ok ? 0 : 1;
