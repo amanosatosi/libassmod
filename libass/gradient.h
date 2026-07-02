@@ -32,6 +32,8 @@
 #define gradient_sample_alpha ass_gradient_sample_alpha
 
 #define MANGETSU_GRADIENT_MAX_STOPS 64
+#define MANGETSU_GRADIENT_DEBUG_MAX_SEGMENTS 64
+#define MANGETSU_GRADIENT_LAYERS 5
 
 typedef struct {
     bool color_enabled;
@@ -54,8 +56,13 @@ typedef struct {
     uint32_t color;
 } MangetsuGradientStop;
 
+typedef enum {
+    MANGETSU_GRADIENT_TYPE_LINEAR = 0,
+} MangetsuGradientType;
+
 typedef struct {
     bool active;
+    MangetsuGradientType type;
     int segment_id;
     double angle;
     int n_stops;
@@ -64,8 +71,24 @@ typedef struct {
 } MangetsuGradientLayer;
 
 typedef struct {
-    MangetsuGradientLayer layer[4];
+    MangetsuGradientLayer layer[MANGETSU_GRADIENT_LAYERS];
 } MangetsuGradientState;
+
+typedef struct {
+    bool active;
+    MangetsuGradientType type;
+    int segment_id;
+    double angle;
+    int n_stops;
+    int bitmap_count;
+    bool rect_valid;
+    MangetsuGradientStop stops[MANGETSU_GRADIENT_MAX_STOPS];
+} MangetsuGradientDebugSegment;
+
+typedef struct {
+    int n_segments;
+    MangetsuGradientDebugSegment segments[MANGETSU_GRADIENT_DEBUG_MAX_SEGMENTS];
+} MangetsuGradientDebugState;
 
 void ass_gradient_state_reset(GradientState *state, const uint32_t *base_colors);
 void ass_gradient_apply_color(GradientState *state, int layer, const uint32_t *values,
@@ -96,7 +119,5 @@ void ass_mangetsu_gradient_state_reset(MangetsuGradientState *state);
 void ass_mangetsu_gradient_layer_reset(MangetsuGradientLayer *layer);
 bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
                                        const MangetsuGradientState *b);
-uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
-                                            double x, double y);
 
 #endif /* LIBASS_GRADIENT_H */

@@ -747,16 +747,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 int64_t num_u = ((int64_t) (src_x + x)) << 16;
                 uf = (int32_t) (num_u / denom_w);
             }
-            const MangetsuGradientLayer *mangetsu =
-                &info->mangetsu_gradient.layer[layer];
-            uint32_t color;
-            if (layer == 0 && mangetsu->active && mangetsu->rect.valid) {
-                color = ass_mangetsu_gradient_sample_color(
-                    mangetsu, dst_x + x + 0.5, dst_y + y + 0.5);
-            } else {
-                color = (vals->color_enabled) ?
-                    ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
-            }
+            uint32_t color = (vals->color_enabled) ?
+                ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
             ass_apply_fade_color(&color, info->fade_color);
             uint8_t alpha = (vals->alpha_enabled) ?
                 ass_gradient_sample_alpha_fixed(vals, uf, vf) : base_alpha;
@@ -6052,6 +6044,47 @@ static void compute_mangetsu_gradient_rects(RenderContext *state)
     }
 }
 
+static MangetsuGradientDebugSegment *find_mangetsu_debug_segment(
+    MangetsuGradientDebugState *debug, int segment_id)
+{
+    for (int i = 0; i < debug->n_segments; i++)
+        if (debug->segments[i].segment_id == segment_id)
+            return &debug->segments[i];
+    return NULL;
+}
+
+static void collect_mangetsu_gradient_debug(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    MangetsuGradientDebugState *debug =
+        &state->renderer->mangetsu_gradient_debug;
+
+    for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
+        const MangetsuGradientLayer *layer = &info->mangetsu_gradient.layer[0];
+        if (!layer->active)
+            continue;
+
+        MangetsuGradientDebugSegment *segment =
+            find_mangetsu_debug_segment(debug, layer->segment_id);
+        if (!segment) {
+            if (debug->n_segments >= MANGETSU_GRADIENT_DEBUG_MAX_SEGMENTS)
+                continue;
+            segment = &debug->segments[debug->n_segments++];
+            memset(segment, 0, sizeof(*segment));
+            segment->active = true;
+            segment->type = layer->type;
+            segment->segment_id = layer->segment_id;
+            segment->angle = layer->angle;
+            segment->n_stops = layer->n_stops;
+            memcpy(segment->stops, layer->stops,
+                   layer->n_stops * sizeof(layer->stops[0]));
+        }
+        segment->bitmap_count++;
+        segment->rect_valid |= layer->rect.valid;
+    }
+}
+
 static bool text_needs_rgba(const TextInfo *text_info)
 {
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
@@ -6066,8 +6099,6 @@ static bool text_needs_rgba(const TextInfo *text_info)
         if (info->fade_color.active && info->fade_color.amount > 0)
             return true;
         for (int layer = 0; layer < 4; layer++) {
-            if (info->mangetsu_gradient.layer[layer].active)
-                return true;
             if (info->image_fill.layer[layer].enabled)
                 return true;
             const GradientValues *vals = &info->gradient.layer[layer];
@@ -7132,6 +7163,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);
     compute_mangetsu_gradient_rects(state);
+    collect_mangetsu_gradient_debug(state);
     state->needs_rgba = text_needs_rgba(text_info);
 
     memset(event_images, 0, sizeof(*event_images));
@@ -7221,6 +7253,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     render_priv->frame_needs_rgba = false;
     render_priv->rgba_output_limit_hit = false;
     render_priv->rgba_output_size = 0;
+    render_priv->mangetsu_gradient_debug = (MangetsuGradientDebugState) {0};
 
     ass_lazy_track_init(render_priv->library, render_priv->track);
 

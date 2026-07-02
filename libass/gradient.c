@@ -23,13 +23,11 @@
 #include <string.h>
 
 #include "gradient.h"
-#include "ass_utils.h"
 
 #define CR(c)   ((uint8_t) ((c) >> 24))
 #define CG(c)   ((uint8_t) ((c) >> 16))
 #define CB(c)   ((uint8_t) ((c) >> 8))
 #define CA(c)   ((uint8_t) (c))
-#define MANGETSU_GRADIENT_PI 3.14159265358979323846
 
 static inline double clamp01(double v)
 {
@@ -263,8 +261,8 @@ static bool mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
         return false;
     if (!a->active)
         return true;
-    if (a->segment_id != b->segment_id || a->angle != b->angle ||
-            a->n_stops != b->n_stops)
+    if (a->type != b->type || a->segment_id != b->segment_id ||
+            a->angle != b->angle || a->n_stops != b->n_stops)
         return false;
     return !memcmp(a->stops, b->stops,
                    a->n_stops * sizeof(a->stops[0]));
@@ -273,57 +271,8 @@ static bool mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
 bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
                                        const MangetsuGradientState *b)
 {
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < MANGETSU_GRADIENT_LAYERS; i++)
         if (!mangetsu_gradient_layer_equal(&a->layer[i], &b->layer[i]))
             return false;
     return true;
-}
-
-static uint32_t sample_mangetsu_stops(const MangetsuGradientLayer *layer,
-                                      double t)
-{
-    t = clamp01(t);
-    if (layer->n_stops <= 0)
-        return 0;
-    if (layer->n_stops == 1 || t <= layer->stops[0].offset)
-        return layer->stops[0].color;
-
-    for (int i = 1; i < layer->n_stops; i++) {
-        if (t > layer->stops[i].offset)
-            continue;
-
-        const MangetsuGradientStop *prev = &layer->stops[i - 1];
-        const MangetsuGradientStop *cur = &layer->stops[i];
-        double span = cur->offset - prev->offset;
-        double local = span > 0.0 ? (t - prev->offset) / span : 1.0;
-        return mix_color(prev->color, cur->color, clamp01(local));
-    }
-
-    return layer->stops[layer->n_stops - 1].color;
-}
-
-uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
-                                            double x, double y)
-{
-    if (!layer || !layer->active || !layer->rect.valid ||
-            layer->n_stops <= 0)
-        return 0;
-
-    const GradientRect *rect = &layer->rect;
-    double rad = layer->angle * MANGETSU_GRADIENT_PI / 180.0;
-    double dx = cos(rad);
-    double dy = sin(rad);
-
-    double p00 = rect->x0 * dx + rect->y0 * dy;
-    double p10 = rect->x1 * dx + rect->y0 * dy;
-    double p01 = rect->x0 * dx + rect->y1 * dy;
-    double p11 = rect->x1 * dx + rect->y1 * dy;
-    double minp = FFMIN(FFMIN(p00, p10), FFMIN(p01, p11));
-    double maxp = FFMAX(FFMAX(p00, p10), FFMAX(p01, p11));
-    double denom = maxp - minp;
-    if (denom <= 1e-9)
-        return layer->stops[0].color;
-
-    double p = x * dx + y * dy;
-    return sample_mangetsu_stops(layer, (p - minp) / denom);
 }

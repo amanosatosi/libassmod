@@ -648,6 +648,7 @@ struct ass_renderer {
     ASS_Track *track;
     long long time;             // frame's timestamp, ms
     double par_scale_x;        // x scale applied to all glyphs to preserve text aspect ratio
+    MangetsuGradientDebugState mangetsu_gradient_debug;
 
     RenderContext state;
     CacheStore cache;

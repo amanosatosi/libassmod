@@ -4,9 +4,9 @@ title: RGBA Rendering Guide
 
 # RGBA Rendering Guide
 
-Vector gradients (`\1vc…`/`\4vc` for four corner colors, `\1va…`/`\4va` for corner alpha) and Mangetsu linear gradients (`\1grd`) rely on per‐pixel color/alpha, so they cannot be reproduced with the legacy `ASS_Image` output. `ASS_Image` nodes are 1‑byte alpha masks + a single uniform RGBA color; they simply do not encode the interpolation that gradient tags describe.
+Vector gradients (`\1vc…`/`\4vc` for four corner colors, `\1va…`/`\4va` for corner alpha) rely on per‐pixel color/alpha, so they cannot be reproduced with the legacy `ASS_Image` output. `ASS_Image` nodes are 1‑byte alpha masks + a single uniform RGBA color; they simply do not encode the bilinear interpolation that gradient tags describe.
 
-Use the RGBA rendering API whenever a subtitle contains `\1vc`…/`\4vc`, `\1va`…/`\4va`, or `\1grd` tags (or your own feature detection). Examples like `\1vc(&H00FFFF&, &HFFFF00&, &HFF00FF&, &H000000&)` draw a four-corner bilinear fill, and `\1grd(0,&H000000&,&HFFFFFF&)` draws an attached primary-fill linear gradient; both require the RGBA pipeline.
+Use the RGBA rendering API whenever a subtitle contains `\1vc`…/`\4vc` or `\1va`…/`\4va` tags (or your own feature detection). Examples like `\1vc(&H00FFFF&, &HFFFF00&, &HFF00FF&, &H000000&)` draw a four-corner bilinear fill, which requires the RGBA pipeline.
 
 ## API overview
 
@@ -110,11 +110,11 @@ ass_free_images_rgba(rgba);
 ## Gradient tags at a glance
 
 - `\1vc(&HBBGGRR&, &HBBGGRR&, &HBBGGRR&, &HBBGGRR&)` – four corner colors for primary fill.
-- `\1grd(angle,&HBBGGRR&,&HBBGGRR&)` – Mangetsu attached linear primary-fill gradient, with optional percentage stops before middle colors.
+- `\1grd(angle,&HBBGGRR&,&HBBGGRR&)` – parsed and tracked as a Mangetsu attached linear primary-fill gradient segment for future rendering.
 - `\1va(&HAA&, &HAA&, &HAA&, &HAA&)` – per-corner alpha overrides.
 - `\1vc`/`\1va` gradients are blended per line box (`\N` or wrapping resets
   the coords).
-- `\1grd` spans the active gradient segment, including font changes and `\N`.
+- `\1grd` segment tracking spans font changes and `\N`; pixel rendering is not implemented yet.
 - Uniform color tags like `\c`, `\1c`/`\2c`/… reset the gradient for that layer.
 
 Use the RGBA API to preserve the bilinear interpolation VSFilterMod renders.

@@ -76,9 +76,10 @@ Forbidden, unknown, layout, timing, drawing, transition, clipping, karaoke, and
 motion tags are ignored inside colorcoding blocks. For example, in
 `{\1c&HFFB6D9&\pos(100,100)}`, the color is applied and `\pos` is ignored.
 
-`\1grd(angle,color0,color1)` and its multi-stop form set Mangetsu's attached
-linear primary-fill gradient as an actor default. `\1grd()` and `\1grd0`
-disable it, and inline `\c` or `\1c` replaces it with a solid primary color.
+`\1grd(angle,color0,color1)` and its multi-stop form are parsed and tracked as
+Mangetsu attached linear primary-fill gradient actor defaults. `\1grd()` and
+`\1grd0` disable the tracked state, and inline `\c` or `\1c` replaces it with a
+solid primary color. Pixel rendering for this state is not implemented yet.
 
 ## Reset Behavior
 

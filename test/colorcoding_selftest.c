@@ -1,11 +1,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "ass.h"
+#include "ass_render.h"
 
 typedef struct {
     int count;
@@ -217,6 +219,62 @@ static bool expect_same(ASS_Library *lib, ASS_Renderer *renderer,
     return true;
 }
 
+static bool render_mangetsu_debug_case(ASS_Library *lib, ASS_Renderer *renderer,
+                                       const char *dialogue,
+                                       MangetsuGradientDebugState *debug)
+{
+    ASS_Track *track = read_case_track(lib, "", dialogue);
+    if (!track)
+        return false;
+
+    int change = 0;
+    ass_render_frame(renderer, track, 0, &change);
+    (void) change;
+
+    *debug = renderer->mangetsu_gradient_debug;
+    ass_free_track(track);
+    return true;
+}
+
+static bool close_double(double a, double b)
+{
+    return fabs(a - b) < 0.000001;
+}
+
+static bool expect_mangetsu_segments(ASS_Library *lib, ASS_Renderer *renderer,
+                                     const char *dialogue, int segments,
+                                     const char *label)
+{
+    MangetsuGradientDebugState debug;
+    if (!render_mangetsu_debug_case(lib, renderer, dialogue, &debug) ||
+            debug.n_segments != segments) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    return true;
+}
+
+static bool expect_one_mangetsu_segment(ASS_Library *lib,
+                                        ASS_Renderer *renderer,
+                                        const char *dialogue, int stops,
+                                        double angle, const char *label,
+                                        MangetsuGradientDebugState *debug_out)
+{
+    MangetsuGradientDebugState debug;
+    if (!render_mangetsu_debug_case(lib, renderer, dialogue, &debug) ||
+            debug.n_segments != 1 ||
+            !debug.segments[0].active ||
+            debug.segments[0].type != MANGETSU_GRADIENT_TYPE_LINEAR ||
+            debug.segments[0].n_stops != stops ||
+            !close_double(debug.segments[0].angle, angle)) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    if (debug_out)
+        *debug_out = debug;
+    return true;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -321,37 +379,86 @@ int main(void)
         ok = false;
     }
 
-    ok &= render_rgba_case(
+    MangetsuGradientDebugState mangetsu_debug;
+    ok &= expect_one_mangetsu_segment(
         lib, renderer,
-        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1grd(0,&H0000FF&,&HFF0000&)}\n",
-        "Grad",
-        &rgba_actor);
-    ok &= render_rgba_case(
-        lib, renderer,
-        "",
-        "{\\1grd(0,&H0000FF&,&HFF0000&)}Grad",
-        &rgba_explicit);
-    if (ok && (!rgba_actor.needs_rgba ||
-               !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
-        fprintf(stderr, "actor Mangetsu gradient did not match explicit gradient\n");
+        "{\\1grd(0,&H000000&,&HFFFFFF&)}Simple",
+        2, 0.0, "simple Mangetsu gradient did not parse",
+        &mangetsu_debug);
+    if (ok && (!close_double(mangetsu_debug.segments[0].stops[0].offset, 0.0) ||
+               !close_double(mangetsu_debug.segments[0].stops[1].offset, 1.0))) {
+        fprintf(stderr, "simple Mangetsu gradient stop offsets were wrong\n");
         ok = false;
     }
 
-    ok &= render_rgba_case(
+    ok &= expect_one_mangetsu_segment(
         lib, renderer,
-        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1grd(0,&H0000FF&,&HFF0000&)}\n",
-        "{\\1c&H00FF00&}Flat",
-        &rgba_actor);
-    ok &= render_rgba_case(
-        lib, renderer,
-        "",
-        "{\\1c&H00FF00&}Flat",
-        &rgba_explicit);
-    if (ok && (rgba_actor.needs_rgba ||
-               !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
-        fprintf(stderr, "inline \\1c did not replace actor Mangetsu gradient\n");
+        "{\\1grd(90,&HFFFFFF&,40%,&H0000FF&,&H000000&)}Multi",
+        3, 90.0, "multi-stop Mangetsu gradient did not parse",
+        &mangetsu_debug);
+    if (ok && !close_double(mangetsu_debug.segments[0].stops[1].offset, 0.4)) {
+        fprintf(stderr, "multi-stop Mangetsu gradient percentage was wrong\n");
         ok = false;
     }
+
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,30%,&H000000&,45%,&H0700B7&,70%,&H0700B7&,85%,&H000000&,&H000000&)}Duplicate",
+        6, 0.0, "duplicate-color Mangetsu gradient did not parse",
+        &mangetsu_debug);
+    if (ok && (mangetsu_debug.segments[0].stops[0].color !=
+               mangetsu_debug.segments[0].stops[1].color ||
+               !close_double(mangetsu_debug.segments[0].stops[1].offset, 0.3))) {
+        fprintf(stderr, "duplicate Mangetsu gradient stops were not preserved\n");
+        ok = false;
+    }
+
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\1grd()}Reset",
+        0, "empty Mangetsu gradient reset did not disable state");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\1grd0}Reset",
+        0, "zero Mangetsu gradient reset did not disable state");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\c&H00FF00&}Flat",
+        0, "\\c did not disable Mangetsu gradient state");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\1c&H00FF00&}Flat",
+        0, "\\1c did not disable Mangetsu gradient state");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\r}Reset",
+        0, "\\r did not reset Mangetsu gradient state");
+
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)}A{\\fs60}B{\\b1}C",
+        2, 0.0, "font changes split or disabled Mangetsu gradient segment",
+        &mangetsu_debug);
+    if (ok && mangetsu_debug.segments[0].bitmap_count < 2) {
+        fprintf(stderr, "font changes did not exercise multiple Mangetsu bitmap runs\n");
+        ok = false;
+    }
+
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1grd(90,&HFFFFFF&,&H000000&)}TOP\\NBOTTOM",
+        2, 90.0, "\\N split Mangetsu gradient segment",
+        NULL);
+
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)}A{\\1grd(0,&H000000&,,&HFFFFFF&)}B",
+        2, 0.0, "malformed Mangetsu gradient did not preserve previous state",
+        NULL);
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(,&H000000&,&HFFFFFF&)}Malformed",
+        0, "malformed Mangetsu gradient did not get ignored safely");
 
     ass_renderer_done(renderer);
     ass_library_done(lib);
