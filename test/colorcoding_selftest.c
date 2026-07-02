@@ -275,6 +275,24 @@ static bool expect_one_mangetsu_segment(ASS_Library *lib,
     return true;
 }
 
+static bool expect_one_mangetsu_target(ASS_Library *lib,
+                                       ASS_Renderer *renderer,
+                                       const char *dialogue,
+                                       MangetsuGradientTarget target,
+                                       int layer, const char *label)
+{
+    MangetsuGradientDebugState debug;
+    if (!expect_one_mangetsu_segment(lib, renderer, dialogue, 2, 0.0,
+                                     label, &debug))
+        return false;
+    if (debug.segments[0].target != target ||
+            debug.segments[0].layer != layer) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    return true;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -434,6 +452,70 @@ int main(void)
         "{\\1grd(0,&H000000&,&HFFFFFF&)\\r}Reset",
         0, "\\r did not reset Mangetsu gradient state");
 
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\2grd(0,&H000000&,&HFFFFFF&)}Secondary",
+        MANGETSU_GRADIENT_TARGET_COLOR, 1,
+        "\\2grd did not map to secondary fill");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\bord8\\3grd(0,&H000000&,&HFFFFFF&)}Border",
+        MANGETSU_GRADIENT_TARGET_BORDER, 0,
+        "\\3grd did not map to border layer 1");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\bord8\\1bgrd(0,&H000000&,&HFFFFFF&)}Border",
+        MANGETSU_GRADIENT_TARGET_BORDER, 0,
+        "\\1bgrd did not map to border layer 1");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\shad5\\4grd(0,&H000000&,&HFFFFFF&)}Shadow",
+        MANGETSU_GRADIENT_TARGET_COLOR, 3,
+        "\\4grd did not map to shadow color");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\5grd(0,&H000000&,&HFFFFFF&)}Fifth",
+        MANGETSU_GRADIENT_TARGET_COLOR, 4,
+        "\\5grd did not parse into fifth channel");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)}Border",
+        MANGETSU_GRADIENT_TARGET_BORDER, 1,
+        "\\2bgrd did not map to border layer 2");
+
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2grd(0,&H000000&,&HFFFFFF&)\\2c&H00FF00&}Flat",
+        0, "\\2c did not disable \\2grd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\bord8\\3grd(0,&H000000&,&HFFFFFF&)\\3c&H00FF00&}Flat",
+        0, "\\3c did not disable \\3grd/\\1bgrd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\shad5\\4grd(0,&H000000&,&HFFFFFF&)\\4c&H00FF00&}Flat",
+        0, "\\4c did not disable \\4grd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\5grd(0,&H000000&,&HFFFFFF&)\\5c&H00FF00&}Flat",
+        0, "\\5c did not disable \\5grd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1bgrd(0,&H000000&,&HFFFFFF&)\\2bgrd(0,&HFFFFFF&,&H000000&)\\2bgrd()}Reset",
+        1, "\\2bgrd reset did not preserve \\1bgrd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)\\1bc&H00FF00&}Border",
+        1, "\\1bc incorrectly disabled \\2bgrd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)\\2bc&H00FF00&}Border",
+        0, "\\2bc did not disable \\2bgrd");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)\\2bvc(&H000000&,&HFFFFFF&,&H000000&,&HFFFFFF&)}Border",
+        0, "\\2bvc did not replace \\2bgrd as color source");
+
     ok &= expect_one_mangetsu_segment(
         lib, renderer,
         "{\\1grd(0,&H000000&,&HFFFFFF&)}A{\\fs60}B{\\b1}C",
@@ -459,6 +541,21 @@ int main(void)
         lib, renderer,
         "{\\1grd(,&H000000&,&HFFFFFF&)}Malformed",
         0, "malformed Mangetsu gradient did not get ignored safely");
+
+    RgbaSig grd_border, bgrd_border;
+    ok &= render_rgba_case(
+        lib, renderer, "",
+        "{\\bord8\\1c&HFFFFFF&\\3grd(0,&H000000&,&H0000FF&)}Border",
+        &grd_border);
+    ok &= render_rgba_case(
+        lib, renderer, "",
+        "{\\bord8\\1c&HFFFFFF&\\1bgrd(0,&H000000&,&H0000FF&)}Border",
+        &bgrd_border);
+    if (ok && (!grd_border.needs_rgba ||
+               !same_rgba_sig(&grd_border, &bgrd_border))) {
+        fprintf(stderr, "\\3grd and \\1bgrd did not render as aliases\n");
+        ok = false;
+    }
 
     ass_renderer_done(renderer);
     ass_library_done(lib);

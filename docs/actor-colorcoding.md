@@ -63,11 +63,12 @@ These appearance tags are supported in colorcoding metadata:
 \bord \xbord \ybord
 \shad \xshad \yshad
 \blur \be
-\c \1c \2c \3c \4c
+\c \1c \2c \3c \4c \5c
 \alpha \1a \2a \3a \4a
-\1grd(...)
+\1grd(...)..\5grd(...)
 \1bs..\10bs \1bsx..\10bsx \1bsy..\10bsy
 \1bc..\10bc \1ba..\10ba
+\1bgrd(..)..\10bgrd(..)
 \1bvc(..)..\10bvc(..)
 \1bva(..)..\10bva(..)
 ```
@@ -76,10 +77,16 @@ Forbidden, unknown, layout, timing, drawing, transition, clipping, karaoke, and
 motion tags are ignored inside colorcoding blocks. For example, in
 `{\1c&HFFB6D9&\pos(100,100)}`, the color is applied and `\pos` is ignored.
 
-`\1grd(angle,color0,color1)` and its multi-stop form are parsed and tracked as
-Mangetsu attached linear primary-fill gradient actor defaults. `\1grd()` and
-`\1grd0` disable the tracked state, and inline `\c` or `\1c` replaces it with a
-solid primary color. Pixel rendering for this state is not implemented yet.
+`\1grd(angle,color0,color1)` through `\5grd(...)` and
+`\1bgrd(...)` through `\10bgrd(...)` are Mangetsu true gradients with
+angle control and percentage stops. They are separate from VSFilterMod-style
+four-corner `\vc`/`\bvc` gradients.
+
+`\3grd(...)` is an alias for `\1bgrd(...)`. Resets such as `\2grd()` and
+`\2bgrd0` disable only the matching channel or border layer. Solid color tags
+disable only their matching true-gradient color source: for example, `\1c`
+clears `\1grd`, `\3c` clears `\3grd`/`\1bgrd`, and `\2bc` clears `\2bgrd`.
+Font/style changes and `\N` do not split an active Mangetsu gradient segment.
 
 ## Reset Behavior
 
@@ -108,6 +115,7 @@ inheritance is preserved:
 - missing `\2bs` does not enable layer 2
 - `\2bs5\2bc&H402030&\2ba&H60&` enables layer 2 with explicit color and alpha
 - `\Nbc` and `\Nba` set flat values and disable that layer's matching gradient
-- `\Nbvc(...)` and `\Nbva(...)` set that layer's gradients
+- `\Nbgrd(...)` sets that layer's Mangetsu true-gradient color source
+- `\Nbvc(...)` and `\Nbva(...)` keep their existing four-corner gradient meaning
 - `\3a` uses normal mangetsu semantics and applies alpha to all native border
   layers without enabling extra layers or changing sizes

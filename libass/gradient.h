@@ -34,6 +34,12 @@
 #define MANGETSU_GRADIENT_MAX_STOPS 64
 #define MANGETSU_GRADIENT_DEBUG_MAX_SEGMENTS 64
 #define MANGETSU_GRADIENT_LAYERS 5
+#define MANGETSU_GRADIENT_BORDER_LAYERS 10
+
+typedef enum {
+    MANGETSU_GRADIENT_TARGET_COLOR = 0,
+    MANGETSU_GRADIENT_TARGET_BORDER = 1,
+} MangetsuGradientTarget;
 
 typedef struct {
     bool color_enabled;
@@ -72,10 +78,13 @@ typedef struct {
 
 typedef struct {
     MangetsuGradientLayer layer[MANGETSU_GRADIENT_LAYERS];
+    MangetsuGradientLayer border[MANGETSU_GRADIENT_BORDER_LAYERS];
 } MangetsuGradientState;
 
 typedef struct {
     bool active;
+    MangetsuGradientTarget target;
+    int layer;
     MangetsuGradientType type;
     int segment_id;
     double angle;
@@ -119,5 +128,7 @@ void ass_mangetsu_gradient_state_reset(MangetsuGradientState *state);
 void ass_mangetsu_gradient_layer_reset(MangetsuGradientLayer *layer);
 bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
                                        const MangetsuGradientState *b);
+uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
+                                            double x, double y);
 
 #endif /* LIBASS_GRADIENT_H */
