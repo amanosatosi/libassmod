@@ -527,6 +527,7 @@ struct render_context {
     bool bs4_box_mode;
     double box_extra_x;
     double box_extra_y;
+    BorderLayerState box_border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;

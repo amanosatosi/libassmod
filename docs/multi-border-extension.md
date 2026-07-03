@@ -19,6 +19,8 @@ outline. Layers 2 through 10 are additional outer outline layers.
 Numbered `\Nbs` tags are border-layer size tags. They are distinct from the
 line-level `\bs<N>` BorderStyle override documented in
 `docs/borderstyle-tags.md`.
+They are also distinct from BorderStyle=4 box-border tags such as `\Nbbs`,
+`\Nbbc`, and `\Nbba`, which are documented in `docs/box-tags.md`.
 
 Layer-1 tags are aliases for existing ASS tags:
 

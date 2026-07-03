@@ -252,6 +252,7 @@ int main(void)
 
     RenderSig legacy, numbered, multi, invalid, expected;
     RenderSig bs5, style_bs5, malformed;
+    RenderSig box_base, box_border, box_multi, box_numbered, bs_ignore;
     RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
     bool ok = true;
 
@@ -422,6 +423,58 @@ int main(void)
     if (ok && (multi.outline_count < 2 ||
                !has_color(&multi, 0x00000000u))) {
         fprintf(stderr, "\\bs5 multi-border render did not expose the extra layer\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12}Box",
+                      &box_base);
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\bbs4\\bbc&H00FF00&\\bba&H00&}Box",
+                      &box_border);
+    if (ok && (same_sig(&box_base, &box_border) ||
+               !has_color(&box_border, 0x00FF0000u))) {
+        fprintf(stderr, "layer-1 box border did not render with explicit color\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\1bbs3\\1bbc&H00FF00&\\1bba&H00&"
+                      "\\2bbs8\\2bbc&H0000FF&\\2bba&H00&}Box",
+                      &box_multi);
+    if (ok && (!has_color(&box_multi, 0x00FF0000u) ||
+               !has_color(&box_multi, 0xFF000000u))) {
+        fprintf(stderr, "two-layer box border did not expose both colors\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\3bbs6\\3bbc&H00FF00&\\3bba&H00&}Box",
+                      &box_numbered);
+    if (ok && !has_color(&box_numbered, 0x00FF0000u)) {
+        fprintf(stderr, "\\3bbc was not parsed as box border layer 3 color\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bbs10\\bbc&H0000FF&}Ignore",
+                      &bs_ignore);
+    ok &= render_case(lib, renderer,
+                      "{\\bs5}Ignore",
+                      &expected);
+    if (ok && !same_sig(&bs_ignore, &expected)) {
+        fprintf(stderr, "box-border tags changed BorderStyle=5 rendering\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs1\\bbs10\\bbc&H0000FF&}Ignore",
+                      &bs_ignore);
+    ok &= render_case(lib, renderer,
+                      "{\\bs1}Ignore",
+                      &expected);
+    if (ok && !same_sig(&bs_ignore, &expected)) {
+        fprintf(stderr, "box-border tags changed BorderStyle=1 rendering\n");
         ok = false;
     }
 

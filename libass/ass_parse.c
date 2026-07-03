@@ -850,6 +850,9 @@ typedef enum {
     BORDER_TAG_ALPHA_GRADIENT,
     BORDER_TAG_MANGETSU_GRADIENT,
     BORDER_TAG_MANGETSU_ALPHA_GRADIENT,
+    BORDER_TAG_BOX_SIZE,
+    BORDER_TAG_BOX_COLOR,
+    BORDER_TAG_BOX_ALPHA,
 } NumberedBorderTag;
 
 static bool is_digit_char(char c)
@@ -891,7 +894,13 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
 
     NumberedBorderTag tag = BORDER_TAG_IGNORE;
     char *arg_start = q;
-    if (match_border_suffix(q, name_end, "bsx", &arg_start))
+    if (match_border_suffix(q, name_end, "bbs", &arg_start))
+        tag = BORDER_TAG_BOX_SIZE;
+    else if (match_border_suffix(q, name_end, "bbc", &arg_start))
+        tag = BORDER_TAG_BOX_COLOR;
+    else if (match_border_suffix(q, name_end, "bba", &arg_start))
+        tag = BORDER_TAG_BOX_ALPHA;
+    else if (match_border_suffix(q, name_end, "bsx", &arg_start))
         tag = BORDER_TAG_SIZE_X;
     else if (match_border_suffix(q, name_end, "bsy", &arg_start))
         tag = BORDER_TAG_SIZE_Y;
@@ -1777,6 +1786,67 @@ static void set_border_layer_size(RenderContext *state, int layer,
     set_border_layer_size_pair(state, layer, set_x, set_y, val, val, pwr);
 }
 
+static void set_box_border_layer_size(RenderContext *state, int layer,
+                                      double val, double pwr)
+{
+    BorderLayerState *border = &state->box_border_layers[layer];
+    double size = border->size_x * (1 - pwr) + val * pwr;
+    size = size < 0 ? 0 : size;
+    border->size_x = size;
+    border->size_y = size;
+    border->enabled = size > 0;
+}
+
+static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
+                                 int layer, struct arg arg, double pwr)
+{
+    BorderLayerState *border = &state->box_border_layers[layer];
+
+    switch (tag) {
+    case BORDER_TAG_BOX_SIZE: {
+        double val;
+        if (!arg.start) {
+            set_box_border_layer_size(state, layer, 0, pwr);
+        } else if (parse_double_arg_strict(arg, &val)) {
+            set_box_border_layer_size(state, layer, val, pwr);
+        }
+        break;
+    }
+    case BORDER_TAG_BOX_COLOR: {
+        uint32_t val;
+        if (!arg.start) {
+            border->has_color = false;
+            border->color = (state->c[3] & 0xFFFFFF00u) | _a(border->color);
+        } else if (parse_hex_arg_strict(arg, &val)) {
+            uint32_t alpha = border->has_alpha ? _a(border->color) :
+                             _a(state->c[3]);
+            border->color = (border->color & 0x000000FFu) |
+                            (state->c[3] & 0xFFFFFF00u);
+            change_color(&border->color, ass_bswap32(val), pwr);
+            border->color = (border->color & 0xFFFFFF00u) | alpha;
+            border->has_color = true;
+        }
+        break;
+    }
+    case BORDER_TAG_BOX_ALPHA: {
+        uint32_t val;
+        if (!arg.start) {
+            border->has_alpha = false;
+            border->color = (border->color & 0xFFFFFF00u) | _a(state->c[3]);
+        } else if (parse_hex_arg_strict(arg, &val) && val <= 0xFF) {
+            uint32_t rgb = border->has_color ? (border->color & 0xFFFFFF00u) :
+                           (state->c[3] & 0xFFFFFF00u);
+            border->color = rgb | _a(border->color);
+            change_alpha(&border->color, val, pwr);
+            border->has_alpha = true;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static void copy_gradient_color(GradientValues *dst, const GradientValues *src)
 {
     dst->color_enabled = src->color_enabled;
@@ -1795,6 +1865,11 @@ static void apply_numbered_border_tag(RenderContext *state,
         (nargs ? args[0] : (struct arg) { NULL, NULL });
 
     switch (tag) {
+    case BORDER_TAG_BOX_SIZE:
+    case BORDER_TAG_BOX_COLOR:
+    case BORDER_TAG_BOX_ALPHA:
+        apply_box_border_tag(state, tag, layer, arg, pwr);
+        break;
     case BORDER_TAG_SIZE:
     case BORDER_TAG_SIZE_X:
     case BORDER_TAG_SIZE_Y: {
@@ -3170,6 +3245,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             if (!nested && pwr > 0.0)
                 disable_mangetsu_alpha_gradient_layer(state, 4);
+        } else if (tag("bbs")) {
+            struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
+            apply_box_border_tag(state, BORDER_TAG_BOX_SIZE, 0, arg, pwr);
+        } else if (tag("bbc")) {
+            struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
+            apply_box_border_tag(state, BORDER_TAG_BOX_COLOR, 0, arg, pwr);
+        } else if (tag("bba")) {
+            struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
+            apply_box_border_tag(state, BORDER_TAG_BOX_ALPHA, 0, arg, pwr);
         } else if (tag("boxpx")) {
             if (nargs) {
                 double val;

@@ -15,3 +15,5 @@ Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(180,150)\bord20\p1}m 0 0
 Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(180,275)\bs5\bord20\p1}m 0 0 l 200 0 200 100 0 100{\p0}
 Dialogue: 0,0:00:00.00,0:00:10.00,Geometric,,0,0,0,,{\pos(460,150)\bord20\p1}m 0 0 l 120 0 120 80 0 80{\p0}
 Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(460,275)\bs5\bord4\2bs14\2bc&H000000&}Multi-border
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(180,330)\bs4\boxp12\bbs4\bbc&H000000&}Box border
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(460,330)\bs4\boxp12\1bbs3\1bbc&HFFFFFF&\2bbs8\2bbc&H000000&}Two box borders

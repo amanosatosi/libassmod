@@ -2418,6 +2418,18 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->bs4_box_mode = state->border_style == 4;
     state->box_extra_x = 0;
     state->box_extra_y = 0;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
+        state->box_border_layers[i] = (BorderLayerState) {
+            .enabled = false,
+            .has_color = false,
+            .has_alpha = false,
+            .size_x = 0,
+            .size_y = 0,
+            .color = style->BackColour,
+        };
+        ass_gradient_values_reset(&state->box_border_layers[i].gradient,
+                                  style->BackColour);
+    }
     state->border_x = style->Outline;
     state->border_y = style->Outline;
     state->border_layers[0] = (BorderLayerState) {
@@ -7130,6 +7142,177 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
         bitmap_size(&v->bm_border[8]);
 }
 
+typedef struct {
+    int inner_x, inner_y;
+    int outer_x, outer_y;
+    int order;
+    uint32_t color;
+} BoxBorderRenderLayer;
+
+static uint32_t box_border_layer_color(RenderContext *state,
+                                       const BorderLayerState *layer)
+{
+    uint32_t box = state->c[3];
+    uint32_t color = layer->has_color ? (layer->color & 0xFFFFFF00u) :
+                     (box & 0xFFFFFF00u);
+    color |= layer->has_alpha ? _a(layer->color) : _a(box);
+    ass_apply_fades(&color, state->fade, state->fade_color);
+    return color;
+}
+
+static unsigned char *alloc_solid_mask(int w, int h)
+{
+    if (w < 1 || h < 1)
+        return NULL;
+    void *buffer = ass_aligned_alloc(1, (size_t) w * h, false);
+    if (!buffer)
+        return NULL;
+    memset(buffer, 0xFF, (size_t) w * h);
+    return buffer;
+}
+
+static unsigned char *alloc_box_ring_mask(RenderContext *state,
+                                          int outer_left, int outer_top,
+                                          int outer_right, int outer_bottom,
+                                          int inner_left, int inner_top,
+                                          int inner_right, int inner_bottom,
+                                          int *left, int *top,
+                                          int *w, int *h)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    outer_left = FFMINMAX(outer_left, 0, render_priv->width);
+    outer_top = FFMINMAX(outer_top, 0, render_priv->height);
+    outer_right = FFMINMAX(outer_right, 0, render_priv->width);
+    outer_bottom = FFMINMAX(outer_bottom, 0, render_priv->height);
+    *w = outer_right - outer_left;
+    *h = outer_bottom - outer_top;
+    if (*w < 1 || *h < 1)
+        return NULL;
+
+    unsigned char *buffer = ass_aligned_alloc(1, (size_t) *w * *h, false);
+    if (!buffer)
+        return NULL;
+    memset(buffer, 0, (size_t) *w * *h);
+
+    for (int y = 0; y < *h; y++) {
+        int ay = outer_top + y;
+        unsigned char *row = buffer + (size_t) y * *w;
+        if (ay < inner_top || ay >= inner_bottom) {
+            memset(row, 0xFF, *w);
+            continue;
+        }
+
+        int ix0 = FFMINMAX(inner_left - outer_left, 0, *w);
+        int ix1 = FFMINMAX(inner_right - outer_left, 0, *w);
+        if (ix0 > 0)
+            memset(row, 0xFF, ix0);
+        if (ix1 < *w)
+            memset(row + ix1, 0xFF, *w - ix1);
+    }
+
+    *left = outer_left;
+    *top = outer_top;
+    return buffer;
+}
+
+static void append_solid_mask_image(RenderContext *state,
+                                    unsigned char *mask, int w, int h,
+                                    int left, int top, uint32_t color,
+                                    unsigned type, ASS_Image ***tail,
+                                    ASS_ImageRGBA ***rgba_tail)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    ASS_Image *img = my_draw_bitmap(mask, w, h, w, left, top, color, NULL);
+    if (!img)
+        return;
+
+    img->type = type;
+    **tail = img;
+    *tail = &img->next;
+
+    if (!rgba_tail)
+        return;
+
+    uint8_t alpha = 255 - _a(color);
+    ASS_ImageRGBA *rimg = ass_rgba_image_alloc(render_priv, w, h, left, top,
+                                               type);
+    if (!rimg)
+        return;
+
+    int stride = rimg->stride;
+    uint8_t *rgba = rimg->rgba;
+    for (int y = 0; y < h; y++) {
+        uint8_t *row = rgba + (size_t) y * stride;
+        const unsigned char *src = mask + (size_t) y * w;
+        for (int x = 0; x < w; x++) {
+            uint8_t a = (uint8_t) ((src[x] * alpha + 127) / 255);
+            row[4 * x + 0] = (uint8_t) ((_r(color) * a + 127) / 255);
+            row[4 * x + 1] = (uint8_t) ((_g(color) * a + 127) / 255);
+            row[4 * x + 2] = (uint8_t) ((_b(color) * a + 127) / 255);
+            row[4 * x + 3] = a;
+        }
+    }
+
+    **rgba_tail = rimg;
+    *rgba_tail = &rimg->next;
+}
+
+static int cmp_box_border_render_layer(const void *p1, const void *p2)
+{
+    const BoxBorderRenderLayer *a = p1;
+    const BoxBorderRenderLayer *b = p2;
+    if (a->outer_x != b->outer_x)
+        return a->outer_x - b->outer_x;
+    if (a->outer_y != b->outer_y)
+        return a->outer_y - b->outer_y;
+    return a->order - b->order;
+}
+
+static int collect_box_border_render_layers(RenderContext *state,
+                                            BoxBorderRenderLayer *layers)
+{
+    int count = 0;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
+        BorderLayerState *layer = &state->box_border_layers[i];
+        if (!border_layer_has_size(layer))
+            continue;
+
+        int size_x = layer->size_x > 0 ?
+            lround(layer->size_x * state->border_scale_x) : 0;
+        int size_y = layer->size_y > 0 ?
+            lround(layer->size_y * state->border_scale_y) : 0;
+        if (size_x < 1 && size_y < 1)
+            continue;
+
+        layers[count++] = (BoxBorderRenderLayer) {
+            .inner_x = 0,
+            .inner_y = 0,
+            .outer_x = size_x,
+            .outer_y = size_y,
+            .order = i,
+            .color = box_border_layer_color(state, layer),
+        };
+    }
+
+    qsort(layers, count, sizeof(*layers), cmp_box_border_render_layer);
+
+    int out = 0;
+    int prev_x = 0;
+    int prev_y = 0;
+    for (int i = 0; i < count; i++) {
+        if (layers[i].outer_x <= prev_x && layers[i].outer_y <= prev_y)
+            continue;
+
+        layers[out] = layers[i];
+        layers[out].inner_x = prev_x;
+        layers[out].inner_y = prev_y;
+        prev_x = layers[out].outer_x;
+        prev_y = layers[out].outer_y;
+        out++;
+    }
+    return out;
+}
+
 static void add_background(RenderContext *state, EventImages *event_images,
                            ASS_ImageRGBA **rgba_head)
 {
@@ -7138,60 +7321,67 @@ static void add_background(RenderContext *state, EventImages *event_images,
         lround(state->shadow_x * state->border_scale_x) : 0;
     int size_y = state->shadow_y > 0 ?
         lround(state->shadow_y * state->border_scale_y) : 0;
-    int left    = event_images->left - size_x;
-    int top     = event_images->top  - size_y;
-    int right   = event_images->left + event_images->width  + size_x;
-    int bottom  = event_images->top  + event_images->height + size_y;
+    int fill_left    = event_images->left - size_x;
+    int fill_top     = event_images->top  - size_y;
+    int fill_right   = event_images->left + event_images->width  + size_x;
+    int fill_bottom  = event_images->top  + event_images->height + size_y;
     int extra_x = lround(state->box_extra_x * state->border_scale_x);
     int extra_y = lround(state->box_extra_y * state->border_scale_y);
-    left       -= extra_x;
-    right      += extra_x;
-    top        -= extra_y;
-    bottom     += extra_y;
-    left        = FFMINMAX(left,   0, render_priv->width);
-    top         = FFMINMAX(top,    0, render_priv->height);
-    right       = FFMINMAX(right,  0, render_priv->width);
-    bottom      = FFMINMAX(bottom, 0, render_priv->height);
+    fill_left       -= extra_x;
+    fill_right      += extra_x;
+    fill_top        -= extra_y;
+    fill_bottom     += extra_y;
+
+    ASS_Image *box_head = NULL;
+    ASS_Image **box_tail = &box_head;
+    ASS_ImageRGBA *box_rgba_head = NULL;
+    ASS_ImageRGBA **box_rgba_tail = &box_rgba_head;
+    ASS_ImageRGBA ***rgba_tail = rgba_head ? &box_rgba_tail : NULL;
+
+    BoxBorderRenderLayer layers[ASS_BORDER_LAYERS_MAX];
+    int n_layers = collect_box_border_render_layers(state, layers);
+    for (int i = n_layers - 1; i >= 0; i--) {
+        BoxBorderRenderLayer *layer = &layers[i];
+        int left, top, w, h;
+        unsigned char *mask = alloc_box_ring_mask(
+            state,
+            fill_left - layer->outer_x,
+            fill_top - layer->outer_y,
+            fill_right + layer->outer_x,
+            fill_bottom + layer->outer_y,
+            fill_left - layer->inner_x,
+            fill_top - layer->inner_y,
+            fill_right + layer->inner_x,
+            fill_bottom + layer->inner_y,
+            &left, &top, &w, &h);
+        if (!mask)
+            continue;
+        append_solid_mask_image(state, mask, w, h, left, top, layer->color,
+                                IMAGE_TYPE_OUTLINE, &box_tail, rgba_tail);
+    }
+
+    int left = FFMINMAX(fill_left, 0, render_priv->width);
+    int top = FFMINMAX(fill_top, 0, render_priv->height);
+    int right = FFMINMAX(fill_right, 0, render_priv->width);
+    int bottom = FFMINMAX(fill_bottom, 0, render_priv->height);
     int w = right - left;
     int h = bottom - top;
-    if (w < 1 || h < 1)
-        return;
-    void *nbuffer = ass_aligned_alloc(1, w * h, false);
-    if (!nbuffer)
-        return;
-    memset(nbuffer, 0xFF, w * h);
-    uint32_t clr = state->c[3];
-    ass_apply_fades(&clr, state->fade, state->fade_color);
-    ASS_Image *img = my_draw_bitmap(nbuffer, w, h, w, left, top,
-                                    clr, NULL);
-    if (img) {
-        img->next = event_images->imgs;
-        event_images->imgs = img;
+    unsigned char *mask = alloc_solid_mask(w, h);
+    if (mask) {
+        uint32_t clr = state->c[3];
+        ass_apply_fades(&clr, state->fade, state->fade_color);
+        append_solid_mask_image(state, mask, w, h, left, top, clr,
+                                IMAGE_TYPE_SHADOW, &box_tail, rgba_tail);
     }
-    if (rgba_head) {
-        uint8_t alpha = 255 - _a(clr);
-        ASS_ImageRGBA *rimg =
-            ass_rgba_image_alloc(render_priv, w, h, left, top,
-                                 IMAGE_TYPE_SHADOW);
-        if (rimg) {
-            int stride = rimg->stride;
-            uint8_t *rgba = rimg->rgba;
-            uint8_t pr = (uint8_t) ((_r(clr) * alpha + 127) / 255);
-            uint8_t pg = (uint8_t) ((_g(clr) * alpha + 127) / 255);
-            uint8_t pb = (uint8_t) ((_b(clr) * alpha + 127) / 255);
-            for (int y = 0; y < h; y++) {
-                uint8_t *row = rgba + y * stride;
-                for (int x = 0; x < w; x++) {
-                    row[4 * x + 0] = pr;
-                    row[4 * x + 1] = pg;
-                    row[4 * x + 2] = pb;
-                    row[4 * x + 3] = alpha;
-                }
-            }
-            rimg->next = *rgba_head;
-            *rgba_head = rimg;
-            event_images->imgs_rgba = rimg;
-        }
+
+    if (box_head) {
+        *box_tail = event_images->imgs;
+        event_images->imgs = box_head;
+    }
+    if (rgba_head && box_rgba_head) {
+        *box_rgba_tail = *rgba_head;
+        *rgba_head = box_rgba_head;
+        event_images->imgs_rgba = box_rgba_head;
     }
 }
 

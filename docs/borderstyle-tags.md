@@ -39,3 +39,6 @@ layer overrides them.
 layers are geometrically generated. When multi-border layers are enabled, each
 active outline layer uses the same geometric border mode and keeps the existing
 layer ordering.
+
+BorderStyle=4 box-border tags (`\bbs`, `\bbc`, `\bba`, and numbered forms)
+apply only to rectangular box rendering and are documented in `docs/box-tags.md`.

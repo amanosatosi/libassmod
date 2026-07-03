@@ -1,6 +1,7 @@
 libass (0.17.4)
  * add BorderStyle=5 / \bs5 Mangetsu geometric border mode
    with line-level \bs<N> override parsing
+ * add BorderStyle=4 box-border tags \bbs, \bbc, \bba and numbered variants
  * add new API to prune old events from memory
    * ass_prune_events for manual pruning
    * ass_configure_prune to set up automatic pruning
