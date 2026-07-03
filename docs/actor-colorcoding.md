@@ -88,6 +88,16 @@ disable only their matching true-gradient color source: for example, `\1c`
 clears `\1grd`, `\3c` clears `\3grd`/`\1bgrd`, and `\2bc` clears `\2bgrd`.
 Font/style changes and `\N` do not split an active Mangetsu gradient segment.
 
+Mangetsu true-gradient definitions can be animated with normal ASS `\t(...)`
+transforms. Angles use shortest-path interpolation, colors interpolate per RGB
+component, and gradients with different stop positions morph through the union
+of both stop lists. If a transform targets a gradient while the current channel
+is solid, libassmod synthesizes a source gradient using the target stop
+positions and the current solid color. Animated gradient resets such as
+`\t(\1grd())` are ignored safely; reset tags outside `\t` keep their normal
+behavior. This applies to Mangetsu `\grd`/`\bgrd` tags only, not to
+VSFilterMod-style `\vc`/`\bvc` gradients.
+
 ## Reset Behavior
 
 For each dialogue line, libassmod builds state in this order:

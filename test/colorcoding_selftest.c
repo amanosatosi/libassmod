@@ -219,21 +219,29 @@ static bool expect_same(ASS_Library *lib, ASS_Renderer *renderer,
     return true;
 }
 
-static bool render_mangetsu_debug_case(ASS_Library *lib, ASS_Renderer *renderer,
-                                       const char *dialogue,
-                                       MangetsuGradientDebugState *debug)
+static bool render_mangetsu_debug_case_at(ASS_Library *lib,
+                                          ASS_Renderer *renderer,
+                                          const char *dialogue, long long now,
+                                          MangetsuGradientDebugState *debug)
 {
     ASS_Track *track = read_case_track(lib, "", dialogue);
     if (!track)
         return false;
 
     int change = 0;
-    ass_render_frame(renderer, track, 0, &change);
+    ass_render_frame(renderer, track, now, &change);
     (void) change;
 
     *debug = renderer->mangetsu_gradient_debug;
     ass_free_track(track);
     return true;
+}
+
+static bool render_mangetsu_debug_case(ASS_Library *lib, ASS_Renderer *renderer,
+                                       const char *dialogue,
+                                       MangetsuGradientDebugState *debug)
+{
+    return render_mangetsu_debug_case_at(lib, renderer, dialogue, 0, debug);
 }
 
 static bool close_double(double a, double b)
@@ -262,6 +270,28 @@ static bool expect_one_mangetsu_segment(ASS_Library *lib,
 {
     MangetsuGradientDebugState debug;
     if (!render_mangetsu_debug_case(lib, renderer, dialogue, &debug) ||
+            debug.n_segments != 1 ||
+            !debug.segments[0].active ||
+            debug.segments[0].type != MANGETSU_GRADIENT_TYPE_LINEAR ||
+            debug.segments[0].n_stops != stops ||
+            !close_double(debug.segments[0].angle, angle)) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    if (debug_out)
+        *debug_out = debug;
+    return true;
+}
+
+static bool expect_one_mangetsu_segment_at(ASS_Library *lib,
+                                           ASS_Renderer *renderer,
+                                           const char *dialogue,
+                                           long long now, int stops,
+                                           double angle, const char *label,
+                                           MangetsuGradientDebugState *debug_out)
+{
+    MangetsuGradientDebugState debug;
+    if (!render_mangetsu_debug_case_at(lib, renderer, dialogue, now, &debug) ||
             debug.n_segments != 1 ||
             !debug.segments[0].active ||
             debug.segments[0].type != MANGETSU_GRADIENT_TYPE_LINEAR ||
@@ -515,6 +545,68 @@ int main(void)
         lib, renderer,
         "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)\\2bvc(&H000000&,&HFFFFFF&,&H000000&,&HFFFFFF&)}Border",
         0, "\\2bvc did not replace \\2bgrd as color source");
+
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1grd(90,&H000000&,&HFFFFFF&))}Anim",
+        500, 2, 45.0, "animated \\1grd angle did not interpolate",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1grd(0,&H000000&,50%,&H0000FF&,&HFFFFFF&))}Stops",
+        500, 3, 0.0, "animated \\1grd stop union did not parse",
+        &mangetsu_debug);
+    if (ok && !close_double(mangetsu_debug.segments[0].stops[1].offset, 0.5)) {
+        fprintf(stderr, "animated Mangetsu stop union offset was wrong\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\c&H000000&\\t(0,1000,\\1grd(0,&H000000&,&HFFFFFF&))}Solid",
+        500, 2, 0.0, "solid-to-\\1grd animation did not create a segment",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\bord8\\3grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\3grd(90,&H0000FF&,&HFFFFFF&))}Border",
+        500, 2, 45.0, "animated \\3grd border angle did not interpolate",
+        &mangetsu_debug);
+    if (ok && (mangetsu_debug.segments[0].target !=
+               MANGETSU_GRADIENT_TARGET_BORDER ||
+               mangetsu_debug.segments[0].layer != 0)) {
+        fprintf(stderr, "animated \\3grd target was not border layer 1\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\2bs8\\2bgrd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\2bgrd(90,&H0000FF&,&HFFFFFF&))}Border",
+        500, 2, 45.0, "animated \\2bgrd angle did not interpolate",
+        &mangetsu_debug);
+    if (ok && (mangetsu_debug.segments[0].target !=
+               MANGETSU_GRADIENT_TARGET_BORDER ||
+               mangetsu_debug.segments[0].layer != 1)) {
+        fprintf(stderr, "animated \\2bgrd target was not border layer 2\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\bord8\\3grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1bgrd(90,&HFFFFFF&,&H000000&))}Alias",
+        500, 2, 45.0, "animated \\3grd/\\1bgrd alias did not interpolate",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1grd(350,&H000000&,&HFFFFFF&)\\t(0,1000,\\1grd(10,&H000000&,&HFFFFFF&))}Angle",
+        500, 2, 0.0, "animated \\1grd angle did not use shortest path",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1grd())}Reset",
+        500, 2, 0.0, "animated \\1grd reset corrupted state",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1c&H0000FF&)}Solid",
+        500, 2, 0.0, "\\t(\\1c) corrupted active Mangetsu gradient",
+        NULL);
 
     ok &= expect_one_mangetsu_segment(
         lib, renderer,

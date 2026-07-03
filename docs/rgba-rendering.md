@@ -130,6 +130,25 @@ ass_free_images_rgba(rgba);
 - Mangetsu true-gradient segments span font changes and `\N`; they are sampled over the final active segment bounds.
 - Uniform color tags like `\c`, `\1c`/`\2c`/`...`, and `\Nbc` reset the matching true-gradient color source. Existing `\vc`/`\bvc` color gradients remain separate; whichever matching color-gradient tag appears later wins.
 
+## Mangetsu true-gradient transforms
+
+Mangetsu `\grd` and `\bgrd` tags can be animated inside normal ASS `\t(...)`
+forms:
+
+```ass
+{\1grd(0,&H000000&,&HFFFFFF&)\t(0,1000,\1grd(90,&H000000&,&HFFFFFF&))}Text
+```
+
+The transform uses the same progress value, timing, and acceleration handling
+as other transformable ASS tags. The gradient remains attached to the subtitle
+object and keeps one segment across font changes and `\N`.
+
+- Angles interpolate along the shortest path, so `350` to `10` passes through `0`.
+- Stop lists with different positions are merged for the current frame; source and target colors are sampled at the merged stops and then interpolated.
+- If the source is solid color, a temporary source gradient is synthesized from the target stop positions with every stop using the current solid color.
+- `\3grd(...)` and `\1bgrd(...)` remain aliases inside `\t`.
+- Animated gradient resets such as `\t(\1grd())` and `\t(\2bgrd0)` are ignored safely. Gradient-to-solid animation through `\t(\c...)` is not implemented.
+
 Use the RGBA API to preserve gradient interpolation.
 
 ## `\img` tags
