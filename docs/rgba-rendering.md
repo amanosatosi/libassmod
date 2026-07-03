@@ -6,16 +6,19 @@ title: RGBA Rendering Guide
 
 Vector gradients (`\1vc`..`\4vc` for four corner colors,
 `\1va`..`\4va` for corner alpha) and Mangetsu true gradients
-(`\1grd`..`\5grd`, `\1bgrd`..`\10bgrd`) rely on per-pixel color or alpha.
-They cannot be reproduced with the legacy `ASS_Image` output. `ASS_Image`
-nodes are one-byte alpha masks with a single uniform RGBA color; they do not
-encode the interpolation that gradient tags describe.
+(`\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`,
+`\1bga`..`\10bga`) rely on per-pixel color or alpha. They cannot be
+reproduced with the legacy `ASS_Image` output. `ASS_Image` nodes are one-byte
+alpha masks with a single uniform RGBA color; they do not encode the
+interpolation that gradient tags describe.
 
 Use the RGBA rendering API whenever a subtitle contains these gradient tags or
 your own feature detection says a frame needs RGBA. Examples like
 `\1vc(&H00FFFF&, &HFFFF00&, &HFF00FF&, &H000000&)` draw a four-corner
 bilinear fill, while `\1grd(0,&H000000&,&HFFFFFF&)` draws a Mangetsu linear
-true gradient with attached segment bounds.
+true color gradient with attached segment bounds and
+`\1gra(0,&H00&,&HFF&)` draws a matching opaque-to-transparent true alpha
+gradient.
 
 ## API overview
 
@@ -116,7 +119,7 @@ ass_free_images_rgba(rgba);
 ## Auto-switch suggestions
 
 - Always call `ass_render_frame_rgba` and composite the premultiplied tiles in order; the routine will still populate the legacy `ASS_Image` list, so you can keep both for compatibility.
-- Alternatively, inspect the subtitle text for `\1vc`..`\4vc`, `\1va`..`\4va`, `\1grd`..`\5grd`, or `\1bgrd`..`\10bgrd` before rendering and only use RGBA when present.
+- Alternatively, inspect the subtitle text for `\1vc`..`\4vc`, `\1va`..`\4va`, `\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`, or `\1bga`..`\10bga` before rendering and only use RGBA when present.
 - If your app already calls `ass_render_frame`, use `ass_frame_needs_rgba(renderer)` or the new `ASS_RenderResult` wrapper to decide whether to render again with `ass_render_frame_rgba`.
 - For a single-call path, use `ass_render_frame_compat()` and then `ass_render_result_free()` to free any RGBA list. This keeps legacy output intact while enabling gradients when needed.
 
@@ -126,17 +129,21 @@ ass_free_images_rgba(rgba);
 - `\1va(&HAA&, &HAA&, &HAA&, &HAA&)` - per-corner alpha overrides.
 - `\1grd(angle,&HBBGGRR&,&HBBGGRR&)` through `\5grd(...)` - Mangetsu attached linear true gradients with percentage stops.
 - `\1bgrd(...)` through `\10bgrd(...)` - Mangetsu true-gradient colors for native border layers. `\3grd(...)` is the layer-1 border alias.
+- `\1gra(angle,&HAA&,&HAA&)` through `\5gra(...)` - Mangetsu attached linear true alpha gradients with percentage stops. ASS alpha is inverse opacity: `&H00&` is opaque and `&HFF&` is transparent.
+- `\1bga(...)` through `\10bga(...)` - Mangetsu true-gradient alpha for native border layers. `\3gra(...)` is the layer-1 border-alpha alias.
 - `\1vc`/`\1va` gradients are blended per line box (`\N` or wrapping resets the coordinates).
 - Mangetsu true-gradient segments span font changes and `\N`; they are sampled over the final active segment bounds.
 - Uniform color tags like `\c`, `\1c`/`\2c`/`...`, and `\Nbc` reset the matching true-gradient color source. Existing `\vc`/`\bvc` color gradients remain separate; whichever matching color-gradient tag appears later wins.
+- Uniform alpha tags like `\alpha`, `\1a`/`\2a`/`...`, and `\Nba` reset the matching true-gradient alpha source. Existing `\va`/`\bva` vector alpha gradients remain separate; whichever matching alpha-gradient tag appears later wins.
 
 ## Mangetsu true-gradient transforms
 
-Mangetsu `\grd` and `\bgrd` tags can be animated inside normal ASS `\t(...)`
-forms:
+Mangetsu `\grd`, `\bgrd`, `\gra`, and `\bga` tags can be animated inside
+normal ASS `\t(...)` forms:
 
 ```ass
 {\1grd(0,&H000000&,&HFFFFFF&)\t(0,1000,\1grd(90,&H000000&,&HFFFFFF&))}Text
+{\1gra(0,&H00&,&HFF&)\t(0,1000,\1gra(90,&H00&,&HFF&))}Text
 ```
 
 The transform uses the same progress value, timing, and acceleration handling
@@ -144,10 +151,11 @@ as other transformable ASS tags. The gradient remains attached to the subtitle
 object and keeps one segment across font changes and `\N`.
 
 - Angles interpolate along the shortest path, so `350` to `10` passes through `0`.
-- Stop lists with different positions are merged for the current frame; source and target colors are sampled at the merged stops and then interpolated.
-- If the source is solid color, a temporary source gradient is synthesized from the target stop positions with every stop using the current solid color.
-- `\3grd(...)` and `\1bgrd(...)` remain aliases inside `\t`.
-- Animated gradient resets such as `\t(\1grd())` and `\t(\2bgrd0)` are ignored safely. Gradient-to-solid animation through `\t(\c...)` is not implemented.
+- Stop lists with different positions are merged for the current frame; source and target values are sampled at the merged stops and then interpolated.
+- Color gradients interpolate RGB components. Alpha gradients interpolate ASS alpha bytes numerically, without converting them to opacity.
+- If the source is solid, a temporary source gradient is synthesized from the target stop positions with every stop using the current solid color or alpha value.
+- `\3grd(...)`/`\1bgrd(...)` and `\3gra(...)`/`\1bga(...)` remain aliases inside `\t`.
+- Animated gradient resets such as `\t(\1grd())`, `\t(\2bgrd0)`, `\t(\1gra())`, and `\t(\2bga0)` are ignored safely. Gradient-to-solid animation through `\t(\c...)` or `\t(\1a...)` is not implemented.
 
 Use the RGBA API to preserve gradient interpolation.
 

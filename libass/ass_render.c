@@ -594,6 +594,11 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     const MangetsuGradientLayer *mangetsu = layer < MANGETSU_GRADIENT_LAYERS ?
         &info->mangetsu_gradient.layer[layer] : NULL;
     bool use_mangetsu = mangetsu && mangetsu->active && mangetsu->rect.valid;
+    const MangetsuGradientLayer *mangetsu_alpha =
+        layer < MANGETSU_GRADIENT_LAYERS ?
+            &info->mangetsu_gradient.alpha[layer] : NULL;
+    bool use_mangetsu_alpha = mangetsu_alpha &&
+        mangetsu_alpha->active && mangetsu_alpha->rect.valid;
     const ImageFillLayer *image_fill = &info->image_fill.layer[layer];
     const ASS_TagImageEntry *tag_image = NULL;
     if (image_fill->enabled)
@@ -758,8 +763,13 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                     ass_gradient_sample_color_fixed(vals, uf, vf) :
                     base_color);
             ass_apply_fade_color(&color, info->fade_color);
-            uint8_t alpha = (vals->alpha_enabled) ?
-                ass_gradient_sample_alpha_fixed(vals, uf, vf) : base_alpha;
+            uint8_t alpha = use_mangetsu_alpha ?
+                ass_mangetsu_gradient_sample_alpha(mangetsu_alpha,
+                                                   dst_x + x + 0.5,
+                                                   dst_y + y + 0.5) :
+                (vals->alpha_enabled ?
+                    ass_gradient_sample_alpha_fixed(vals, uf, vf) :
+                    base_alpha);
             if (fade > 0)
                 alpha = mult_alpha(alpha, fade);
             uint8_t A = (uint8_t) ((cov * (255 - alpha)) / 255);
@@ -1131,21 +1141,30 @@ static ASS_Image **render_border_layer(RenderContext *state,
 
     if (layer == 0) {
         MangetsuGradientLayer saved_mangetsu = info->mangetsu_gradient.layer[2];
+        MangetsuGradientLayer saved_mangetsu_alpha =
+            info->mangetsu_gradient.alpha[2];
         info->mangetsu_gradient.layer[2] = info->mangetsu_gradient.border[0];
+        info->mangetsu_gradient.alpha[2] =
+            info->mangetsu_gradient.border_alpha[0];
         tail = render_glyph(state, info, bm, info->x, info->y, info->c[2],
                             0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
                             2, 2, rgba_tail);
         info->mangetsu_gradient.layer[2] = saved_mangetsu;
+        info->mangetsu_gradient.alpha[2] = saved_mangetsu_alpha;
         return tail;
     }
 
     uint32_t saved_base = info->base_c[2];
     GradientValues saved_gradient = info->gradient.layer[2];
     MangetsuGradientLayer saved_mangetsu = info->mangetsu_gradient.layer[2];
+    MangetsuGradientLayer saved_mangetsu_alpha =
+        info->mangetsu_gradient.alpha[2];
     ImageFillLayer saved_image = info->image_fill.layer[2];
     info->base_c[2] = info->border_layers[layer].color;
     info->gradient.layer[2] = info->border_layers[layer].gradient;
     info->mangetsu_gradient.layer[2] = info->mangetsu_gradient.border[layer];
+    info->mangetsu_gradient.alpha[2] =
+        info->mangetsu_gradient.border_alpha[layer];
     clear_image_fill_layer(&info->image_fill.layer[2]);
 
     uint32_t color = info->border_layers[layer].color;
@@ -1158,6 +1177,7 @@ static ASS_Image **render_border_layer(RenderContext *state,
     info->base_c[2] = saved_base;
     info->gradient.layer[2] = saved_gradient;
     info->mangetsu_gradient.layer[2] = saved_mangetsu;
+    info->mangetsu_gradient.alpha[2] = saved_mangetsu_alpha;
     info->image_fill.layer[2] = saved_image;
     return tail;
 }
@@ -2640,8 +2660,14 @@ static void apply_column_default_style(RenderContext *state,
             state->c[i] = (state->c[i] & 0xFFFFFF00) | _a(style->c[i]);
             ass_gradient_disable_alpha(&state->gradient, i,
                                        _a(state->c[i]), 1);
-            if (i == 2)
+            if (i == 2) {
+                ass_mangetsu_gradient_layer_reset(
+                    &state->mangetsu_gradient.border_alpha[0]);
                 sync_border = true;
+            } else {
+                ass_mangetsu_gradient_layer_reset(
+                    &state->mangetsu_gradient.alpha[i]);
+            }
         }
     }
 
@@ -2653,6 +2679,7 @@ static void apply_column_default_style(RenderContext *state,
     if (fields & COLUMN_STYLE_DECORATION_ALPHA) {
         state->decoration_alpha_set = style->decoration_alpha_set;
         state->decoration_alpha = style->decoration_alpha;
+        ass_mangetsu_gradient_layer_reset(&state->mangetsu_gradient.alpha[4]);
     }
     if (fields & COLUMN_STYLE_BORDER_X) {
         state->border_x = style->border_x;
@@ -4289,7 +4316,8 @@ static bool append_glyph_to_target(RenderContext *state,
     info->has_custom_decoration =
         decoration_flags && (state->decoration_color_set ||
                              state->decoration_alpha_set ||
-                             state->mangetsu_gradient.layer[4].active);
+                             state->mangetsu_gradient.layer[4].active ||
+                             state->mangetsu_gradient.alpha[4].active);
     if (info->has_custom_decoration) {
         info->decoration_flags = decoration_flags | (info->flags & DECO_ROTATE);
         memcpy(info->decoration_c, info->c, sizeof(info->decoration_c));
@@ -6044,6 +6072,16 @@ static MangetsuGradientLayer *mangetsu_gradient_layer_at(
             return NULL;
         return &state->border[layer];
     }
+    if (target == MANGETSU_GRADIENT_TARGET_BORDER_ALPHA) {
+        if (layer < 0 || layer >= MANGETSU_GRADIENT_BORDER_LAYERS)
+            return NULL;
+        return &state->border_alpha[layer];
+    }
+    if (target == MANGETSU_GRADIENT_TARGET_ALPHA) {
+        if (layer < 0 || layer >= MANGETSU_GRADIENT_LAYERS)
+            return NULL;
+        return &state->alpha[layer];
+    }
 
     if (layer < 0 || layer >= MANGETSU_GRADIENT_LAYERS)
         return NULL;
@@ -6057,6 +6095,16 @@ static const MangetsuGradientLayer *mangetsu_gradient_const_layer_at(
         if (layer < 0 || layer >= MANGETSU_GRADIENT_BORDER_LAYERS)
             return NULL;
         return &state->border[layer];
+    }
+    if (target == MANGETSU_GRADIENT_TARGET_BORDER_ALPHA) {
+        if (layer < 0 || layer >= MANGETSU_GRADIENT_BORDER_LAYERS)
+            return NULL;
+        return &state->border_alpha[layer];
+    }
+    if (target == MANGETSU_GRADIENT_TARGET_ALPHA) {
+        if (layer < 0 || layer >= MANGETSU_GRADIENT_LAYERS)
+            return NULL;
+        return &state->alpha[layer];
     }
 
     if (layer < 0 || layer >= MANGETSU_GRADIENT_LAYERS)
@@ -6109,6 +6157,12 @@ static void compute_mangetsu_gradient_rects(RenderContext *state)
     for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
         compute_mangetsu_gradient_rect_for_layer(
             text_info, MANGETSU_GRADIENT_TARGET_BORDER, layer);
+    for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
+        compute_mangetsu_gradient_rect_for_layer(
+            text_info, MANGETSU_GRADIENT_TARGET_ALPHA, layer);
+    for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
+        compute_mangetsu_gradient_rect_for_layer(
+            text_info, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
 }
 
 static MangetsuGradientDebugSegment *find_mangetsu_debug_segment(
@@ -6166,6 +6220,12 @@ static void collect_mangetsu_gradient_debug(RenderContext *state)
     for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
         collect_mangetsu_gradient_debug_for_layer(
             text_info, debug, MANGETSU_GRADIENT_TARGET_BORDER, layer);
+    for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
+        collect_mangetsu_gradient_debug_for_layer(
+            text_info, debug, MANGETSU_GRADIENT_TARGET_ALPHA, layer);
+    for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
+        collect_mangetsu_gradient_debug_for_layer(
+            text_info, debug, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
 }
 
 static bool text_needs_rgba(const TextInfo *text_info)
@@ -6189,8 +6249,12 @@ static bool text_needs_rgba(const TextInfo *text_info)
                 return true;
             if (info->mangetsu_gradient.layer[layer].active)
                 return true;
+            if (info->mangetsu_gradient.alpha[layer].active)
+                return true;
         }
         if (info->bm_o && info->mangetsu_gradient.border[0].active)
+            return true;
+        if (info->bm_o && info->mangetsu_gradient.border_alpha[0].active)
             return true;
         for (int layer = 1; layer < ASS_BORDER_LAYERS_MAX; layer++) {
             if (!info->bm_border[layer - 1])
@@ -6199,6 +6263,8 @@ static bool text_needs_rgba(const TextInfo *text_info)
             if (vals->color_enabled || vals->alpha_enabled)
                 return true;
             if (info->mangetsu_gradient.border[layer].active)
+                return true;
+            if (info->mangetsu_gradient.border_alpha[layer].active)
                 return true;
         }
     }
@@ -6411,9 +6477,13 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     memcpy(deco.c, info->decoration_c, sizeof(deco.c));
     MangetsuGradientLayer decoration_gradient =
         deco.mangetsu_gradient.layer[4];
+    MangetsuGradientLayer decoration_alpha_gradient =
+        deco.mangetsu_gradient.alpha[4];
     ass_mangetsu_gradient_state_reset(&deco.mangetsu_gradient);
     if (decoration_gradient.active)
         deco.mangetsu_gradient.layer[0] = decoration_gradient;
+    if (decoration_alpha_gradient.active)
+        deco.mangetsu_gradient.alpha[0] = decoration_alpha_gradient;
     deco.outline = NULL;
     deco.distorted_outline = NULL;
     deco.has_distort_bitmap = false;

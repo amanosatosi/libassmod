@@ -39,6 +39,8 @@
 typedef enum {
     MANGETSU_GRADIENT_TARGET_COLOR = 0,
     MANGETSU_GRADIENT_TARGET_BORDER = 1,
+    MANGETSU_GRADIENT_TARGET_ALPHA = 2,
+    MANGETSU_GRADIENT_TARGET_BORDER_ALPHA = 3,
 } MangetsuGradientTarget;
 
 typedef struct {
@@ -79,6 +81,8 @@ typedef struct {
 typedef struct {
     MangetsuGradientLayer layer[MANGETSU_GRADIENT_LAYERS];
     MangetsuGradientLayer border[MANGETSU_GRADIENT_BORDER_LAYERS];
+    MangetsuGradientLayer alpha[MANGETSU_GRADIENT_LAYERS];
+    MangetsuGradientLayer border_alpha[MANGETSU_GRADIENT_BORDER_LAYERS];
 } MangetsuGradientState;
 
 typedef struct {
@@ -130,5 +134,7 @@ bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
                                        const MangetsuGradientState *b);
 uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
                                             double x, double y);
+uint8_t ass_mangetsu_gradient_sample_alpha(const MangetsuGradientLayer *layer,
+                                           double x, double y);
 
 #endif /* LIBASS_GRADIENT_H */

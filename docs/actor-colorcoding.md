@@ -64,11 +64,13 @@ These appearance tags are supported in colorcoding metadata:
 \shad \xshad \yshad
 \blur \be
 \c \1c \2c \3c \4c \5c
-\alpha \1a \2a \3a \4a
+\alpha \1a \2a \3a \4a \5a
 \1grd(...)..\5grd(...)
+\1gra(...)..\5gra(...)
 \1bs..\10bs \1bsx..\10bsx \1bsy..\10bsy
 \1bc..\10bc \1ba..\10ba
 \1bgrd(..)..\10bgrd(..)
+\1bga(..)..\10bga(..)
 \1bvc(..)..\10bvc(..)
 \1bva(..)..\10bva(..)
 ```
@@ -77,26 +79,37 @@ Forbidden, unknown, layout, timing, drawing, transition, clipping, karaoke, and
 motion tags are ignored inside colorcoding blocks. For example, in
 `{\1c&HFFB6D9&\pos(100,100)}`, the color is applied and `\pos` is ignored.
 
-`\1grd(angle,color0,color1)` through `\5grd(...)` and
-`\1bgrd(...)` through `\10bgrd(...)` are Mangetsu true gradients with
-angle control and percentage stops. They are separate from VSFilterMod-style
-four-corner `\vc`/`\bvc` gradients.
+`\1grd(angle,color0,color1)` through `\5grd(...)`,
+`\1gra(angle,alpha0,alpha1)` through `\5gra(...)`, and their border-layer
+forms `\1bgrd(...)` through `\10bgrd(...)` and `\1bga(...)` through
+`\10bga(...)` are Mangetsu true gradients with angle control and percentage
+stops. Color gradients use ASS BGR values such as `&HBBGGRR&`. Alpha gradients
+use ASS alpha bytes such as `&HAA&`, where `&H00&` is opaque and `&HFF&` is
+transparent. Stop positions still use percentages, and duplicate colors or
+alpha values are preserved to create flat zones.
 
-`\3grd(...)` is an alias for `\1bgrd(...)`. Resets such as `\2grd()` and
-`\2bgrd0` disable only the matching channel or border layer. Solid color tags
-disable only their matching true-gradient color source: for example, `\1c`
-clears `\1grd`, `\3c` clears `\3grd`/`\1bgrd`, and `\2bc` clears `\2bgrd`.
-Font/style changes and `\N` do not split an active Mangetsu gradient segment.
+`\3grd(...)` is an alias for `\1bgrd(...)`; `\3gra(...)` is an alias for
+`\1bga(...)`. Resets such as `\2grd()`, `\2gra0`, and `\2bga()` disable only
+the matching channel or border layer. Solid color tags disable only their
+matching true-gradient color source: for example, `\1c` clears `\1grd`,
+`\3c` clears `\3grd`/`\1bgrd`, and `\2bc` clears `\2bgrd`. Solid alpha tags
+disable only their matching true-gradient alpha source: for example, `\1a`
+clears `\1gra`, `\3a` clears `\3gra`/`\1bga`, and `\2ba` clears `\2bga`.
+`\alpha` clears the active alpha-gradient channels affected by normal global
+alpha behavior. Font/style changes and `\N` do not split an active Mangetsu
+gradient segment.
 
 Mangetsu true-gradient definitions can be animated with normal ASS `\t(...)`
 transforms. Angles use shortest-path interpolation, colors interpolate per RGB
-component, and gradients with different stop positions morph through the union
-of both stop lists. If a transform targets a gradient while the current channel
-is solid, libassmod synthesizes a source gradient using the target stop
-positions and the current solid color. Animated gradient resets such as
-`\t(\1grd())` are ignored safely; reset tags outside `\t` keep their normal
-behavior. This applies to Mangetsu `\grd`/`\bgrd` tags only, not to
-VSFilterMod-style `\vc`/`\bvc` gradients.
+component, alpha gradients interpolate ASS alpha bytes numerically, and
+gradients with different stop positions morph through the union of both stop
+lists. If a transform targets a gradient while the current channel is solid,
+libassmod synthesizes a source gradient using the target stop positions and the
+current solid color or alpha value. Animated gradient resets such as
+`\t(\1grd())` and `\t(\1gra0)` are ignored safely; reset tags outside `\t`
+keep their normal behavior. This applies to Mangetsu `\grd`/`\bgrd` and
+`\gra`/`\bga` tags only, not to VSFilterMod-style `\vc`/`\bvc`/`\va`/`\bva`
+gradients.
 
 ## Reset Behavior
 
@@ -126,6 +139,12 @@ inheritance is preserved:
 - `\2bs5\2bc&H402030&\2ba&H60&` enables layer 2 with explicit color and alpha
 - `\Nbc` and `\Nba` set flat values and disable that layer's matching gradient
 - `\Nbgrd(...)` sets that layer's Mangetsu true-gradient color source
+- `\Nbga(...)` sets that layer's Mangetsu true-gradient alpha source
 - `\Nbvc(...)` and `\Nbva(...)` keep their existing four-corner gradient meaning
 - `\3a` uses normal mangetsu semantics and applies alpha to all native border
   layers without enabling extra layers or changing sizes
+
+`\Nbva(...)` remains the existing four-corner/vector alpha-gradient tag.
+`\Nbga(...)` is the Mangetsu true alpha-gradient tag with angle and percentage
+stops. If both are used on the same border layer, the later tag wins for that
+layer's alpha source.

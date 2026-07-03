@@ -278,6 +278,13 @@ bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
     for (int i = 0; i < MANGETSU_GRADIENT_BORDER_LAYERS; i++)
         if (!mangetsu_gradient_layer_equal(&a->border[i], &b->border[i]))
             return false;
+    for (int i = 0; i < MANGETSU_GRADIENT_LAYERS; i++)
+        if (!mangetsu_gradient_layer_equal(&a->alpha[i], &b->alpha[i]))
+            return false;
+    for (int i = 0; i < MANGETSU_GRADIENT_BORDER_LAYERS; i++)
+        if (!mangetsu_gradient_layer_equal(&a->border_alpha[i],
+                                           &b->border_alpha[i]))
+            return false;
     return true;
 }
 
@@ -297,14 +304,12 @@ static double mangetsu_project(double x, double y, double dx, double dy)
     return x * dx + y * dy;
 }
 
-uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
-                                            double x, double y)
+static double mangetsu_gradient_position(const MangetsuGradientLayer *layer,
+                                         double x, double y)
 {
-    if (!layer || !layer->active || layer->n_stops <= 0)
-        return 0;
     if (!layer->rect.valid || layer->rect.x1 <= layer->rect.x0 ||
             layer->rect.y1 <= layer->rect.y0)
-        return layer->stops[0].color;
+        return 0.0;
 
     double radians = layer->angle * MANGETSU_GRADIENT_PI / 180.0;
     double dx = cos(radians);
@@ -319,7 +324,16 @@ uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
     double span = p_max - p_min;
     double t = span > 0.0 ?
         (mangetsu_project(x, y, dx, dy) - p_min) / span : 0.0;
-    t = clamp01(t);
+    return clamp01(t);
+}
+
+uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
+                                            double x, double y)
+{
+    if (!layer || !layer->active || layer->n_stops <= 0)
+        return 0;
+
+    double t = mangetsu_gradient_position(layer, x, y);
 
     if (t <= layer->stops[0].offset)
         return layer->stops[0].color;
@@ -337,4 +351,30 @@ uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
     }
 
     return layer->stops[layer->n_stops - 1].color;
+}
+
+uint8_t ass_mangetsu_gradient_sample_alpha(const MangetsuGradientLayer *layer,
+                                           double x, double y)
+{
+    if (!layer || !layer->active || layer->n_stops <= 0)
+        return 0;
+
+    double t = mangetsu_gradient_position(layer, x, y);
+
+    if (t <= layer->stops[0].offset)
+        return (uint8_t) layer->stops[0].color;
+
+    for (int i = 1; i < layer->n_stops; i++) {
+        const MangetsuGradientStop *prev = &layer->stops[i - 1];
+        const MangetsuGradientStop *next = &layer->stops[i];
+        if (t > next->offset)
+            continue;
+        double stop_span = next->offset - prev->offset;
+        if (stop_span <= 0.0)
+            return (uint8_t) next->color;
+        return mix_byte((uint8_t) prev->color, (uint8_t) next->color,
+                        (t - prev->offset) / stop_span);
+    }
+
+    return (uint8_t) layer->stops[layer->n_stops - 1].color;
 }

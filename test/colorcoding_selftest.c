@@ -512,6 +512,43 @@ int main(void)
         "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)}Border",
         MANGETSU_GRADIENT_TARGET_BORDER, 1,
         "\\2bgrd did not map to border layer 2");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)}Alpha",
+        MANGETSU_GRADIENT_TARGET_ALPHA, 0,
+        "\\1gra did not map to primary alpha");
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1gra(90,&HFF&,40%,&H80&,&H00&)}AlphaMulti",
+        3, 90.0, "multi-stop Mangetsu alpha gradient did not parse",
+        &mangetsu_debug);
+    if (ok && !close_double(mangetsu_debug.segments[0].stops[1].offset, 0.4)) {
+        fprintf(stderr, "multi-stop Mangetsu alpha gradient percentage was wrong\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1gra(0,&HFF&,30%,&HFF&,45%,&H00&,70%,&H00&,85%,&HFF&,&HFF&)}AlphaDuplicate",
+        6, 0.0, "duplicate-alpha Mangetsu gradient did not parse",
+        &mangetsu_debug);
+    if (ok && (mangetsu_debug.segments[0].stops[0].color !=
+               mangetsu_debug.segments[0].stops[1].color ||
+               mangetsu_debug.segments[0].stops[2].color !=
+               mangetsu_debug.segments[0].stops[3].color ||
+               !close_double(mangetsu_debug.segments[0].stops[1].offset, 0.3))) {
+        fprintf(stderr, "duplicate Mangetsu alpha gradient stops were not preserved\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\bord8\\3gra(0,&H00&,&HFF&)}BorderAlpha",
+        MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, 0,
+        "\\3gra did not map to border layer 1 alpha");
+    ok &= expect_one_mangetsu_target(
+        lib, renderer,
+        "{\\2bs7\\2bga(0,&H00&,&HFF&)}BorderAlpha",
+        MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, 1,
+        "\\2bga did not map to border layer 2 alpha");
 
     ok &= expect_mangetsu_segments(
         lib, renderer,
@@ -545,6 +582,42 @@ int main(void)
         lib, renderer,
         "{\\2bs7\\2bgrd(0,&H000000&,&HFFFFFF&)\\2bvc(&H000000&,&HFFFFFF&,&H000000&,&HFFFFFF&)}Border",
         0, "\\2bvc did not replace \\2bgrd as color source");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\1gra()}Reset",
+        0, "empty Mangetsu alpha gradient reset did not disable state");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\1gra0}Reset",
+        0, "zero Mangetsu alpha gradient reset did not disable state");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\1a&H80&}Flat",
+        0, "\\1a did not disable \\1gra");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\1c&H00FF00&}Color",
+        1, "\\1c incorrectly disabled \\1gra");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\1gra(0,&H00&,&HFF&)\\1grd()}Alpha",
+        1, "\\1grd reset incorrectly disabled \\1gra");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\3gra(0,&H00&,&HFF&)\\alpha&H80&}Flat",
+        0, "\\alpha did not disable active Mangetsu alpha gradients");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2bs7\\2bga(0,&H00&,&HFF&)\\1ba&H80&}Border",
+        1, "\\1ba incorrectly disabled \\2bga");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2bs7\\2bga(0,&H00&,&HFF&)\\2ba&H80&}Border",
+        0, "\\2ba did not disable \\2bga");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\2bs7\\2bga(0,&H00&,&HFF&)\\2bva(&H00&,&H80&,&H00&,&H80&)}Border",
+        0, "\\2bva did not replace \\2bga as alpha source");
 
     ok &= expect_one_mangetsu_segment_at(
         lib, renderer,
@@ -607,6 +680,57 @@ int main(void)
         "{\\1grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1c&H0000FF&)}Solid",
         500, 2, 0.0, "\\t(\\1c) corrupted active Mangetsu gradient",
         NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\t(0,1000,\\1gra(90,&H00&,&HFF&))}Alpha",
+        500, 2, 45.0, "animated \\1gra angle did not interpolate",
+        &mangetsu_debug);
+    if (ok && (mangetsu_debug.segments[0].target !=
+               MANGETSU_GRADIENT_TARGET_ALPHA ||
+               mangetsu_debug.segments[0].layer != 0)) {
+        fprintf(stderr, "animated \\1gra target was not primary alpha\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\t(0,1000,\\1gra(0,&H00&,50%,&HFF&,&H00&))}AlphaStops",
+        500, 3, 0.0, "animated \\1gra stop union did not parse",
+        &mangetsu_debug);
+    if (ok && !close_double(mangetsu_debug.segments[0].stops[1].offset, 0.5)) {
+        fprintf(stderr, "animated Mangetsu alpha stop union offset was wrong\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1a&H00&\\t(0,1000,\\1gra(0,&H00&,&HFF&))}SolidAlpha",
+        500, 2, 0.0, "solid-to-\\1gra animation did not create a segment",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\2bs8\\2bga(0,&H00&,&HFF&)\\t(0,1000,\\2bga(90,&HFF&,&H00&))}BorderAlpha",
+        500, 2, 45.0, "animated \\2bga angle did not interpolate",
+        &mangetsu_debug);
+    if (ok && (mangetsu_debug.segments[0].target !=
+               MANGETSU_GRADIENT_TARGET_BORDER_ALPHA ||
+               mangetsu_debug.segments[0].layer != 1)) {
+        fprintf(stderr, "animated \\2bga target was not border layer 2 alpha\n");
+        ok = false;
+    }
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\bord8\\3gra(0,&H00&,&HFF&)\\t(0,1000,\\1bga(90,&HFF&,&H00&))}AliasAlpha",
+        500, 2, 45.0, "animated \\3gra/\\1bga alias did not interpolate",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\t(0,1000,\\1gra())}AlphaReset",
+        500, 2, 0.0, "animated \\1gra reset corrupted state",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)\\t(0,1000,\\1a&H80&)}AlphaSolid",
+        500, 2, 0.0, "\\t(\\1a) corrupted active Mangetsu alpha gradient",
+        NULL);
 
     ok &= expect_one_mangetsu_segment(
         lib, renderer,
@@ -623,6 +747,16 @@ int main(void)
         "{\\1grd(90,&HFFFFFF&,&H000000&)}TOP\\NBOTTOM",
         2, 90.0, "\\N split Mangetsu gradient segment",
         NULL);
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1gra(90,&H00&,&HFF&)}TOP\\NBOTTOM",
+        2, 90.0, "\\N split Mangetsu alpha gradient segment",
+        NULL);
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\1gra(0,&H00&,&HFF&)}A{\\fnArial}B{\\fs80}C",
+        2, 0.0, "font changes split Mangetsu alpha gradient segment",
+        NULL);
 
     ok &= expect_one_mangetsu_segment(
         lib, renderer,
@@ -633,6 +767,10 @@ int main(void)
         lib, renderer,
         "{\\1grd(,&H000000&,&HFFFFFF&)}Malformed",
         0, "malformed Mangetsu gradient did not get ignored safely");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(,&H00&,&HFF&)}Malformed",
+        0, "malformed Mangetsu alpha gradient did not get ignored safely");
 
     RgbaSig grd_border, bgrd_border;
     ok &= render_rgba_case(
