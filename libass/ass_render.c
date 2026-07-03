@@ -2262,6 +2262,122 @@ static void apply_actor_colorcoding(RenderContext *state,
     apply_colorcode_text(state, actor->Text);
 }
 
+static bool border_style_tag_value_valid(int32_t value)
+{
+    return value == 1 || value == 3 || value == 4 || value == 5;
+}
+
+static bool parse_border_style_tag_value(char *start, char *end,
+                                         int *border_style)
+{
+    int32_t value;
+    skip_spaces(&start);
+    rskip_spaces(&end, start);
+    if (start >= end || !mystrtoi32(&start, 10, &value))
+        return false;
+    skip_spaces(&start);
+    if (start != end || !border_style_tag_value_valid(value))
+        return false;
+    *border_style = value;
+    return true;
+}
+
+static char *skip_parenthesized_tag_args(char *p, char *end)
+{
+    if (p >= end || *p != '(')
+        return p;
+
+    int depth = 1;
+    p++;
+    while (p < end && depth > 0) {
+        if (*p == '(')
+            depth++;
+        else if (*p == ')')
+            depth--;
+        p++;
+    }
+    return p;
+}
+
+static bool scan_border_style_override_block(RenderContext *state,
+                                             char *p, char *end)
+{
+    while (p < end) {
+        while (p < end && *p != '\\')
+            p++;
+        if (p >= end)
+            return false;
+
+        p++;
+        skip_spaces(&p);
+        char *name = p;
+        while (p < end && *p != '\\' && *p != '(')
+            p++;
+        char *name_end = p;
+
+        bool bs_tag = name_end - name >= 2 &&
+                      name[0] == 'b' && name[1] == 's';
+        if (bs_tag) {
+            int border_style;
+            if (parse_border_style_tag_value(name + 2, name_end,
+                                             &border_style)) {
+                state->line_border_style_set = true;
+                state->line_border_style = border_style;
+                state->parsed_tags |= PARSED_BORDER_STYLE;
+                return true;
+            }
+
+            if (p < end && *p == '(') {
+                char *arg_start = p + 1;
+                char *arg_end = skip_parenthesized_tag_args(p, end);
+                char *value_end = arg_end > arg_start &&
+                                  arg_end[-1] == ')' ? arg_end - 1 : arg_end;
+                if (parse_border_style_tag_value(arg_start, value_end,
+                                                 &border_style)) {
+                    state->line_border_style_set = true;
+                    state->line_border_style = border_style;
+                    state->parsed_tags |= PARSED_BORDER_STYLE;
+                    return true;
+                }
+            }
+        }
+
+        if (name_end - name == 1 && name[0] == 't' &&
+                p < end && *p == '(') {
+            char *arg_start = p + 1;
+            char *arg_end = skip_parenthesized_tag_args(p, end);
+            char *nested_end = arg_end > arg_start &&
+                               arg_end[-1] == ')' ? arg_end - 1 : arg_end;
+            if (scan_border_style_override_block(state, arg_start,
+                                                 nested_end))
+                return true;
+            p = arg_end;
+        } else {
+            p = skip_parenthesized_tag_args(p, end);
+        }
+    }
+
+    return false;
+}
+
+static void scan_line_border_style_override(RenderContext *state, char *text)
+{
+    char *p = text;
+
+    while (*p) {
+        if (*p == '{') {
+            char *end = strchr(p, '}');
+            if (!end)
+                break;
+            if (scan_border_style_override_block(state, p + 1, end))
+                return;
+            p = end + 1;
+        } else {
+            p++;
+        }
+    }
+}
+
 /**
  * \brief partially reset render_context to style values
  * Works like {\r}: resets some style overrides
@@ -2297,8 +2413,9 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     state->italic = style->Italic;
     ass_update_font(state);
 
-    state->border_style = style->BorderStyle;
-    state->bs4_box_mode = style->BorderStyle == 4;
+    state->border_style = state->line_border_style_set ?
+        state->line_border_style : style->BorderStyle;
+    state->bs4_box_mode = state->border_style == 4;
     state->box_extra_x = 0;
     state->box_extra_y = 0;
     state->border_x = style->Outline;
@@ -2419,8 +2536,11 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->distort_v2 = 1.0;
     state->distort_u3 = 0.0;
     state->distort_v3 = 1.0;
+    state->line_border_style_set = false;
+    state->line_border_style = 0;
 
     ass_apply_transition_effects(state);
+    scan_line_border_style_override(state, event->Text);
     state->explicit = state->evt_type != EVENT_NORMAL ||
                       ass_event_has_hard_overrides(event->Text);
 
@@ -2988,7 +3108,8 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
             if (!ass_outline_stroke(&v->outline[0], &v->outline[1], &src,
                                     k->border.x * STROKER_PRECISION,
                                     k->border.y * STROKER_PRECISION,
-                                    STROKER_PRECISION)) {
+                                    STROKER_PRECISION,
+                                    k->miter_join)) {
                 ass_msg(render_priv->library, MSGL_WARN, "Cannot stroke outline");
                 ass_outline_free(&v->outline[0]);
                 ass_outline_free(&v->outline[1]);
@@ -3133,6 +3254,7 @@ static bool setup_border_outline_key(RenderContext *state, GlyphInfo *info,
     ol_key->type = OUTLINE_BORDER;
     BorderHashKey *k = &ol_key->u.border;
     k->outline = outline;
+    k->miter_join = info->border_style == 5;
 
     double bord_x =
         64 * state->border_scale_x * border_x / tr->scale.x /
@@ -3481,7 +3603,8 @@ static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
                                     &outline_fill[0],
                                     bord_x * STROKER_PRECISION,
                                     bord_y * STROKER_PRECISION,
-                                    STROKER_PRECISION))
+                                    STROKER_PRECISION,
+                                    info->border_style == 5))
                 goto done;
 
             if (!ass_outline_to_bitmap(state, bm_border, &outline_border[0], &outline_border[1]))

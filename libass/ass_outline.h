@@ -120,7 +120,8 @@ void ass_outline_update_cbox(const ASS_Outline *outline, ASS_Rect *cbox);
 
 // creates new outlines for the results (positive and negative offset outlines)
 bool ass_outline_stroke(ASS_Outline *result, ASS_Outline *result1,
-                        const ASS_Outline *path, int xbord, int ybord, int eps);
+                        const ASS_Outline *path, int xbord, int ybord, int eps,
+                        bool miter_join);
 
 
 #endif /* LIBASS_OUTLINE_H */

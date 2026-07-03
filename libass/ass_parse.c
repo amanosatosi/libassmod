@@ -3203,6 +3203,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                         lookup_style_strict(render_priv->track, args->start, len));
             } else
                 ass_reset_render_context(state, NULL);
+        } else if (tag("bs")) {
+            // BorderStyle override is line-level and is resolved before glyph parsing.
         } else if (tag("be")) {
             double dval;
             if (nargs) {

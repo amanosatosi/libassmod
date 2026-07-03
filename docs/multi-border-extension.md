@@ -16,6 +16,10 @@ outline rings:
 `N` is a border layer number from 1 through 10. Layer 1 is the normal ASS
 outline. Layers 2 through 10 are additional outer outline layers.
 
+Numbered `\Nbs` tags are border-layer size tags. They are distinct from the
+line-level `\bs<N>` BorderStyle override documented in
+`docs/borderstyle-tags.md`.
+
 Layer-1 tags are aliases for existing ASS tags:
 
 ```ass
@@ -70,3 +74,7 @@ behavior is reused.
 
 Override state is persistent like normal ASS tags. `\r` resets layer 1 to the
 active style outline and disables layers 2 through 10.
+
+When `BorderStyle=5` / `\bs5` is active, every enabled native border layer uses
+Mangetsu geometric border generation. Layer sizes, colors, alpha, gradients,
+and ordering keep the same multi-border semantics.

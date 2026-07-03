@@ -75,6 +75,9 @@ These appearance tags are supported in colorcoding metadata:
 \1bva(..)..\10bva(..)
 ```
 
+The `\1bs` through `\10bs` tags above are native border-layer size tags. They
+are distinct from the line-level `\bs<N>` BorderStyle override.
+
 Forbidden, unknown, layout, timing, drawing, transition, clipping, karaoke, and
 motion tags are ignored inside colorcoding blocks. For example, in
 `{\1c&HFFB6D9&\pos(100,100)}`, the color is applied and `\pos` is ignored.

@@ -578,6 +578,9 @@ typedef struct {
     double err_c;
     // tangent of maximal angular error
     double err_a;
+
+    bool miter_join;
+    double miter_limit;
 } StrokerState;
 
 /**
@@ -752,6 +755,13 @@ static bool draw_circle(StrokerState *str, ASS_Vector pt, int dir)
            process_arc(str, pt, normal[3], normal[0], mul + pos, max_subdiv - pos, dir);
 }
 
+static bool draw_bevel_join(StrokerState *str, ASS_Vector pt,
+                            ASS_DVector normal0, int dir)
+{
+    // Bevel absurdly sharp corners instead of emitting unbounded spikes.
+    return emit_point(str, pt, normal0, OUTLINE_LINE_SEGMENT, dir);
+}
+
 /**
  * \brief Start new segment and add circular cap if necessary
  * \param str stroker state
@@ -779,6 +789,20 @@ static bool start_segment(StrokerState *str, ASS_Vector pt,
         str->last_normal.y = (str->last_normal.y + normal.y) * mul;
         return true;
     }
+    if (str->miter_join) {
+        double denom = 1 + c;
+        if (denom > 0) {
+            ASS_DVector miter = {
+                (prev.x + normal.x) / denom,
+                (prev.y + normal.y) / denom,
+            };
+            double limit = str->miter_limit;
+            if (vec_dot(miter, miter) <= limit * limit) {
+                str->last_normal = miter;
+                return true;
+            }
+        }
+    }
     str->last_normal = normal;
 
     // check for negative curvature
@@ -794,7 +818,11 @@ static bool start_segment(StrokerState *str, ASS_Vector pt,
     str->last_skip = skip_dir;
 
     dir &= ~skip_dir;
-    return !dir || draw_arc(str, pt, prev, normal, c, dir);
+    if (!dir)
+        return true;
+    return str->miter_join ?
+        draw_bevel_join(str, pt, prev, dir) :
+        draw_arc(str, pt, prev, normal, c, dir);
 }
 
 /**
@@ -1486,7 +1514,8 @@ static bool close_contour(StrokerState *str, int dir)
  * \return false on allocation failure
  */
 bool ass_outline_stroke(ASS_Outline *result, ASS_Outline *result1,
-                        const ASS_Outline *path, int xbord, int ybord, int eps)
+                        const ASS_Outline *path, int xbord, int ybord, int eps,
+                        bool miter_join)
 {
     ass_outline_alloc(result,  2 * path->n_points, 2 * path->n_segments);
     ass_outline_alloc(result1, 2 * path->n_points, 2 * path->n_segments);
@@ -1517,6 +1546,8 @@ bool ass_outline_stroke(ASS_Outline *result, ASS_Outline *result1,
     str.err_q = 8 * (1 + rel_err) * (1 + rel_err);
     str.err_c = 390 * rel_err * rel_err;
     str.err_a = e;
+    str.miter_join = miter_join;
+    str.miter_limit = 4.0;
 
 #ifndef NDEBUG
     for (size_t i = 0; i < path->n_points; i++)

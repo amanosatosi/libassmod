@@ -1,0 +1,17 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,36,&H00FFFFFF,&H00FFFFFF,&H00303030,&H80000000,0,0,0,0,100,100,0,0,1,4,0,2,10,10,10,1
+Style: Geometric,Arial,36,&H00FFFFFF,&H00FFFFFF,&H00303030,&H80000000,0,0,0,0,100,100,0,0,5,4,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(180,150)\bord20\p1}m 0 0 l 200 0 200 100 0 100{\p0}
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(180,275)\bs5\bord20\p1}m 0 0 l 200 0 200 100 0 100{\p0}
+Dialogue: 0,0:00:00.00,0:00:10.00,Geometric,,0,0,0,,{\pos(460,150)\bord20\p1}m 0 0 l 120 0 120 80 0 80{\p0}
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\pos(460,275)\bs5\bord4\2bs14\2bc&H000000&}Multi-border

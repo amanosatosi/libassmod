@@ -4,6 +4,9 @@ This fork supports override tags for BorderStyle=4-style rectangular event
 boxes. Existing styles with `BorderStyle=4` keep working without any override
 tags.
 
+Line-level BorderStyle overrides such as `\bs3`, `\bs4`, and `\bs5` are
+documented in `docs/borderstyle-tags.md`.
+
 ## Box Mode
 
 ```ass

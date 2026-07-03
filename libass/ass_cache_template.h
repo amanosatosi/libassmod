@@ -115,6 +115,7 @@ START(border, border_hash_key)
     GENERIC(int, scale_ord_x)
     GENERIC(int, scale_ord_y)
     VECTOR(border)  // border size in STROKER_ACCURACY units
+    GENERIC(int, miter_join)
 END(BorderHashKey)
 
 // describes post-combining effects

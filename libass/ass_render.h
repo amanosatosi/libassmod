@@ -55,6 +55,7 @@
 
 #define PARSED_FADE (1<<0)
 #define PARSED_A    (1<<1)
+#define PARSED_BORDER_STYLE (1<<2)
 
 typedef struct {
     ASS_Image result;
@@ -521,6 +522,8 @@ struct render_context {
         EVENT_VSCROLL = 4       // "Scroll up", "Scroll down" transition effects
     } evt_type;
     int border_style;
+    bool line_border_style_set;
+    int line_border_style;
     bool bs4_box_mode;
     double box_extra_x;
     double box_extra_y;

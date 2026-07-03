@@ -51,7 +51,9 @@ static bool has_color(const RenderSig *sig, uint32_t color)
     return false;
 }
 
-static ASS_Track *read_case_track(ASS_Library *lib, const char *text)
+static ASS_Track *read_case_track_with_border_style(ASS_Library *lib,
+                                                    const char *text,
+                                                    int border_style)
 {
     char script[8192];
     int n = snprintf(
@@ -66,22 +68,62 @@ static ASS_Track *read_case_track(ASS_Library *lib, const char *text)
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,Arial,42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n"
+        "Style: Default,Arial,42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,%d,2,0,2,10,10,10,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\pos(320,180)}%s\n",
-        text);
+        border_style, text);
     if (n < 0 || n >= (int) sizeof(script))
         return NULL;
 
     return ass_read_memory(lib, script, strlen(script), NULL);
 }
 
+static ASS_Track *read_case_track(ASS_Library *lib, const char *text)
+{
+    return read_case_track_with_border_style(lib, text, 1);
+}
+
 static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
                         const char *text, RenderSig *sig)
 {
     ASS_Track *track = read_case_track(lib, text);
+    if (!track)
+        return false;
+
+    int change = 0;
+    ASS_Image *img = ass_render_frame(renderer, track, 0, &change);
+    (void) change;
+
+    memset(sig, 0, sizeof(*sig));
+    for (ASS_Image *cur = img; cur; cur = cur->next) {
+        sig->count++;
+        if (!add_color(sig, cur->color)) {
+            ass_free_track(track);
+            return false;
+        }
+        if (cur->type == IMAGE_TYPE_OUTLINE)
+            sig->outline_count++;
+        for (int y = 0; y < cur->h; y++) {
+            const unsigned char *row = cur->bitmap + y * cur->stride;
+            for (int x = 0; x < cur->w; x++)
+                sig->coverage += row[x];
+        }
+    }
+
+    ass_free_track(track);
+    return sig->count > 0 && sig->coverage > 0;
+}
+
+static bool render_case_with_border_style(ASS_Library *lib,
+                                          ASS_Renderer *renderer,
+                                          int border_style,
+                                          const char *text,
+                                          RenderSig *sig)
+{
+    ASS_Track *track =
+        read_case_track_with_border_style(lib, text, border_style);
     if (!track)
         return false;
 
@@ -209,6 +251,7 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     RenderSig legacy, numbered, multi, invalid, expected;
+    RenderSig bs5, style_bs5, malformed;
     RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
     bool ok = true;
 
@@ -314,6 +357,73 @@ int main(void)
     ok &= render_case(lib, renderer,
                       "{\\2bs6}Before {\\r}After",
                       &invalid);
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord20\\p1}m 0 0 l 200 0 200 100 0 100{\\p0}",
+                      &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bord20\\p1}m 0 0 l 200 0 200 100 0 100{\\p0}",
+                      &bs5);
+    if (ok && same_sig(&legacy, &bs5)) {
+        fprintf(stderr, "\\bs5 geometric border did not differ from legacy border\n");
+        ok = false;
+    }
+
+    ok &= render_case_with_border_style(
+        lib, renderer, 5,
+        "{\\bord20\\p1}m 0 0 l 200 0 200 100 0 100{\\p0}",
+        &style_bs5);
+    if (ok && !same_sig(&bs5, &style_bs5)) {
+        fprintf(stderr, "style BorderStyle=5 did not match inline \\bs5\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bord8}A{\\bs1}B",
+                      &bs5);
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bord8}AB",
+                      &expected);
+    if (ok && !same_sig(&bs5, &expected)) {
+        fprintf(stderr, "later \\bs tag was not ignored\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord8}A{\\bs5}B",
+                      &bs5);
+    if (ok && !same_sig(&bs5, &expected)) {
+        fprintf(stderr, "later first valid \\bs5 did not apply to whole line\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs2\\bord8}A{\\bs5}B",
+                      &bs5);
+    if (ok && !same_sig(&bs5, &expected)) {
+        fprintf(stderr, "invalid \\bs consumed the first valid later \\bs\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bsbad}Bad",
+                      &malformed);
+    ok &= render_case(lib, renderer,
+                      "Bad",
+                      &expected);
+    if (ok && !same_sig(&malformed, &expected)) {
+        fprintf(stderr, "malformed \\bs changed rendering\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bord2\\2bs8\\2bc&H000000&}GeoMulti",
+                      &multi);
+    if (ok && (multi.outline_count < 2 ||
+               !has_color(&multi, 0x00000000u))) {
+        fprintf(stderr, "\\bs5 multi-border render did not expose the extra layer\n");
+        ok = false;
+    }
 
     ok &= render_rgba_case(lib, renderer,
                            "{\\bord5\\3vc(&H0000FF&,&HFF0000&,"
