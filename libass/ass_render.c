@@ -2248,19 +2248,44 @@ static void apply_actor_colorcoding(RenderContext *state,
 {
     ASS_Track *track = state->renderer->track;
     ASS_ColorcodeConfig *cfg = &track->colorcode;
-    if (!cfg->n_actors)
+    const char *event_name = state->event && state->event->Name ?
+                             state->event->Name : "";
+
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "Mangetsu colorcoding check: actors=%d has_whitelist=%d "
+            "whitelist_entries=%d event_name='%s' active_style='%s'",
+            cfg->n_actors, cfg->has_applied_styles, cfg->n_applied_styles,
+            event_name, active_style_name ? active_style_name : "");
+
+    if (!cfg->n_actors) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "Mangetsu colorcoding skipped: no actor metadata");
+        return;
+    }
+
+    if (!cfg->has_applied_styles && explicit_style_reset) {
+        ass_msg(state->renderer->library, MSGL_DBG2,
+                "Mangetsu colorcoding skipped: explicit style reset without whitelist");
+        return;
+    }
+
+    bool style_allowed = colorcode_style_allowed(track, active_style_name);
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "Mangetsu colorcoding style whitelist result: %d", style_allowed);
+    if (!style_allowed)
         return;
 
-    if (!cfg->has_applied_styles && explicit_style_reset)
-        return;
-    if (!colorcode_style_allowed(track, active_style_name))
-        return;
-
-    ASS_ActorColorcode *actor = find_actor_colorcode(track, state->event->Name);
+    ASS_ActorColorcode *actor = find_actor_colorcode(track, event_name);
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "Mangetsu colorcoding actor lookup for '%s': %s",
+            event_name, actor ? "found" : "missing");
     if (!actor)
         return;
 
     apply_colorcode_text(state, actor->Text);
+    ass_msg(state->renderer->library, MSGL_DBG2,
+            "Mangetsu colorcoding applied actor '%s': text='%s'",
+            actor->Name, actor->Text ? actor->Text : "");
 }
 
 static bool border_style_tag_value_valid(int32_t value)

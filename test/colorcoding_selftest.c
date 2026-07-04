@@ -128,6 +128,44 @@ static ASS_Track *read_events_track(ASS_Library *lib, const char *events)
     return track;
 }
 
+static ASS_Track *read_header_track(ASS_Library *lib)
+{
+    return read_events_track(lib, "");
+}
+
+static bool render_track_at(ASS_Renderer *renderer, ASS_Track *track,
+                            long long now, RenderSig *sig)
+{
+    int change = 0;
+    ASS_Image *img = ass_render_frame(renderer, track, now, &change);
+    (void) change;
+
+    memset(sig, 0, sizeof(*sig));
+    sig->hash = 1469598103934665603ULL;
+    for (ASS_Image *cur = img; cur; cur = cur->next) {
+        sig->count++;
+        hash_i32(&sig->hash, cur->type);
+        hash_i32(&sig->hash, cur->w);
+        hash_i32(&sig->hash, cur->h);
+        hash_i32(&sig->hash, cur->dst_x);
+        hash_i32(&sig->hash, cur->dst_y);
+        hash_u32(&sig->hash, cur->color);
+        if (!add_color(sig, cur->color))
+            return false;
+        if (cur->type == IMAGE_TYPE_OUTLINE)
+            sig->outline_count++;
+        for (int y = 0; y < cur->h; y++) {
+            const unsigned char *row = cur->bitmap + y * cur->stride;
+            for (int x = 0; x < cur->w; x++) {
+                sig->coverage += row[x];
+                hash_u8(&sig->hash, row[x]);
+            }
+        }
+    }
+
+    return sig->count > 0 && sig->coverage > 0;
+}
+
 static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
                         const char *metadata, const char *dialogue,
                         RenderSig *sig)
@@ -437,6 +475,67 @@ int main(void)
         "{\\fs42\\1c&HFFB6D9&}Basic",
         "basic actor font size/color did not match explicit tags");
 
+    ASS_Track *chunk_track = read_header_track(lib);
+    if (!chunk_track) {
+        ok = false;
+    } else {
+        const char *chunk =
+            "0,0,Default,Nene,0,0,0,,{\\pos(320,180)}Chunk";
+        RenderSig got, expected;
+        int parsed = ass_process_mangetsu_colorcoding_line(
+            chunk_track, "Nene", "mangetsu-colorcoding",
+            "{\\1c&HFFB6D9&}", 1, 1);
+        ass_process_chunk(chunk_track, chunk, strlen(chunk), 0, 10000);
+        bool same = parsed == 1 &&
+                    render_track_at(renderer, chunk_track, 0, &got) &&
+                    render_events(
+                        lib, renderer,
+                        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(320,180)\\1c&HFFB6D9&}Chunk\n",
+                        &expected) &&
+                    same_sig(&got, &expected);
+        if (!same) {
+            fprintf(stderr, "chunk/direct colorcoding metadata API did not apply actor color\n");
+            ok = false;
+        }
+        ass_free_track(chunk_track);
+    }
+
+    ASS_Track *stripped_track = read_header_track(lib);
+    if (!stripped_track) {
+        ok = false;
+    } else {
+        const char *chunk =
+            "0,0,Default,Nene,0,0,0,,{\\pos(320,180)}Stripped";
+        RenderSig got, expected;
+        ass_process_chunk(stripped_track, chunk, strlen(chunk), 0, 10000);
+        bool same = stripped_track->colorcode.n_actors == 0 &&
+                    render_track_at(renderer, stripped_track, 0, &got) &&
+                    render_events(
+                        lib, renderer,
+                        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(320,180)}Stripped\n",
+                        &expected) &&
+                    same_sig(&got, &expected);
+        if (!same) {
+            fprintf(stderr, "host-stripped comments unexpectedly produced actor colorcoding\n");
+            ok = false;
+        }
+        ass_free_track(stripped_track);
+    }
+
+    ASS_Track *non_comment_track = read_header_track(lib);
+    if (!non_comment_track) {
+        ok = false;
+    } else {
+        int parsed = ass_process_mangetsu_colorcoding_line(
+            non_comment_track, "Nene", "mangetsu-colorcoding",
+            "{\\1c&HFFB6D9&}", 0, 1);
+        if (parsed != 0 || non_comment_track->colorcode.n_actors != 0) {
+            fprintf(stderr, "non-comment colorcoding metadata was accepted\n");
+            ok = false;
+        }
+        ass_free_track(non_comment_track);
+    }
+
     ok &= expect_events_same(
         lib, renderer,
         "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n"
@@ -475,6 +574,14 @@ int main(void)
         "A{\\rAlt}B{\\rOther}C",
         "{\\1c&HFFB6D9&}A{\\rAlt\\1c&HFFB6D9&}B{\\rOther}C",
         "whitelist reset behavior did not match active style membership");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,mangetsu-colorcode-applied-styles,0,0,0,mangetsu-colorcoding,{}{}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "EmptyWhitelist",
+        "{\\1c&HFFB6D9&}EmptyWhitelist",
+        "empty applied-styles whitelist did not behave as absent");
 
     ASS_Style override_style = {0};
     override_style.FontName = "Arial";

@@ -171,6 +171,13 @@ static int set_colorcode_applied_styles(ASS_Track *track, const char *text)
         p = end + 1;
     }
 
+    if (!cfg->n_applied_styles) {
+        cfg->has_applied_styles = false;
+        ass_msg(track->library, MSGL_WARN,
+                "Empty mangetsu colorcoding applied-styles whitelist; "
+                "treating it as absent");
+    }
+
     return 0;
 }
 
@@ -659,6 +666,38 @@ static bool colorcode_effect_matches(const char *effect)
            !strncmp(start, COLORCODE_EFFECT, len);
 }
 
+static int try_process_actor_colorcode_event(ASS_Track *track, bool is_comment,
+                                             const ASS_Event *event,
+                                             bool top_scan_active)
+{
+    if (!top_scan_active || !is_comment || !event)
+        return 0;
+
+    if (!event->Name || !event->Name[0] ||
+            !colorcode_effect_matches(event->Effect))
+        return 0;
+
+    int ret;
+    bool applied_styles = !strcmp(event->Name, COLORCODE_APPLIED_STYLES);
+    if (applied_styles)
+        ret = set_colorcode_applied_styles(track, event->Text);
+    else
+        ret = set_colorcode_actor(track, event->Name, event->Text);
+
+    if (ret < 0) {
+        ass_msg(track->library, MSGL_WARN,
+                "Failed to store mangetsu colorcoding metadata");
+        return -1;
+    }
+
+    ass_msg(track->library, MSGL_DBG2,
+            "Accepted mangetsu colorcoding %s: name='%s' effect='%s' text='%s'",
+            applied_styles ? "applied-styles" : "actor",
+            event->Name, event->Effect ? event->Effect : "",
+            event->Text ? event->Text : "");
+    return 1;
+}
+
 static int process_colorcode_comment(ASS_Track *track, char *str)
 {
     if (!track->event_format)
@@ -669,27 +708,28 @@ static int process_colorcode_comment(ASS_Track *track, char *str)
     if (ret)
         goto done;
 
-    if (!event.Name || !event.Name[0] ||
-            !colorcode_effect_matches(event.Effect)) {
-        ret = 0;
-        goto done;
-    }
-
-    if (!strcmp(event.Name, COLORCODE_APPLIED_STYLES))
-        ret = set_colorcode_applied_styles(track, event.Text);
-    else
-        ret = set_colorcode_actor(track, event.Name, event.Text);
-    if (ret < 0)
-        ass_msg(track->library, MSGL_WARN,
-                "Failed to store mangetsu colorcoding metadata");
-    else
-        ret = 1;
+    ret = try_process_actor_colorcode_event(track, true, &event, true);
 
 done:
     free(event.Name);
     free(event.Effect);
     free(event.Text);
     return ret;
+}
+
+int ass_process_mangetsu_colorcoding_line(ASS_Track *track, const char *name,
+                                          const char *effect, const char *text,
+                                          int is_comment, int is_top_block)
+{
+    if (!track)
+        return -1;
+
+    ASS_Event event = {0};
+    event.Name = (char *) (name ? name : "");
+    event.Effect = (char *) (effect ? effect : "");
+    event.Text = (char *) (text ? text : "");
+    return try_process_actor_colorcode_event(track, is_comment == 1, &event,
+                                             is_top_block == 1);
 }
 
 static void set_style_alpha(ASS_Style *style, int32_t front_alpha, int32_t back_alpha)

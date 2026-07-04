@@ -16,6 +16,13 @@ after the `[Events]` `Format:` line. A line belongs to the block only when:
 Parsing stops at the first event line that does not match. Later matching
 comments elsewhere in the file are ignored as normal comments.
 
+Hosts that bypass full ASS text parsing must still pass this metadata to
+libassmod. `ass_process_chunk()` uses Matroska-style event packets without a
+Dialogue/Comment event-type field, so it cannot safely discover colorcoding
+comments by itself. Integrations that strip comment events or construct tracks
+directly should feed the top metadata block with
+`ass_process_mangetsu_colorcoding_line()` before rendering dialogue events.
+
 ```ass
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -34,6 +41,8 @@ Comment: ...,Default,mangetsu-colorcode-applied-styles,...,mangetsu-colorcoding,
 ```
 
 Style names are parsed from non-empty brace groups and matched exactly.
+If the line is present but contains no non-empty style groups, libassmod warns
+and treats the whitelist as absent.
 
 If this config line is absent, actor colorcoding applies to the line's initial
 style and to bare `\r`, but explicit `\rStyleName` is an escape hatch and does

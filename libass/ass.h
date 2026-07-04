@@ -775,6 +775,27 @@ void ass_process_data(ASS_Track *track, const char *data, int size);
 void ass_process_codec_private(ASS_Track *track, const char *data, int size);
 
 /**
+ * \brief Feed one Mangetsu actor colorcoding metadata event.
+ *
+ * This is intended for integrations that build ASS_Track data without passing
+ * the literal top `[Events]` `Comment:` lines through ass_process_data() or
+ * ass_read_memory(). The caller is responsible for preserving the documented
+ * top-contiguous metadata block rule and should pass is_top_block=1 only while
+ * reading that initial block. Returns 1 when metadata was accepted, 0 when the
+ * supplied event was not actor colorcoding metadata, and -1 on error.
+ *
+ * \param track target track
+ * \param name ASS event Name/Actor field
+ * \param effect ASS event Effect field
+ * \param text ASS event Text field
+ * \param is_comment 1 if the source event is an ASS Comment event
+ * \param is_top_block 1 while the documented top metadata block is active
+ */
+int ass_process_mangetsu_colorcoding_line(ASS_Track *track, const char *name,
+                                          const char *effect, const char *text,
+                                          int is_comment, int is_top_block);
+
+/**
  * \brief Parse a chunk of subtitle stream data. A chunk contains exactly one
  * event in Matroska format.  See the Matroska specification for details.
  * In later libass versions (since LIBASS_VERSION==0x01300001), using this

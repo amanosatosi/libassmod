@@ -32,6 +32,7 @@ ass_free_style
 ass_free_event
 ass_process_data
 ass_process_codec_private
+ass_process_mangetsu_colorcoding_line
 ass_process_chunk
 ass_read_file
 ass_read_memory
