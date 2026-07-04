@@ -2382,9 +2382,9 @@ static void scan_line_border_style_override(RenderContext *state, char *text)
  * \brief partially reset render_context to style values
  * Works like {\r}: resets some style overrides
  */
-void ass_reset_render_context(RenderContext *state, ASS_Style *style)
+void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
+                                       bool explicit_style_reset)
 {
-    bool explicit_style_reset = style != NULL;
     style = handle_selective_style_overrides(state, style);
 
     init_font_scale(state);
@@ -2493,6 +2493,11 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset);
     capture_effective_default_state(state);
+}
+
+void ass_reset_render_context(RenderContext *state, ASS_Style *style)
+{
+    ass_reset_render_context_explicit(state, style, style != NULL);
 }
 
 /**

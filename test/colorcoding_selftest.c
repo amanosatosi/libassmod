@@ -62,7 +62,7 @@ static bool add_color(RenderSig *sig, uint32_t color)
     return true;
 }
 
-static char *make_script(const char *metadata, const char *dialogue)
+static char *make_script_from_events(const char *events)
 {
     const char *prefix =
         "[Script Info]\n"
@@ -78,18 +78,30 @@ static char *make_script(const char *metadata, const char *dialogue)
         "Style: Default,Arial,42,&H00FFFFFF,&H00FFFFFF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n"
         "Style: Alt,Arial,42,&H0000FF00,&H0000FF00,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n"
         "Style: Sign,Arial,42,&H00FF0000,&H00FF0000,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n"
+        "Style: Other,Arial,42,&H000000FF,&H000000FF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
-    const char *event =
-        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,"
-        "{\\pos(320,180)}";
-    size_t len = strlen(prefix) + strlen(metadata) + strlen(event) +
-                 strlen(dialogue) + 2;
+    size_t len = strlen(prefix) + strlen(events) + 1;
     char *script = malloc(len);
     if (!script)
         return NULL;
-    snprintf(script, len, "%s%s%s%s\n", prefix, metadata, event, dialogue);
+    snprintf(script, len, "%s%s", prefix, events);
+    return script;
+}
+
+static char *make_script(const char *metadata, const char *dialogue)
+{
+    const char *event =
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,"
+        "{\\pos(320,180)}";
+    size_t len = strlen(metadata) + strlen(event) + strlen(dialogue) + 2;
+    char *events = malloc(len);
+    if (!events)
+        return NULL;
+    snprintf(events, len, "%s%s%s\n", metadata, event, dialogue);
+    char *script = make_script_from_events(events);
+    free(events);
     return script;
 }
 
@@ -97,6 +109,17 @@ static ASS_Track *read_case_track(ASS_Library *lib, const char *metadata,
                                   const char *dialogue)
 {
     char *script = make_script(metadata, dialogue);
+    if (!script)
+        return NULL;
+
+    ASS_Track *track = ass_read_memory(lib, script, strlen(script), NULL);
+    free(script);
+    return track;
+}
+
+static ASS_Track *read_events_track(ASS_Library *lib, const char *events)
+{
+    char *script = make_script_from_events(events);
     if (!script)
         return NULL;
 
@@ -144,6 +167,53 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
 
     ass_free_track(track);
     return sig->count > 0 && sig->coverage > 0;
+}
+
+static bool render_events_at(ASS_Library *lib, ASS_Renderer *renderer,
+                             const char *events, long long now,
+                             RenderSig *sig)
+{
+    ASS_Track *track = read_events_track(lib, events);
+    if (!track)
+        return false;
+
+    int change = 0;
+    ASS_Image *img = ass_render_frame(renderer, track, now, &change);
+    (void) change;
+
+    memset(sig, 0, sizeof(*sig));
+    sig->hash = 1469598103934665603ULL;
+    for (ASS_Image *cur = img; cur; cur = cur->next) {
+        sig->count++;
+        hash_i32(&sig->hash, cur->type);
+        hash_i32(&sig->hash, cur->w);
+        hash_i32(&sig->hash, cur->h);
+        hash_i32(&sig->hash, cur->dst_x);
+        hash_i32(&sig->hash, cur->dst_y);
+        hash_u32(&sig->hash, cur->color);
+        if (!add_color(sig, cur->color)) {
+            ass_free_track(track);
+            return false;
+        }
+        if (cur->type == IMAGE_TYPE_OUTLINE)
+            sig->outline_count++;
+        for (int y = 0; y < cur->h; y++) {
+            const unsigned char *row = cur->bitmap + y * cur->stride;
+            for (int x = 0; x < cur->w; x++) {
+                sig->coverage += row[x];
+                hash_u8(&sig->hash, row[x]);
+            }
+        }
+    }
+
+    ass_free_track(track);
+    return true;
+}
+
+static bool render_events(ASS_Library *lib, ASS_Renderer *renderer,
+                          const char *events, RenderSig *sig)
+{
+    return render_events_at(lib, renderer, events, 0, sig);
 }
 
 static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
@@ -212,6 +282,20 @@ static bool expect_same(ASS_Library *lib, ASS_Renderer *renderer,
     RenderSig got, expected;
     bool ok = render_case(lib, renderer, metadata, dialogue, &got) &&
               render_case(lib, renderer, "", expected_dialogue, &expected);
+    if (!ok || !same_sig(&got, &expected)) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    return true;
+}
+
+static bool expect_events_same(ASS_Library *lib, ASS_Renderer *renderer,
+                               const char *events, const char *expected_events,
+                               const char *label)
+{
+    RenderSig got, expected;
+    bool ok = render_events(lib, renderer, events, &got) &&
+              render_events(lib, renderer, expected_events, &expected);
     if (!ok || !same_sig(&got, &expected)) {
         fprintf(stderr, "%s\n", label);
         return false;
@@ -345,6 +429,103 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     bool ok = true;
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\fs42\\1c&HFFB6D9&}\n",
+        "Basic",
+        "{\\fs42\\1c&HFFB6D9&}Basic",
+        "basic actor font size/color did not match explicit tags");
+
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Maki,0,0,0,,{\\pos(320,180)}Unknown\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Maki,0,0,0,,{\\pos(320,180)}Unknown\n",
+        "unknown actor received actor colorcoding");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&H0000FF&}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "Duplicate",
+        "{\\1c&HFFB6D9&}Duplicate",
+        "later duplicate actor metadata did not replace earlier defaults");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,mangetsu-colorcode-applied-styles,0,0,0,mangetsu-colorcoding,{Default}{Alt}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "WhitelistDefault",
+        "{\\1c&HFFB6D9&}WhitelistDefault",
+        "whitelist did not apply actor colorcoding to Default");
+
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,mangetsu-colorcode-applied-styles,0,0,0,mangetsu-colorcoding,{Default}{Alt}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Other,Nene,0,0,0,,{\\pos(320,180)}WhitelistOther\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Other,Nene,0,0,0,,{\\pos(320,180)}WhitelistOther\n",
+        "whitelist applied actor colorcoding to non-whitelisted style");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,mangetsu-colorcode-applied-styles,0,0,0,mangetsu-colorcoding,{Default}{Alt}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "A{\\rAlt}B{\\rOther}C",
+        "{\\1c&HFFB6D9&}A{\\rAlt\\1c&HFFB6D9&}B{\\rOther}C",
+        "whitelist reset behavior did not match active style membership");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "A{\\r}B",
+        "{\\1c&HFFB6D9&}A{\\r\\1c&HFFB6D9&}B",
+        "bare reset did not reapply actor colorcoding without whitelist");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "A{\\rMissingStyle}B",
+        "{\\1c&HFFB6D9&}A{\\rMissingStyle}B",
+        "explicit reset to missing style reapplied actor color without whitelist");
+
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&H0000FF&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(320,180)}BlockStop\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(320,180)\\1c&H0000FF&}BlockStop\n",
+        "later colorcoding comment outside top block was parsed");
+
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&H0000FF&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(320,180)}FormatStop\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(320,180)\\1c&H0000FF&}FormatStop\n",
+        "later Format line reopened actor colorcoding metadata block");
+
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "",
+        "metadata comments produced renderable images");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",
+        "Sparse",
+        "{\\1c&HFFB6D9&}Sparse",
+        "sparse actor color did not preserve inherited style fields");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\fs42\\1c&HFFB6D9&}\n",
+        "{\\fs60\\1c&H0000FF&}A{\\fs\\1c}B",
+        "{\\fs60\\1c&H0000FF&}A{\\fs42\\1c&HFFB6D9&}B",
+        "blank font/color reset did not return to actor defaults");
 
     ok &= expect_same(
         lib, renderer,

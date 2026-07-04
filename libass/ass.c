@@ -1166,7 +1166,8 @@ static int process_events_line(ASS_Track *track, char *str)
             custom_format_line_compatibility(track, p, ass_event_format);
         else
             custom_format_line_compatibility(track, p, ssa_event_format);
-        track->parser_priv->colorcode_scan_top = 1;
+        if (!track->parser_priv->colorcode_block_closed)
+            track->parser_priv->colorcode_scan_top = 1;
 
         // Guess if we are dealing with legacy ffmpeg subs and change accordingly
         // If file has no event format it was probably not created by ffmpeg/libav
@@ -1177,6 +1178,7 @@ static int process_events_line(ASS_Track *track, char *str)
         }
     } else if (!strncmp(str, "Dialogue:", 9)) {
         track->parser_priv->colorcode_scan_top = 0;
+        track->parser_priv->colorcode_block_closed = 1;
         // This should never be reached for embedded subtitles.
         // They have slightly different format and are parsed in ass_process_chunk,
         // called directly from demuxer
@@ -1217,10 +1219,13 @@ static int process_events_line(ASS_Track *track, char *str)
             if (ret > 0)
                 return 0;
             track->parser_priv->colorcode_scan_top = 0;
+            track->parser_priv->colorcode_block_closed = 1;
         }
         // Ignore non-colorcoding Comments
     } else {
         track->parser_priv->colorcode_scan_top = 0;
+        if (track->event_format)
+            track->parser_priv->colorcode_block_closed = 1;
         ass_msg(track->library, MSGL_V, "Not understood: '%.30s'", str);
     }
     return 0;
@@ -1361,6 +1366,7 @@ static int process_line(ASS_Track *track, char *str)
     } else if (!ass_strncasecmp(str, "[Events]", 8)) {
         track->parser_priv->state = PST_EVENTS;
         track->parser_priv->colorcode_scan_top = 0;
+        track->parser_priv->colorcode_block_closed = 0;
     } else if (!ass_strncasecmp(str, "[Fonts]", 7)) {
         track->parser_priv->state = PST_FONTS;
     } else {

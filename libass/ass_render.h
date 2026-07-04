@@ -675,6 +675,8 @@ typedef struct {
 } Rect;
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
+void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
+                                       bool explicit_style_reset);
 void ass_column_set_mode(RenderContext *state, bool active);
 void ass_column_set_align(RenderContext *state, int align);
 void ass_column_set_spacing(RenderContext *state, double spacing);

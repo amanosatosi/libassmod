@@ -3283,8 +3283,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("r")) {
             if (nargs) {
                 int len = args->end - args->start;
-                ass_reset_render_context(state,
-                        lookup_style_strict(render_priv->track, args->start, len));
+                ASS_Style *style =
+                    lookup_style_strict(render_priv->track, args->start, len);
+                ass_reset_render_context_explicit(state, style, true);
             } else
                 ass_reset_render_context(state, NULL);
         } else if (tag("bs")) {
