@@ -476,6 +476,31 @@ int main(void)
         "{\\1c&HFFB6D9&}A{\\rAlt\\1c&HFFB6D9&}B{\\rOther}C",
         "whitelist reset behavior did not match active style membership");
 
+    ASS_Style override_style = {0};
+    override_style.FontName = "Arial";
+    override_style.FontSize = 42;
+    override_style.PrimaryColour = 0x00FFFF00;
+    override_style.SecondaryColour = 0x00FFFF00;
+    override_style.OutlineColour = 0x80000000;
+    override_style.BackColour = 0x80000000;
+    override_style.ScaleX = 1.0;
+    override_style.ScaleY = 1.0;
+    override_style.BorderStyle = 1;
+    override_style.Outline = 2;
+    override_style.Alignment = 2;
+    override_style.Encoding = 1;
+    ass_set_selective_style_override(renderer, &override_style);
+    ass_set_selective_style_override_enabled(renderer, ASS_OVERRIDE_FULL_STYLE);
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,mangetsu-colorcode-applied-styles,0,0,0,mangetsu-colorcoding,{Default}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,Override\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\1c&HFFB6D9&}Override\n",
+        "selective style override changed actor colorcoding whitelist style");
+    ass_set_selective_style_override_enabled(
+        renderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
+
     ok &= expect_same(
         lib, renderer,
         "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n",

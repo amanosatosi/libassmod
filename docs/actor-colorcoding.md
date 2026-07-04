@@ -147,6 +147,12 @@ inheritance is preserved:
 - `\3a` uses normal mangetsu semantics and applies alpha to all native border
   layers without enabling extra layers or changing sizes
 
+Native border layers 2 through 10 are outer rings. A layer is only visible
+outside earlier/lower-numbered border layers, so `\2bs3` on a style whose
+normal outline is `\bord5`/`Outline=5` has no visible layer-2 ring. Use a
+larger layer-2 size, such as `\2bs8`, or use `\3c`/`\1bc` to recolor the
+normal outline layer.
+
 `\Nbva(...)` remains the existing four-corner/vector alpha-gradient tag.
 `\Nbga(...)` is the Mangetsu true alpha-gradient tag with angle and percentage
 stops. If both are used on the same border layer, the later tag wins for that

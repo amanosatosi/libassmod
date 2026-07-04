@@ -2243,7 +2243,8 @@ static void apply_colorcode_text(RenderContext *state, char *text)
 }
 
 static void apply_actor_colorcoding(RenderContext *state,
-                                    bool explicit_style_reset)
+                                    bool explicit_style_reset,
+                                    const char *active_style_name)
 {
     ASS_Track *track = state->renderer->track;
     ASS_ColorcodeConfig *cfg = &track->colorcode;
@@ -2252,7 +2253,7 @@ static void apply_actor_colorcoding(RenderContext *state,
 
     if (!cfg->has_applied_styles && explicit_style_reset)
         return;
-    if (!colorcode_style_allowed(track, state->style->Name))
+    if (!colorcode_style_allowed(track, active_style_name))
         return;
 
     ASS_ActorColorcode *actor = find_actor_colorcode(track, state->event->Name);
@@ -2385,6 +2386,10 @@ static void scan_line_border_style_override(RenderContext *state, char *text)
 void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
                                        bool explicit_style_reset)
 {
+    ASS_Renderer *render_priv = state->renderer;
+    ASS_Style *script_style = render_priv->track->styles + state->event->Style;
+    const char *active_style_name = style ? style->Name : script_style->Name;
+
     style = handle_selective_style_overrides(state, style);
 
     init_font_scale(state);
@@ -2491,7 +2496,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->distort_v3 = 1.0;
 
     capture_effective_default_state(state);
-    apply_actor_colorcoding(state, explicit_style_reset);
+    apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
     capture_effective_default_state(state);
 }
 
