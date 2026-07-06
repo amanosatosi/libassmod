@@ -666,6 +666,57 @@ int main(void)
         "{\\1c&H0000FF&}Basic",
         "actor primary color did not match explicit color");
 
+    {
+        RenderSig actor_mb, base_mb;
+        bool rendered =
+            render_case(
+                lib, renderer,
+                "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bs3\\2bc&H7161DF&}\n",
+                "NativeMB",
+                &actor_mb) &&
+            render_case(lib, renderer, "", "NativeMB", &base_mb);
+        if (!rendered || same_sig(&actor_mb, &base_mb)) {
+            fprintf(stderr, "actor native border size/color did not affect rendering\n");
+            ok = false;
+        }
+    }
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bs3\\2bc&H7161DF&}\n",
+        "NativeMB",
+        "{\\2bs3\\2bc&H7161DF&}NativeMB",
+        "actor native border size/color did not match inline tags");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bc&H7161DF&}\n",
+        "{\\bord2}NativeSparse",
+        "{\\bord2}NativeSparse",
+        "actor native border color enabled a layer without size");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bs3\\2bc&H7161DF&\\2ba&H60&}\n",
+        "NativeAlpha",
+        "{\\2bs3\\2bc&H7161DF&\\2ba&H60&}NativeAlpha",
+        "actor native border alpha did not match inline tags");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bs3\\2bc&H7161DF&}\n",
+        "{\\2bs8\\2bc&H0000FF&}Hello{\\2bs\\2bc} world",
+        "{\\2bs8\\2bc&H0000FF&}Hello{\\2bs3\\2bc&H7161DF&} world",
+        "blank native border reset did not return to actor defaults");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,mangetsu-colorcode-applied-styles,0,0,0,mangetsu-colorcoding,{Default}{Alt}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bs3\\2bc&H7161DF&}\n",
+        "A{\\rAlt}B",
+        "{\\2bs3\\2bc&H7161DF&}A{\\rAlt\\2bs3\\2bc&H7161DF&}B",
+        "whitelisted \\rStyle did not reapply actor native border defaults");
+
     ok &= expect_same(
         lib, renderer,
         "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\fs42}\n",

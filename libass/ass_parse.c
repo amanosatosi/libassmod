@@ -961,6 +961,24 @@ static bool colorcode_tag_allowed(char *p, char *name_end)
     return false;
 }
 
+static bool colorcode_numbered_border_tag_allowed(NumberedBorderTag tag)
+{
+    switch (tag) {
+    case BORDER_TAG_SIZE:
+    case BORDER_TAG_SIZE_X:
+    case BORDER_TAG_SIZE_Y:
+    case BORDER_TAG_COLOR:
+    case BORDER_TAG_ALPHA:
+    case BORDER_TAG_COLOR_GRADIENT:
+    case BORDER_TAG_ALPHA_GRADIENT:
+    case BORDER_TAG_MANGETSU_GRADIENT:
+    case BORDER_TAG_MANGETSU_ALPHA_GRADIENT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool parse_double_arg_strict(struct arg arg, double *out)
 {
     char *ptr = arg.start;
@@ -2219,6 +2237,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         if (numbered_border_tag == BORDER_TAG_IGNORE) {
             continue;
         } else if (numbered_border_tag != BORDER_TAG_NONE) {
+            if (state->colorcode_parse &&
+                    !colorcode_numbered_border_tag_allowed(numbered_border_tag))
+                continue;
             apply_numbered_border_tag(state, numbered_border_tag,
                                       numbered_border_layer, args, nargs,
                                       numbered_border_arg, name_end, q, pwr,
