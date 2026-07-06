@@ -762,6 +762,20 @@ int main(void)
 
     ok &= expect_same(
         lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\2bs5\\2bc&H7161DF&}\n",
+        "{\\bord5}ActorAdd",
+        "{\\bord5\\2bs5\\2bc&H7161DF&}ActorAdd",
+        "actor additive border thickness did not match inline tags");
+
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\bord5\\2bs1\\2bc&H7161DF&}\n",
+        "{\\2bs5}Hello{\\2bs} world",
+        "{\\bord5\\2bs5\\2bc&H7161DF&}Hello{\\2bs1} world",
+        "blank actor border thickness reset did not return to actor default");
+
+    ok &= expect_same(
+        lib, renderer,
         "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\3a&H80&}\n",
         "{\\bord2\\2bs5}Alpha",
         "{\\bord2\\2bs5\\3a&H80&}Alpha",

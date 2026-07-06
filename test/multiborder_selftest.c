@@ -251,6 +251,7 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     RenderSig legacy, numbered, multi, invalid, expected;
+    RenderSig equal_size, small_outer, three_layers, anisotropic;
     RenderSig bs5, style_bs5, malformed;
     RenderSig box_base, box_border, box_multi, box_numbered, bs_ignore;
     RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
@@ -286,6 +287,46 @@ int main(void)
                !has_color(&multi, 0xFFFFFF00u) ||
                !has_color(&multi, 0x00000080u))) {
         fprintf(stderr, "two-border render did not expose both outline colors\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord5\\2bs5\\2bc&H7161DF&}Equal",
+                      &equal_size);
+    if (ok && (equal_size.outline_count < 2 ||
+               !has_color(&equal_size, 0xDF617100u))) {
+        fprintf(stderr, "equal native border thickness did not render layer 2\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord5\\2bs1\\2bc&H7161DF&}Small",
+                      &small_outer);
+    if (ok && (small_outer.outline_count < 2 ||
+               !has_color(&small_outer, 0xDF617100u))) {
+        fprintf(stderr, "small native border thickness did not render outside layer 1\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\1bs2\\1bc&HFFFFFF&\\2bs5\\2bc&H000000&"
+                      "\\3bs4\\3bc&H202020&}Triple",
+                      &three_layers);
+    if (ok && (three_layers.outline_count < 3 ||
+               !has_color(&three_layers, 0xFFFFFF00u) ||
+               !has_color(&three_layers, 0x00000000u) ||
+               !has_color(&three_layers, 0x20202000u))) {
+        fprintf(stderr, "cumulative native border layers were not all visible\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\xbord5\\ybord3\\2bsx2\\2bsy4"
+                      "\\2bc&H7161DF&}AnisoAdd",
+                      &anisotropic);
+    if (ok && (anisotropic.outline_count < 2 ||
+               !has_color(&anisotropic, 0xDF617100u))) {
+        fprintf(stderr, "x/y native border thickness did not render layer 2\n");
         ok = false;
     }
 
@@ -423,6 +464,15 @@ int main(void)
     if (ok && (multi.outline_count < 2 ||
                !has_color(&multi, 0x00000000u))) {
         fprintf(stderr, "\\bs5 multi-border render did not expose the extra layer\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bord5\\2bs5\\2bc&H7161DF&}GeoAdd",
+                      &multi);
+    if (ok && (multi.outline_count < 2 ||
+               !has_color(&multi, 0xDF617100u))) {
+        fprintf(stderr, "\\bs5 equal native border thickness did not render layer 2\n");
         ok = false;
     }
 

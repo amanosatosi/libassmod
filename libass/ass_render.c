@@ -3532,24 +3532,30 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     if (!(flags & FILTER_NONZERO_BORDER))
         return;
 
+    double outer_x = 0;
+    double outer_y = 0;
     double prev_x = 0;
     double prev_y = 0;
     for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
         const BorderLayerState *border = &info->border_layers[layer];
-        double size_x = layer == 0 ? info->border_x : border->size_x;
-        double size_y = layer == 0 ? info->border_y : border->size_y;
+        double size_x = layer == 0 ? info->border_x :
+            (border->size_x > 0 ? border->size_x : 0);
+        double size_y = layer == 0 ? info->border_y :
+            (border->size_y > 0 ? border->size_y : 0);
         bool has_size = layer == 0 ? size_x > 0 || size_y > 0 :
                                       border_layer_has_size(border);
         if (!has_size)
             continue;
-        if (size_x <= prev_x && size_y <= prev_y)
+        outer_x += size_x;
+        outer_y += size_y;
+        if (outer_x <= prev_x && outer_y <= prev_y)
             continue;
 
         OutlineHashKey ol_key;
         double border_m[3][3];
         bool zero_border = false;
         if (!setup_border_outline_key(state, info, outline, m, m2,
-                                      size_x, size_y, &ol_key, border_m,
+                                      outer_x, outer_y, &ol_key, border_m,
                                       &zero_border))
             continue;
 
@@ -3562,8 +3568,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                 info->bm_o = info->bm;
                 *pos_o = *pos;
             }
-            prev_x = size_x;
-            prev_y = size_y;
+            prev_x = outer_x;
+            prev_y = outer_y;
             continue;
         }
 
@@ -3575,8 +3581,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                                target_bm)) {
             if (!info->bm)
                 *pos = *target_pos;
-            prev_x = size_x;
-            prev_y = size_y;
+            prev_x = outer_x;
+            prev_y = outer_y;
         } else if (layer == 0) {
             *pos_o = *pos;
         }
@@ -4630,18 +4636,9 @@ static bool border_layers_state_equal(const BorderLayerState *a,
 
 static bool has_multi_border_layers(const BorderLayerState *layers)
 {
-    double prev_x = 0;
-    double prev_y = 0;
-    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
-        if (!border_layer_has_size(&layers[i]))
-            continue;
-        if (layers[i].size_x <= prev_x && layers[i].size_y <= prev_y)
-            continue;
-        if (i > 0)
+    for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++)
+        if (border_layer_has_size(&layers[i]))
             return true;
-        prev_x = layers[i].size_x;
-        prev_y = layers[i].size_y;
-    }
     return false;
 }
 
@@ -4667,7 +4664,8 @@ static double glyph_border_max_x(const GlyphInfo *info)
     double max = info->border_x > 0 ? info->border_x : 0;
     for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++)
         if (border_layer_has_size(&info->border_layers[i]))
-            max = FFMAX(max, info->border_layers[i].size_x);
+            max += info->border_layers[i].size_x > 0 ?
+                   info->border_layers[i].size_x : 0;
     return max;
 }
 
@@ -4676,7 +4674,8 @@ static double glyph_border_max_y(const GlyphInfo *info)
     double max = info->border_y > 0 ? info->border_y : 0;
     for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++)
         if (border_layer_has_size(&info->border_layers[i]))
-            max = FFMAX(max, info->border_layers[i].size_y);
+            max += info->border_layers[i].size_y > 0 ?
+                   info->border_layers[i].size_y : 0;
     return max;
 }
 
