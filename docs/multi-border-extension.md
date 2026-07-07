@@ -96,4 +96,6 @@ active style outline and disables layers 2 through 10.
 
 When `BorderStyle=5` / `\bs5` is active, every enabled native border layer uses
 Mangetsu geometric border generation. Layer sizes, colors, alpha, gradients,
-and ordering keep the same multi-border semantics.
+and ordering keep the same multi-border semantics. Extreme acute joins are
+beveled when they exceed the geometric miter limit, preventing text glyph
+spikes while preserving ordinary sharp corners.

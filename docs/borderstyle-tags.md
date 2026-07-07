@@ -31,6 +31,10 @@ intended for shape/sign typesetting. It expands glyph and vector outlines as
 geometric offset contours with sharp/miter-style joins by default, avoiding the
 rounded blob look of legacy ASS borders.
 
+To avoid long spike artifacts on normal font outlines, geometric joins use a
+conservative miter limit of 2.0 times the border width. Corners within that
+limit remain sharp; sharper or near-degenerate joins fall back to bevels.
+
 `\bord`, `\xbord`, and `\ybord` still control border thickness. `\3c` and
 `\3a` still control normal outline color and alpha unless a native multi-border
 layer overrides them.

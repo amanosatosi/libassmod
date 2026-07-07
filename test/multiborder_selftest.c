@@ -9,6 +9,8 @@
 typedef struct {
     int count;
     int outline_count;
+    int min_x, min_y;
+    int max_x, max_y;
     uint64_t coverage;
     uint32_t colors[32];
     int n_colors;
@@ -49,6 +51,39 @@ static bool has_color(const RenderSig *sig, uint32_t color)
         if (sig->colors[i] == color)
             return true;
     return false;
+}
+
+static void add_bounds(RenderSig *sig, const ASS_Image *img)
+{
+    int x0 = img->dst_x;
+    int y0 = img->dst_y;
+    int x1 = img->dst_x + img->w;
+    int y1 = img->dst_y + img->h;
+    if (!sig->count) {
+        sig->min_x = x0;
+        sig->min_y = y0;
+        sig->max_x = x1;
+        sig->max_y = y1;
+    } else {
+        if (x0 < sig->min_x)
+            sig->min_x = x0;
+        if (y0 < sig->min_y)
+            sig->min_y = y0;
+        if (x1 > sig->max_x)
+            sig->max_x = x1;
+        if (y1 > sig->max_y)
+            sig->max_y = y1;
+    }
+}
+
+static int sig_height(const RenderSig *sig)
+{
+    return sig->max_y - sig->min_y;
+}
+
+static int sig_width(const RenderSig *sig)
+{
+    return sig->max_x - sig->min_x;
 }
 
 static ASS_Track *read_case_track_with_border_style(ASS_Library *lib,
@@ -98,6 +133,7 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
 
     memset(sig, 0, sizeof(*sig));
     for (ASS_Image *cur = img; cur; cur = cur->next) {
+        add_bounds(sig, cur);
         sig->count++;
         if (!add_color(sig, cur->color)) {
             ass_free_track(track);
@@ -133,6 +169,7 @@ static bool render_case_with_border_style(ASS_Library *lib,
 
     memset(sig, 0, sizeof(*sig));
     for (ASS_Image *cur = img; cur; cur = cur->next) {
+        add_bounds(sig, cur);
         sig->count++;
         if (!add_color(sig, cur->color)) {
             ass_free_track(track);
@@ -417,6 +454,18 @@ int main(void)
         &style_bs5);
     if (ok && !same_sig(&bs5, &style_bs5)) {
         fprintf(stderr, "style BorderStyle=5 did not match inline \\bs5\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bord8}Amanon",
+                      &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bs5\\bord8}Amanon",
+                      &bs5);
+    if (ok && (sig_width(&bs5) > sig_width(&legacy) + 64 ||
+               sig_height(&bs5) > sig_height(&legacy) + 64)) {
+        fprintf(stderr, "\\bs5 text border produced excessive miter bounds\n");
         ok = false;
     }
 

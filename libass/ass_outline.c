@@ -22,6 +22,10 @@
 #include "ass_utils.h"
 #include "ass_outline.h"
 
+// Sharp geometric joins are kept while the miter stays within this multiple
+// of the border width; sharper joins fall back to bevels to avoid spikes.
+#define GEOMETRIC_MITER_LIMIT 2.0
+
 
 
 /*
@@ -1547,7 +1551,7 @@ bool ass_outline_stroke(ASS_Outline *result, ASS_Outline *result1,
     str.err_c = 390 * rel_err * rel_err;
     str.err_a = e;
     str.miter_join = miter_join;
-    str.miter_limit = 4.0;
+    str.miter_limit = GEOMETRIC_MITER_LIMIT;
 
 #ifndef NDEBUG
     for (size_t i = 0; i < path->n_points; i++)
