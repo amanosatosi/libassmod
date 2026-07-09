@@ -56,6 +56,7 @@
 #define PARSED_FADE (1<<0)
 #define PARSED_A    (1<<1)
 #define PARSED_BORDER_STYLE (1<<2)
+#define PARSED_TAN  (1<<3)
 
 typedef struct {
     ASS_Image result;
@@ -494,7 +495,8 @@ struct render_context {
     uint32_t decoration_color;
     uint32_t decoration_alpha;
 
-    int alignment;              // alignment overrides go here; if zero, style value will be used
+    int alignment;              // object anchor; if zero, style value will be used
+    int text_alignment;         // text layout alignment; defaults to alignment
     int justify;                // justify instructions
     double frx, fry, frz;
     double frs;

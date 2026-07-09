@@ -2787,7 +2787,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 else
                     state->alignment =
                         state->style->Alignment;
+                if ((state->parsed_tags & PARSED_TAN) == 0)
+                    state->text_alignment = state->alignment;
                 state->parsed_tags |= PARSED_A;
+            }
+        } else if (tag("tan")) {
+            int32_t val = argtoi32(*args);
+            if ((state->parsed_tags & PARSED_TAN) == 0 &&
+                    val >= 1 && val <= 9) {
+                state->text_alignment = numpad2align(val);
+                state->parsed_tags |= PARSED_TAN;
             }
         } else if (tag("a")) {
             int32_t val = argtoi32(*args);
@@ -2799,6 +2808,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 else
                 state->alignment =
                         state->style->Alignment;
+                if ((state->parsed_tags & PARSED_TAN) == 0)
+                    state->text_alignment = state->alignment;
                 state->parsed_tags |= PARSED_A;
             }
         } else if (complex_tag("pos")) {

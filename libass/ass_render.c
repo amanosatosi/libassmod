@@ -2593,6 +2593,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
 
     ass_reset_render_context(state, NULL);
     state->alignment = state->style->Alignment;
+    state->text_alignment = state->alignment;
     state->justify = state->style->Justify;
 }
 
@@ -5847,7 +5848,7 @@ static void align_lines(RenderContext *state, double max_text_width)
     int i, j;
     double width = 0;
     int last_break = -1;
-    int halign = state->alignment & 3;
+    int halign = state->text_alignment & 3;
     int justify = state->justify;
     double max_width = 0;
 
@@ -6060,7 +6061,8 @@ static void calculate_rotation_params_list(RenderContext *state,
 }
 
 static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
-                                      double device_x, double device_y)
+                                      double device_x, double device_y,
+                                      const ASS_DVector *object_anchor)
 {
     ASS_Renderer *render_priv = state->renderer;
     TextInfo *text_info = &state->text_info;
@@ -6068,6 +6070,8 @@ static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
     if (state->have_origin) {
         center.x = x2scr_pos(render_priv, state->org_x);
         center.y = y2scr_pos(render_priv, state->org_y);
+    } else if (object_anchor) {
+        center = *object_anchor;
     } else {
         double bx = 0., by = 0.;
         get_base_point(bbox, state->alignment, &bx, &by);
@@ -7533,7 +7537,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
     if (rotate_baseline)
-        get_base_point(&bbox_origin, state->alignment, &origin_x, &origin_y);
+        get_base_point(&bbox_origin, state->text_alignment,
+                       &origin_x, &origin_y);
 
     apply_baseline_shear(state);
 
@@ -7548,6 +7553,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     add_furi_to_bbox(text_info, &render_bbox);
     ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &render_bbox;
     ASS_DRect *bbox_for_position = &render_bbox;
+    ASS_DVector object_anchor = {0};
 
     // determine device coordinates for text
     double device_x = 0;
@@ -7628,6 +7634,19 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
 
+    double object_base_x = 0.0;
+    double object_base_y = 0.0;
+    double text_base_x = 0.0;
+    double text_base_y = 0.0;
+    get_base_point(bbox_for_position, state->alignment,
+                   &object_base_x, &object_base_y);
+    get_base_point(bbox_for_position, state->text_alignment,
+                   &text_base_x, &text_base_y);
+    object_anchor.x = device_x + object_base_x;
+    object_anchor.y = device_y + object_base_y;
+    device_x = object_anchor.x - text_base_x;
+    device_y = object_anchor.y - text_base_y;
+
     update_glyph_jitter_offsets(state);
 
     // fix clip coordinates
@@ -7669,7 +7688,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         state->clip_y1 = FFMIN(state->clip_y1, y1);
     }
 
-    calculate_rotation_params(state, bbox_for_origin, device_x, device_y);
+    calculate_rotation_params(state, bbox_for_origin, device_x, device_y,
+                              &object_anchor);
 
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);

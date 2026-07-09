@@ -72,6 +72,15 @@ unicode_digits_unit = executable(
     link_with: libass_for_tools,
 )
 
+tan_unit = executable(
+    'tan_unit',
+    files('tan_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 test('distortion-warp', distort_unit)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit)
@@ -79,3 +88,4 @@ test('multi-border-extension', multiborder_unit)
 test('actor-colorcoding', colorcoding_unit)
 test('fad-color-fade', fad_unit)
 test('unicode-decimal-digits', unicode_digits_unit)
+test('text-anchor-alignment', tan_unit)
