@@ -379,6 +379,7 @@ config_h = vcs_tag(
 )
 
 incs = include_directories('.', 'libass')
+gradient_test_src = files('libass/gradient.c')
 
 subdir('libass')
 
