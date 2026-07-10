@@ -89,6 +89,15 @@ tan_unit = executable(
     link_with: libass_for_tools,
 )
 
+bs4_geometry_unit = executable(
+    'bs4_geometry_unit',
+    files('bs4_geometry_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 test('distortion-warp', distort_unit)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit)
@@ -97,3 +106,4 @@ test('actor-colorcoding', colorcoding_unit)
 test('fad-color-fade', fad_unit)
 test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
+test('bs4-transformed-geometry', bs4_geometry_unit)

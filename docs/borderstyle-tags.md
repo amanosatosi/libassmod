@@ -18,11 +18,25 @@ Supported values are:
 
 - `\bs1` - normal legacy ASS outline rendering
 - `\bs3` - existing opaque box behavior
-- `\bs4` - existing libass rectangular event box behavior
+- `\bs4` - BorderStyle=4 transformed event-box behavior
 - `\bs5` - Mangetsu geometric border mode
 
 `BorderStyle=5` in a style is equivalent to using `\bs5` for events using that
 style.
+
+## BorderStyle=4 Event Geometry
+
+`BorderStyle=4` and `\bs4` create one event-level background box, not a box
+per glyph. The box is calculated from the event's local layout geometry before
+padding and event transforms are applied, then it follows the event through
+positioning, rotation, scaling, shear, 3D projection, distortion, and active
+clipping. Its box-border layers use that same transformed geometry.
+
+When an event changes geometry after visible content has begun, the one BS4 box
+uses the canonical geometry state of the first visible glyph or drawing rather
+than splitting into multiple boxes. Per-glyph randomized boundary effects do
+not reshape the single box. See `docs/box-tags.md` for the padding order,
+clip behavior, supported examples, and this intentional limitation.
 
 ## Mangetsu Geometric Borders
 

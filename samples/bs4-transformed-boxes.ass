@@ -1,0 +1,20 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Box,Arial,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H50000000,0,0,0,0,100,100,0,0,4,3,0,5,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\frz35}ROTATED SIGN
+Dialogue: 0,0:00:02.00,0:00:04.00,Box,,0,0,0,,{\an5\pos(640,360)\org(400,300)\boxp20\frz35}CUSTOM ORIGIN
+Dialogue: 0,0:00:04.00,0:00:06.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\frz35\clip(500,250,800,500)}CLIPPED
+Dialogue: 0,0:00:06.00,0:00:08.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\frx40\fry-25\frz10}PERSPECTIVE
+Dialogue: 0,0:00:08.00,0:00:10.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\fscx150\fscy70\fax0.35\bbs4\bbc&HFFFFFF&\2bbs10\2bbc&H000000&}SCALE + SHEAR
+Dialogue: 0,0:00:10.00,0:00:12.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\distort(1.5,-0.2,1.7,1.1,-0.2,1)}DISTORTED
+Dialogue: 0,0:00:12.00,0:00:14.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\frz25\clip(m 500 250 l 800 250 760 500 520 470)}VECTOR CLIP
+Dialogue: 0,0:00:14.00,0:00:16.00,Box,,0,0,0,,{\an5\pos(640,360)\boxp20\t(0,2000,\frz180\fscx150\fscy60)}ANIMATED

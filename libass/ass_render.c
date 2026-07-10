@@ -1765,9 +1765,12 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
         }
 
         ASS_ImagePriv *priv = (ASS_ImagePriv *) cur;
+        unsigned char *old_buffer = priv->buffer;
         priv->buffer = cur->bitmap = nbuffer;
         ass_cache_dec_ref(priv->source);
         priv->source = NULL;
+        if (old_buffer)
+            ass_aligned_free(old_buffer);
     }
 }
 
@@ -7214,6 +7217,110 @@ typedef struct {
     uint32_t color;
 } BoxBorderRenderLayer;
 
+/*
+ * BorderStyle=4 is one event-level object even though normal rendering keeps
+ * geometry on individual glyphs.  Keep a snapshot of one glyph's evaluated
+ * geometry for the box, but deliberately retain paint state in RenderContext:
+ * box mode, colour, padding and box-border tags have always been event-level
+ * final-state values.
+ */
+typedef struct {
+    bool valid;
+    ASS_DRect layout_bounds;
+    GlyphInfo geometry;
+    double device_x, device_y;
+} BS4BoxGeometry;
+
+static bool bs4_glyph_color_visible(const GlyphInfo *info, int layer)
+{
+    uint32_t color = info->c[layer];
+    ass_apply_fade(&color, info->fade);
+    return _a(color) != 0xFF;
+}
+
+static bool bs4_glyph_has_visible_paint(const GlyphInfo *info)
+{
+    if (bs4_glyph_color_visible(info, 0))
+        return true;
+
+    if ((info->effect_type == EF_KARAOKE ||
+         info->effect_type == EF_KARAOKE_KO ||
+         info->effect_type == EF_KARAOKE_KF) &&
+        bs4_glyph_color_visible(info, 1))
+        return true;
+
+    if ((glyph_border_max_x(info) || glyph_border_max_y(info) ||
+         has_multi_border_layers(info->border_layers)) &&
+        bs4_glyph_color_visible(info, 2))
+        return true;
+
+    return false;
+}
+
+static bool bs4_visible_glyph(const GlyphInfo *info)
+{
+    if (info->skip || !bs4_glyph_has_visible_paint(info))
+        return false;
+
+    if (info->drawing_text.str)
+        return true;
+
+    OutlineHashValue *outline = info->distorted_outline ?
+        info->distorted_outline : info->outline;
+    return outline && outline->outline[0].n_points;
+}
+
+static GlyphInfo *find_bs4_geometry_in_list(GlyphInfo *glyphs, int length,
+                                             GlyphInfo **fallback)
+{
+    for (int i = 0; i < length; i++) {
+        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
+            if (info->skip)
+                continue;
+            if (!*fallback)
+                *fallback = info;
+            if (bs4_visible_glyph(info))
+                return info;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * The first visible glyph/drawing defines the deterministic geometry state of
+ * an event box.  Later per-glyph geometry does not split the one BS4 box.
+ * This runs after origin/jitter evaluation but before glyph rendering turns
+ * GlyphInfo.pos into screen coordinates.
+ */
+static void capture_bs4_box_geometry(RenderContext *state,
+                                     BS4BoxGeometry *box,
+                                     const ASS_DRect *layout_bounds,
+                                     double device_x, double device_y)
+{
+    *box = (BS4BoxGeometry) {0};
+    box->layout_bounds = *layout_bounds;
+    box->device_x = device_x;
+    box->device_y = device_y;
+
+    TextInfo *text_info = &state->text_info;
+    GlyphInfo *fallback = NULL;
+    GlyphInfo *info = find_bs4_geometry_in_list(text_info->glyphs,
+                                                text_info->length,
+                                                &fallback);
+    for (int i = 0; !info && i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        info = find_bs4_geometry_in_list(group->glyphs, group->length,
+                                         &fallback);
+    }
+    if (!info)
+        info = fallback;
+    if (!info)
+        return;
+
+    box->geometry = *info;
+    box->valid = true;
+}
+
 static uint32_t box_border_layer_color(RenderContext *state,
                                        const BorderLayerState *layer)
 {
@@ -7225,101 +7332,310 @@ static uint32_t box_border_layer_color(RenderContext *state,
     return color;
 }
 
-static unsigned char *alloc_solid_mask(int w, int h)
+static bool bs4_double_to_d6(double value, int32_t *out)
 {
-    if (w < 1 || h < 1)
-        return NULL;
-    void *buffer = ass_aligned_alloc(1, (size_t) w * h, false);
-    if (!buffer)
-        return NULL;
-    memset(buffer, 0xFF, (size_t) w * h);
-    return buffer;
+    if (!isfinite(value) || fabs(value) > INT_MAX / 64.0)
+        return false;
+    *out = ass_lrint(value * 64.0);
+    return true;
 }
 
-static unsigned char *alloc_box_ring_mask(RenderContext *state,
-                                          int outer_left, int outer_top,
-                                          int outer_right, int outer_bottom,
-                                          int inner_left, int inner_top,
-                                          int inner_right, int inner_bottom,
-                                          int *left, int *top,
-                                          int *w, int *h)
+static bool bs4_effective_scales(const BS4BoxGeometry *box,
+                                 double *scale_x, double *scale_y)
 {
-    ASS_Renderer *render_priv = state->renderer;
-    outer_left = FFMINMAX(outer_left, 0, render_priv->width);
-    outer_top = FFMINMAX(outer_top, 0, render_priv->height);
-    outer_right = FFMINMAX(outer_right, 0, render_priv->width);
-    outer_bottom = FFMINMAX(outer_bottom, 0, render_priv->height);
-    *w = outer_right - outer_left;
-    *h = outer_bottom - outer_top;
-    if (*w < 1 || *h < 1)
-        return NULL;
-
-    unsigned char *buffer = ass_aligned_alloc(1, (size_t) *w * *h, false);
-    if (!buffer)
-        return NULL;
-    memset(buffer, 0, (size_t) *w * *h);
-
-    for (int y = 0; y < *h; y++) {
-        int ay = outer_top + y;
-        unsigned char *row = buffer + (size_t) y * *w;
-        if (ay < inner_top || ay >= inner_bottom) {
-            memset(row, 0xFF, *w);
-            continue;
-        }
-
-        int ix0 = FFMINMAX(inner_left - outer_left, 0, *w);
-        int ix1 = FFMINMAX(inner_right - outer_left, 0, *w);
-        if (ix0 > 0)
-            memset(row, 0xFF, ix0);
-        if (ix1 < *w)
-            memset(row + ix1, 0xFF, *w - ix1);
-    }
-
-    *left = outer_left;
-    *top = outer_top;
-    return buffer;
+    double x = box->geometry.scale_x * box->geometry.scale_fix;
+    double y = box->geometry.scale_y * box->geometry.scale_fix;
+    if (!isfinite(x) || !isfinite(y) || x == 0.0 || y == 0.0)
+        return false;
+    *scale_x = fabs(x);
+    *scale_y = fabs(y);
+    return true;
 }
 
-static void append_solid_mask_image(RenderContext *state,
-                                    unsigned char *mask, int w, int h,
-                                    int left, int top, uint32_t color,
-                                    unsigned type, ASS_Image ***tail,
-                                    ASS_ImageRGBA ***rgba_tail)
+/* Build the m1 glyph matrix in the event-local layout coordinate plane. */
+static bool bs4_event_transform_matrix(RenderContext *state,
+                                       const BS4BoxGeometry *box,
+                                       double matrix[3][3])
+{
+    GlyphInfo info = box->geometry;
+    if (!isfinite(info.scale_x) || !isfinite(info.scale_y) ||
+        info.scale_x == 0.0 || info.scale_y == 0.0)
+        return false;
+
+    ASS_Renderer *render_priv = state->renderer;
+    double jitter_x = info.has_jitter ? info.jitter_dx : 0.0;
+    double jitter_y = info.has_jitter ? info.jitter_dy : 0.0;
+    double screen_x = (box->device_x - render_priv->settings.left_margin) *
+        render_priv->par_scale_x + render_priv->settings.left_margin + jitter_x;
+    double screen_y = box->device_y + jitter_y;
+    if (!bs4_double_to_d6(screen_x, &info.pos.x) ||
+        !bs4_double_to_d6(screen_y, &info.pos.y))
+        return false;
+
+    int64_t shift_x = (int64_t) box->geometry.shift.x -
+        box->geometry.pos.x;
+    int64_t shift_y = (int64_t) box->geometry.shift.y -
+        box->geometry.pos.y;
+    if (shift_x < INT_MIN || shift_x > INT_MAX ||
+        shift_y < INT_MIN || shift_y > INT_MAX)
+        return false;
+    info.shift.x = (int32_t) shift_x;
+    info.shift.y = (int32_t) shift_y;
+
+    calc_transform_matrix(state, &info, matrix);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            if (!isfinite(matrix[i][j]))
+                return false;
+    return true;
+}
+
+static bool bs4_multiply_matrix(double result[3][3],
+                                const double left[3][3],
+                                const double right[3][3])
+{
+    double temp[3][3] = {{0}};
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 3; k++)
+                temp[i][j] += left[i][k] * right[k][j];
+            if (!isfinite(temp[i][j]))
+                return false;
+        }
+    }
+    memcpy(result, temp, sizeof(temp));
+    return true;
+}
+
+/*
+ * Make a homography from the cached unit square (0..64) to the supplied
+ * quadrilateral.  Rendering the unit square through that matrix keeps a BS4
+ * rectangle a real four-sided path through rotation and projection.
+ */
+static bool bs4_unit_square_to_quad(const ASS_DVector points[4],
+                                    double matrix[3][3])
+{
+    const double x0 = points[0].x, y0 = points[0].y;
+    const double x1 = points[1].x, y1 = points[1].y;
+    const double x2 = points[2].x, y2 = points[2].y;
+    const double x3 = points[3].x, y3 = points[3].y;
+    for (int i = 0; i < 4; i++)
+        if (!isfinite(points[i].x) || !isfinite(points[i].y))
+            return false;
+
+    double dx1 = x1 - x2;
+    double dx2 = x3 - x2;
+    double dx3 = x0 - x1 + x2 - x3;
+    double dy1 = y1 - y2;
+    double dy2 = y3 - y2;
+    double dy3 = y0 - y1 + y2 - y3;
+    double den = dx1 * dy2 - dx2 * dy1;
+    if (!isfinite(den) || fabs(den) < 1e-12)
+        return false;
+
+    double g = (dx3 * dy2 - dx2 * dy3) / den;
+    double h = (dx1 * dy3 - dx3 * dy1) / den;
+    double a = x1 * (g + 1.0) - x0;
+    double b = x3 * (h + 1.0) - x0;
+    double d = y1 * (g + 1.0) - y0;
+    double e = y3 * (h + 1.0) - y0;
+    double values[] = {a, b, x0, d, e, y0, g, h};
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+        if (!isfinite(values[i]))
+            return false;
+
+    matrix[0][0] = a / 64.0;
+    matrix[0][1] = b / 64.0;
+    matrix[0][2] = x0;
+    matrix[1][0] = d / 64.0;
+    matrix[1][1] = e / 64.0;
+    matrix[1][2] = y0;
+    matrix[2][0] = g / 64.0;
+    matrix[2][1] = h / 64.0;
+    matrix[2][2] = 1.0;
+    return true;
+}
+
+/*
+ * Map a local rectangle through the canonical event distortion first, then
+ * through the normal event transform.  All box-border rectangles share the
+ * padded fill rectangle as their distortion domain so their common edges stay
+ * attached instead of being independently re-normalised.
+ */
+static bool bs4_box_matrix(RenderContext *state, const BS4BoxGeometry *box,
+                           double left, double top, double right, double bottom,
+                           double domain_left, double domain_top,
+                           double domain_right, double domain_bottom,
+                           double matrix[3][3])
+{
+    if (!(left < right) || !(top < bottom) ||
+        !(domain_left < domain_right) || !(domain_top < domain_bottom))
+        return false;
+
+    ASS_DVector points[4] = {
+        { left * 64.0,  top * 64.0 },
+        { right * 64.0, top * 64.0 },
+        { right * 64.0, bottom * 64.0 },
+        { left * 64.0,  bottom * 64.0 },
+    };
+    if (box->geometry.distort_enabled) {
+        ASS_DistortParams params = {
+            .u1 = box->geometry.distort_u1,
+            .v1 = box->geometry.distort_v1,
+            .u2 = box->geometry.distort_u2,
+            .v2 = box->geometry.distort_v2,
+            .u3 = box->geometry.distort_u3,
+            .v3 = box->geometry.distort_v3,
+        };
+        const double x0 = domain_left * 64.0;
+        const double y0 = domain_top * 64.0;
+        const double x1 = domain_right * 64.0;
+        const double y1 = domain_bottom * 64.0;
+        for (int i = 0; i < 4; i++)
+            points[i] = ass_distort_map_point(&params, x0, y0, x1, y1,
+                                              points[i].x, points[i].y);
+    }
+
+    double local_matrix[3][3];
+    double event_matrix[3][3];
+    return bs4_unit_square_to_quad(points, local_matrix) &&
+        bs4_event_transform_matrix(state, box, event_matrix) &&
+        bs4_multiply_matrix(matrix, event_matrix, local_matrix);
+}
+
+/* Avoid rasterizing a completely off-frame box before normal clipping. */
+static bool bs4_bitmap_may_be_visible(RenderContext *state,
+                                      const double matrix[3][3])
 {
     ASS_Renderer *render_priv = state->renderer;
-    ASS_Image *img = my_draw_bitmap(mask, w, h, w, left, top, color, NULL);
-    if (!img)
-        return;
-
-    img->type = type;
-    **tail = img;
-    *tail = &img->next;
-
-    if (!rgba_tail)
-        return;
-
-    uint8_t alpha = 255 - _a(color);
-    ASS_ImageRGBA *rimg = ass_rgba_image_alloc(render_priv, w, h, left, top,
-                                               type);
-    if (!rimg)
-        return;
-
-    int stride = rimg->stride;
-    uint8_t *rgba = rimg->rgba;
-    for (int y = 0; y < h; y++) {
-        uint8_t *row = rgba + (size_t) y * stride;
-        const unsigned char *src = mask + (size_t) y * w;
-        for (int x = 0; x < w; x++) {
-            uint8_t a = (uint8_t) ((src[x] * alpha + 127) / 255);
-            row[4 * x + 0] = (uint8_t) ((_r(color) * a + 127) / 255);
-            row[4 * x + 1] = (uint8_t) ((_g(color) * a + 127) / 255);
-            row[4 * x + 2] = (uint8_t) ((_b(color) * a + 127) / 255);
-            row[4 * x + 3] = a;
+    double x_min = DBL_MAX, y_min = DBL_MAX;
+    double x_max = -DBL_MAX, y_max = -DBL_MAX;
+    for (int y = 0; y <= 64; y += 64) {
+        for (int x = 0; x <= 64; x += 64) {
+            double z = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2];
+            if (!isfinite(z) || z <= 0.0)
+                return true;
+            double px = (matrix[0][0] * x + matrix[0][1] * y + matrix[0][2]) /
+                z / 64.0;
+            double py = (matrix[1][0] * x + matrix[1][1] * y + matrix[1][2]) /
+                z / 64.0;
+            if (!isfinite(px) || !isfinite(py))
+                return true;
+            x_min = FFMIN(x_min, px);
+            y_min = FFMIN(y_min, py);
+            x_max = FFMAX(x_max, px);
+            y_max = FFMAX(y_max, py);
         }
     }
 
-    **rgba_tail = rimg;
-    *rgba_tail = &rimg->next;
+    int clip_x0 = 0, clip_y0 = 0;
+    int clip_x1 = render_priv->width, clip_y1 = render_priv->height;
+    if (!state->clip_mode) {
+        clip_x0 = FFMINMAX(state->clip_x0, 0, render_priv->width);
+        clip_y0 = FFMINMAX(state->clip_y0, 0, render_priv->height);
+        clip_x1 = FFMINMAX(state->clip_x1, 0, render_priv->width);
+        clip_y1 = FFMINMAX(state->clip_y1, 0, render_priv->height);
+    }
+    if (clip_x0 >= clip_x1 || clip_y0 >= clip_y1)
+        return false;
+
+    /* Keep a pixel of AA guard band; render_glyph performs the exact clip. */
+    return x_max >= clip_x0 - 1.0 && x_min <= clip_x1 + 1.0 &&
+        y_max >= clip_y0 - 1.0 && y_min <= clip_y1 + 1.0;
+}
+
+static bool bs4_get_bitmap(RenderContext *state, const double matrix[3][3],
+                           ASS_Vector *pos, Bitmap **bitmap)
+{
+    if (!bs4_bitmap_may_be_visible(state, matrix))
+        return false;
+
+    ASS_Renderer *render_priv = state->renderer;
+    OutlineHashKey outline_key = {0};
+    outline_key.type = OUTLINE_BOX;
+    OutlineHashValue *outline = ass_cache_get(render_priv->cache.outline_cache,
+                                              &outline_key, render_priv);
+    if (!outline || !outline->valid)
+        return false;
+
+    BitmapHashKey key = {0};
+    key.outline = outline;
+    double transform[3][3];
+    memcpy(transform, matrix, sizeof(transform));
+    if (!quantize_transform(transform, pos, NULL, true, &key))
+        return false;
+
+    *bitmap = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    return *bitmap && (*bitmap)->buffer && (*bitmap)->w && (*bitmap)->h;
+}
+
+static bool bs4_mask_has_coverage(const uint8_t *mask, int width, int height)
+{
+    for (int y = 0; y < height; y++)
+        for (int x = 0; x < width; x++)
+            if (mask[(size_t) y * width + x])
+                return true;
+    return false;
+}
+
+static uint8_t *bs4_copy_bitmap_mask(const Bitmap *bitmap)
+{
+    if (!bitmap || !bitmap->buffer || bitmap->w < 1 || bitmap->h < 1 ||
+        (size_t) bitmap->w > SIZE_MAX / (size_t) bitmap->h)
+        return NULL;
+
+    size_t size = (size_t) bitmap->w * bitmap->h;
+    uint8_t *mask = ass_aligned_alloc(1, size, false);
+    if (!mask)
+        return NULL;
+    for (int y = 0; y < bitmap->h; y++)
+        memcpy(mask + (size_t) y * bitmap->w,
+               bitmap->buffer + (ptrdiff_t) y * bitmap->stride, bitmap->w);
+    return mask;
+}
+
+/* Subtract anti-aliased inner coverage from the outer transformed rectangle. */
+static void bs4_subtract_inner_mask(uint8_t *outer_mask,
+                                    const Bitmap *outer, ASS_Vector outer_pos,
+                                    const Bitmap *inner, ASS_Vector inner_pos)
+{
+    if (!outer_mask || !outer || !inner || !inner->buffer)
+        return;
+
+    int64_t ox = (int64_t) outer_pos.x + outer->left;
+    int64_t oy = (int64_t) outer_pos.y + outer->top;
+    int64_t ix = (int64_t) inner_pos.x + inner->left;
+    int64_t iy = (int64_t) inner_pos.y + inner->top;
+    int64_t left = FFMAX(ox, ix);
+    int64_t top = FFMAX(oy, iy);
+    int64_t right = FFMIN(ox + outer->w, ix + inner->w);
+    int64_t bottom = FFMIN(oy + outer->h, iy + inner->h);
+    if (left >= right || top >= bottom)
+        return;
+
+    for (int64_t y = top; y < bottom; y++) {
+        uint8_t *dst = outer_mask + (size_t) (y - oy) * outer->w + (left - ox);
+        const uint8_t *src = inner->buffer + (y - iy) * inner->stride +
+            (left - ix);
+        for (int64_t x = left; x < right; x++) {
+            uint8_t coverage = *src++;
+            *dst = *dst > coverage ? *dst - coverage : 0;
+            dst++;
+        }
+    }
+}
+
+static ASS_Image **append_bs4_bitmap(RenderContext *state, Bitmap *bitmap,
+                                     ASS_Vector pos, uint32_t color,
+                                     unsigned type, ASS_Image **tail,
+                                     ASS_ImageRGBA ***rgba_tail)
+{
+    /* render_bitmap_rgba() expects a CombinedBitmapInfo even for flat masks. */
+    CombinedBitmapInfo paint = {0};
+    paint.base_c[0] = color;
+    paint.c[0] = color;
+    return render_glyph(state, &paint, bitmap, pos.x, pos.y, color, 0,
+                        1000000, tail, type, NULL, 0, 0, rgba_tail);
 }
 
 static int cmp_box_border_render_layer(const void *p1, const void *p2)
@@ -7379,23 +7695,47 @@ static int collect_box_border_render_layers(RenderContext *state,
 }
 
 static void add_background(RenderContext *state, EventImages *event_images,
-                           ASS_ImageRGBA **rgba_head)
+                           ASS_ImageRGBA **rgba_head,
+                           const BS4BoxGeometry *geometry)
 {
+    if (!geometry->valid)
+        return;
+
     ASS_Renderer *render_priv = state->renderer;
-    int size_x = state->shadow_x > 0 ?
-        lround(state->shadow_x * state->border_scale_x) : 0;
-    int size_y = state->shadow_y > 0 ?
-        lround(state->shadow_y * state->border_scale_y) : 0;
-    int fill_left    = event_images->left - size_x;
-    int fill_top     = event_images->top  - size_y;
-    int fill_right   = event_images->left + event_images->width  + size_x;
-    int fill_bottom  = event_images->top  + event_images->height + size_y;
-    int extra_x = lround(state->box_extra_x * state->border_scale_x);
-    int extra_y = lround(state->box_extra_y * state->border_scale_y);
-    fill_left       -= extra_x;
-    fill_right      += extra_x;
-    fill_top        -= extra_y;
-    fill_bottom     += extra_y;
+    double scale_x, scale_y;
+    if (!bs4_effective_scales(geometry, &scale_x, &scale_y))
+        return;
+
+    /*
+     * These are the old BS4 extents, moved from final screen-space into the
+     * event-local plane.  Padding and box-border widths are expanded here,
+     * before all rotation/projection/distortion.
+     */
+    double par = render_priv->par_scale_x;
+    if (!isfinite(par) || par <= 0.0)
+        return;
+    double shadow_x = state->shadow_x > 0.0 ?
+        state->shadow_x * state->border_scale_x * scale_x / par : 0.0;
+    double shadow_y = state->shadow_y > 0.0 ?
+        state->shadow_y * state->border_scale_y * scale_y : 0.0;
+    double extra_x = FFMAX(0.0, state->box_extra_x) *
+        state->border_scale_x * scale_x / par;
+    double extra_y = FFMAX(0.0, state->box_extra_y) *
+        state->border_scale_y * scale_y;
+
+    TextInfo *text_info = &state->text_info;
+    double fill_left = geometry->layout_bounds.x_min -
+        text_info->border_x / par - shadow_x - extra_x;
+    double fill_right = geometry->layout_bounds.x_max +
+        text_info->border_x / par + shadow_x + extra_x;
+    double fill_top = geometry->layout_bounds.y_min - text_info->border_top -
+        shadow_y - extra_y;
+    double fill_bottom = geometry->layout_bounds.y_max + text_info->border_bottom +
+        shadow_y + extra_y;
+    if (!isfinite(fill_left) || !isfinite(fill_top) ||
+        !isfinite(fill_right) || !isfinite(fill_bottom) ||
+        !(fill_left < fill_right) || !(fill_top < fill_bottom))
+        return;
 
     ASS_Image *box_head = NULL;
     ASS_Image **box_tail = &box_head;
@@ -7406,38 +7746,78 @@ static void add_background(RenderContext *state, EventImages *event_images,
     BoxBorderRenderLayer layers[ASS_BORDER_LAYERS_MAX];
     int n_layers = collect_box_border_render_layers(state, layers);
     for (int i = n_layers - 1; i >= 0; i--) {
-        BoxBorderRenderLayer *layer = &layers[i];
-        int left, top, w, h;
-        unsigned char *mask = alloc_box_ring_mask(
-            state,
-            fill_left - layer->outer_x,
-            fill_top - layer->outer_y,
-            fill_right + layer->outer_x,
-            fill_bottom + layer->outer_y,
-            fill_left - layer->inner_x,
-            fill_top - layer->inner_y,
-            fill_right + layer->inner_x,
-            fill_bottom + layer->inner_y,
-            &left, &top, &w, &h);
+        const BoxBorderRenderLayer *layer = &layers[i];
+        double outer_x = layer->outer_x * scale_x / par;
+        double outer_y = layer->outer_y * scale_y;
+        double inner_x = layer->inner_x * scale_x / par;
+        double inner_y = layer->inner_y * scale_y;
+        double outer_matrix[3][3], inner_matrix[3][3];
+        ASS_Vector outer_pos, inner_pos;
+        Bitmap *outer = NULL, *inner = NULL;
+        if (!bs4_box_matrix(state, geometry,
+                            fill_left - outer_x, fill_top - outer_y,
+                            fill_right + outer_x, fill_bottom + outer_y,
+                            fill_left, fill_top, fill_right, fill_bottom,
+                            outer_matrix) ||
+            !bs4_box_matrix(state, geometry,
+                            fill_left - inner_x, fill_top - inner_y,
+                            fill_right + inner_x, fill_bottom + inner_y,
+                            fill_left, fill_top, fill_right, fill_bottom,
+                            inner_matrix) ||
+            !bs4_get_bitmap(state, outer_matrix, &outer_pos, &outer))
+            continue;
+
+        /* An off-frame inner box is an empty hole, not a reason to drop
+         * the visible outward ring. */
+        if (bs4_bitmap_may_be_visible(state, inner_matrix) &&
+            !bs4_get_bitmap(state, inner_matrix, &inner_pos, &inner))
+            continue;
+
+        uint8_t *mask = bs4_copy_bitmap_mask(outer);
         if (!mask)
             continue;
-        append_solid_mask_image(state, mask, w, h, left, top, layer->color,
-                                IMAGE_TYPE_OUTLINE, &box_tail, rgba_tail);
+        if (inner)
+            bs4_subtract_inner_mask(mask, outer, outer_pos, inner, inner_pos);
+        if (bs4_mask_has_coverage(mask, outer->w, outer->h)) {
+            Bitmap ring = {
+                .left = outer->left,
+                .top = outer->top,
+                .w = outer->w,
+                .h = outer->h,
+                .logical_w = outer->logical_w,
+                .logical_h = outer->logical_h,
+                .sub_x = outer->sub_x,
+                .sub_y = outer->sub_y,
+                .stride = outer->w,
+                .buffer = mask,
+            };
+            box_tail = append_bs4_bitmap(state, &ring, outer_pos, layer->color,
+                                         IMAGE_TYPE_OUTLINE, box_tail, rgba_tail);
+        }
+        ass_aligned_free(mask);
     }
 
-    int left = FFMINMAX(fill_left, 0, render_priv->width);
-    int top = FFMINMAX(fill_top, 0, render_priv->height);
-    int right = FFMINMAX(fill_right, 0, render_priv->width);
-    int bottom = FFMINMAX(fill_bottom, 0, render_priv->height);
-    int w = right - left;
-    int h = bottom - top;
-    unsigned char *mask = alloc_solid_mask(w, h);
-    if (mask) {
-        uint32_t clr = state->c[3];
-        ass_apply_fades(&clr, state->fade, state->fade_color);
-        append_solid_mask_image(state, mask, w, h, left, top, clr,
-                                IMAGE_TYPE_SHADOW, &box_tail, rgba_tail);
+    double fill_matrix[3][3];
+    ASS_Vector fill_pos;
+    Bitmap *fill = NULL;
+    if (bs4_box_matrix(state, geometry, fill_left, fill_top,
+                       fill_right, fill_bottom,
+                       fill_left, fill_top, fill_right, fill_bottom,
+                       fill_matrix) &&
+        bs4_get_bitmap(state, fill_matrix, &fill_pos, &fill)) {
+        uint32_t color = state->c[3];
+        ass_apply_fades(&color, state->fade, state->fade_color);
+        box_tail = append_bs4_bitmap(state, fill, fill_pos, color,
+                                     IMAGE_TYPE_SHADOW, box_tail, rgba_tail);
     }
+
+    /* render_text() already clipped text, so only clip the new box images. */
+    *box_tail = NULL;
+    *box_rgba_tail = NULL;
+    if (box_head)
+        blend_vector_clip(state, box_head);
+    if (box_rgba_head)
+        blend_vector_clip_rgba(state, box_rgba_head);
 
     if (box_head) {
         *box_tail = event_images->imgs;
@@ -7477,6 +7857,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
 
     TextInfo *text_info = &state->text_info;
+    BS4BoxGeometry bs4_box_geometry = {0};
     if (text_info->length == 0) {
         // no valid symbols in the event; this can be smth like {comment}
         free_render_context(state);
@@ -7547,6 +7928,11 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         free_render_context(state);
         return false;
     }
+
+    /* Keep the box's source rectangle in untransformed event-local layout. */
+    ASS_DRect bs4_layout_bbox;
+    compute_string_bbox(text_info, &bs4_layout_bbox);
+    add_furi_to_bbox(text_info, &bs4_layout_bbox);
 
     apply_distortion(state);
 
@@ -7718,6 +8104,10 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     calculate_rotation_params(state, bbox_for_origin, device_x, device_y,
                               &object_anchor);
 
+    if (state->bs4_box_mode)
+        capture_bs4_box_geometry(state, &bs4_box_geometry, &bs4_layout_bbox,
+                                 device_x, device_y);
+
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);
     compute_mangetsu_gradient_rects(state);
@@ -7753,7 +8143,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     if (state->bs4_box_mode)
         add_background(state, event_images,
-                       rgba_out ? &event_images->imgs_rgba : NULL);
+                       rgba_out ? &event_images->imgs_rgba : NULL,
+                       &bs4_box_geometry);
 
     if (rgba_out)
         *rgba_out = event_images->imgs_rgba;
