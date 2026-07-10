@@ -50,7 +50,7 @@ colorcoding_sources = files('colorcoding_selftest.c')
 # not part of the shared-library export surface, so provide the implementation
 # directly when tests are linked against a shared libass.
 if get_option('default_library') == 'shared'
-    colorcoding_sources += gradient_test_src
+    colorcoding_sources += [gradient_test_src, config_h]
 endif
 
 colorcoding_unit = executable(
