@@ -173,7 +173,11 @@ static bool outside_right_triangle_is_empty(const Mask *mask)
     /* \clip(m 0 0 l 640 0 640 360): x * 360 >= y * 640 */
     for (int y = 0; y < HEIGHT; y++)
         for (int x = 0; x < WIDTH; x++)
-            if (mask->pixels[y * WIDTH + x] && x * HEIGHT + 1 < y * WIDTH)
+            /* The vector rasterizer has normal antialias coverage at the
+             * sloped edge. A sample more than two horizontal pixels outside
+             * the clip is a real leak. */
+            if (mask->pixels[y * WIDTH + x] &&
+                x * HEIGHT + 2 * HEIGHT < y * WIDTH)
                 return false;
     return true;
 }
