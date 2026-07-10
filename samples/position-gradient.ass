@@ -1,0 +1,21 @@
+[Script Info]
+Title: Fixed-frame primary gradient examples
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H00FFFFFF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,30,30,30,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(640,120)\1c&HFFFFFF&\pgrd(160,70,1120,180,0,&H0000FF&,&HFF0000&)}Horizontal fixed field
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(640,230)\1c&H80C0FF&\pgrd(160,180,1120,300,90,&H0000FF&,&H00FF00&)}Vertical fixed field
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(640,355)\1c&HFFFFFF&\pgrd(160,300,1120,420,45,&H0000FF&,50%,&H00FF00&,&HFF0000&)}Diagonal fixed field
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(640,480)\1c&HFFFFFF&\pgrd(160,430,1120,550,23.5,&HFF00FF&,&H00FFFF&)}Arbitrary angle
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\move(-250,610,1530,610)\1c&HFFFFFF&\pgrd(400,560,880,680,0,&H0000FF&,&HFF0000&)}Moving text crosses the field
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(640,630)\frz-12\1c&HFFFFFF&\pgrd(400,560,880,690,135,&H00FF00&,&H0000FF&)}Rotation does not rotate the field
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(1130,670)\1c&H00FFFF&\pgrd(400,560,880,690,0,&H0000FF&,&HFF0000&)}Outside is cyan
+Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\pos(180,670)\1c&H00FFFF&\pgrd(50,560,350,690,0,&H0000FF&,&HFF0000&)\pgrd()}Reset is cyan

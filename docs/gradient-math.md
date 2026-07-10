@@ -62,6 +62,19 @@ truncates by shifting right 32 bits. This is implemented in
 `ass_gradient_sample_color_fixed()` / `ass_gradient_sample_alpha_fixed()` in
 `libass/gradient.c`.
 
+## Fixed-frame Mangetsu primary gradients
+
+`\pgrd` / `\1pgrd` use the Mangetsu linear-stop sampler, not the bilinear
+sampler described above. Their rectangle is converted from ASS script
+coordinates to final frame coordinates using the same positioned-coordinate
+mapping as `\pos` and `\move`. The renderer normalizes the rectangle, projects
+its four final-frame corners onto the existing Mangetsu angle direction, and
+maps the interval between the minimum and maximum projections to `[0, 1]`.
+
+Only final pixel centres inside the rectangle are sampled. Pixels outside are
+not endpoint-clamped; they retain the ordinary active primary color. Full tag,
+transform, and edge semantics are documented in `position-gradient.md`.
+
 ## Color vs alpha
 
 Color and alpha use the same bilinear math, but are stored separately:
@@ -95,4 +108,3 @@ This logic is in `compute_line_gradient_rects()` in
 - The fixed-point path clamps `uf`/`vf` into `[0, 65536]` to avoid overflow.
 - The math is purely per-pixel; there is no gamma correction or perceptual
   blending.
-

@@ -8,6 +8,7 @@
 
 #include "ass.h"
 #include "ass_render.h"
+#include "gradient.h"
 
 typedef struct {
     int count;
@@ -25,6 +26,13 @@ typedef struct {
     uint64_t hash;
     bool needs_rgba;
 } RgbaSig;
+
+typedef struct {
+    bool needs_rgba;
+    int primary_pixels;
+    bool has_white;
+    bool has_colored;
+} RgbaColorStats;
 
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
 {
@@ -294,6 +302,50 @@ static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
     return sig->count > 0 && sig->alpha_coverage > 0;
 }
 
+static bool render_rgba_events_color_stats(ASS_Library *lib,
+                                            ASS_Renderer *renderer,
+                                            const char *events, long long now,
+                                            RgbaColorStats *stats)
+{
+    ASS_Track *track = read_events_track(lib, events);
+    if (!track)
+        return false;
+
+    int change = 0;
+    ASS_ImageRGBA *img = ass_render_frame_rgba(renderer, track, now, &change);
+    (void) change;
+
+    *stats = (RgbaColorStats) {
+        .needs_rgba = ass_frame_needs_rgba(renderer) != 0,
+    };
+    for (ASS_ImageRGBA *cur = img; cur; cur = cur->next) {
+        if (cur->type != IMAGE_TYPE_CHARACTER)
+            continue;
+        for (int y = 0; y < cur->h; y++) {
+            const uint8_t *row = cur->rgba + y * cur->stride;
+            for (int x = 0; x < cur->w; x++) {
+                uint8_t a = row[4 * x + 3];
+                if (a < 192)
+                    continue;
+                unsigned r = (row[4 * x + 0] * 255u + a / 2u) / a;
+                unsigned g = (row[4 * x + 1] * 255u + a / 2u) / a;
+                unsigned b = (row[4 * x + 2] * 255u + a / 2u) / a;
+                unsigned min_rgb = r < g ? (r < b ? r : b) :
+                                   (g < b ? g : b);
+                unsigned max_rgb = r > g ? (r > b ? r : b) :
+                                   (g > b ? g : b);
+                stats->primary_pixels++;
+                stats->has_white |= min_rgb > 220;
+                stats->has_colored |= max_rgb - min_rgb > 32;
+            }
+        }
+    }
+
+    ass_free_images_rgba(img);
+    ass_free_track(track);
+    return stats->primary_pixels > 0;
+}
+
 static bool same_sig(const RenderSig *a, const RenderSig *b)
 {
     return a->count == b->count &&
@@ -443,6 +495,137 @@ static bool expect_one_mangetsu_target(ASS_Library *lib,
         return false;
     }
     return true;
+}
+
+static bool expect_one_positioned_gradient_at(
+    ASS_Library *lib, ASS_Renderer *renderer, const char *dialogue,
+    long long now,
+    int stops, double angle, double x1, double y1, double x2, double y2,
+    bool rect_valid, const char *label, MangetsuGradientDebugState *debug_out)
+{
+    MangetsuGradientDebugState debug;
+    if (!expect_one_mangetsu_segment_at(lib, renderer, dialogue, now, stops,
+                                        angle, label, &debug))
+        return false;
+
+    const MangetsuGradientDebugSegment *segment = &debug.segments[0];
+    if (segment->target != MANGETSU_GRADIENT_TARGET_COLOR ||
+            segment->layer != 0 || segment->coordinate_mode !=
+                MANGETSU_GRADIENT_POSITIONED_RECT ||
+            !close_double(segment->script_x1, x1) ||
+            !close_double(segment->script_y1, y1) ||
+            !close_double(segment->script_x2, x2) ||
+            !close_double(segment->script_y2, y2) ||
+            segment->positioned_rect_valid != rect_valid) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    if (debug_out)
+        *debug_out = debug;
+    return true;
+}
+
+static bool expect_one_positioned_gradient(
+    ASS_Library *lib, ASS_Renderer *renderer, const char *dialogue,
+    int stops, double angle, double x1, double y1, double x2, double y2,
+    bool rect_valid, const char *label, MangetsuGradientDebugState *debug_out)
+{
+    return expect_one_positioned_gradient_at(
+        lib, renderer, dialogue, 0, stops, angle, x1, y1, x2, y2, rect_valid,
+        label, debug_out);
+}
+
+static bool test_positioned_gradient_math(void)
+{
+    MangetsuGradientLayer layer = {
+        .active = true,
+        .type = MANGETSU_GRADIENT_TYPE_LINEAR,
+        .coordinate_mode = MANGETSU_GRADIENT_POSITIONED_RECT,
+        .angle = 0.0,
+        .n_stops = 2,
+        .stops = {
+            { .offset = 0.0, .color = 0xFF000000 },
+            { .offset = 1.0, .color = 0x0000FF00 },
+        },
+    };
+    uint32_t color = 0;
+    ass_mangetsu_gradient_prepare_positioned(&layer, 100, 200, 700, 500);
+    if (!layer.positioned_rect.valid ||
+            !ass_mangetsu_positioned_gradient_sample_color(&layer, 100, 200,
+                                                            &color) ||
+            color != 0xFF000000 ||
+            !ass_mangetsu_positioned_gradient_sample_color(&layer, 700, 500,
+                                                            &color) ||
+            color != 0x0000FF00 ||
+            ass_mangetsu_positioned_gradient_sample_color(&layer, 99.999, 200,
+                                                            &color))
+        return false;
+
+    ass_mangetsu_gradient_prepare_positioned(&layer, 700, 500, 100, 200);
+    if (!layer.positioned_rect.valid ||
+            !ass_mangetsu_positioned_gradient_sample_color(&layer, 100, 350,
+                                                            &color) ||
+            color != 0xFF000000)
+        return false;
+
+    ass_mangetsu_gradient_prepare_positioned(&layer, 100, 200, 100, 500);
+    return !layer.positioned_rect.valid &&
+           !ass_mangetsu_positioned_gradient_sample_color(&layer, 100, 200,
+                                                           &color);
+}
+
+static bool test_positioned_gradient_max_stops(ASS_Library *lib,
+                                               ASS_Renderer *renderer)
+{
+    char dialogue[4096];
+    int len = snprintf(dialogue, sizeof(dialogue),
+                       "{\\pgrd(0,0,640,360,0,&H000000&");
+    if (len < 0 || len >= (int) sizeof(dialogue))
+        return false;
+
+    for (int i = 1; i < MANGETSU_GRADIENT_MAX_STOPS - 1; i++) {
+        int written = snprintf(dialogue + len, sizeof(dialogue) - len,
+                               ",%d%%,&H%06X&", i * 100 / 63,
+                               (unsigned) (i & 1 ? 0x0000FF : 0xFF0000));
+        if (written < 0 || written >= (int) sizeof(dialogue) - len)
+            return false;
+        len += written;
+    }
+    int written = snprintf(dialogue + len, sizeof(dialogue) - len,
+                           ",&HFFFFFF&)}Maximum");
+    if (written < 0 || written >= (int) sizeof(dialogue) - len)
+        return false;
+
+    return expect_one_positioned_gradient(
+        lib, renderer, dialogue, MANGETSU_GRADIENT_MAX_STOPS, 0.0,
+        0, 0, 640, 360, true,
+        "positioned gradient did not preserve the Mangetsu maximum stop count",
+        NULL);
+}
+
+static bool test_positioned_gradient_motion(ASS_Library *lib,
+                                            ASS_Renderer *renderer)
+{
+    const char *events =
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,"
+        "{\\move(60,360,580,360)\\1c&HFFFFFF&"
+        "\\pgrd(200,300,440,420,0,&H0000FF&,&HFF0000&)}MOVE\n";
+    RgbaColorStats before, entering, inside, leaving, after;
+    bool ok = render_rgba_events_color_stats(lib, renderer, events, 0, &before) &&
+              render_rgba_events_color_stats(lib, renderer, events, 3000, &entering) &&
+              render_rgba_events_color_stats(lib, renderer, events, 5000, &inside) &&
+              render_rgba_events_color_stats(lib, renderer, events, 7000, &leaving) &&
+              render_rgba_events_color_stats(lib, renderer, events, 9000, &after);
+    if (!ok)
+        return false;
+
+    return before.needs_rgba && entering.needs_rgba && inside.needs_rgba &&
+           leaving.needs_rgba && after.needs_rgba &&
+           before.has_white && !before.has_colored &&
+           entering.has_white && entering.has_colored &&
+           !inside.has_white && inside.has_colored &&
+           leaving.has_white && leaving.has_colored &&
+           after.has_white && !after.has_colored;
 }
 
 int main(void)
@@ -1149,6 +1332,144 @@ int main(void)
         lib, renderer,
         "{\\1gra(,&H00&,&HFF&)}Malformed",
         0, "malformed Mangetsu alpha gradient did not get ignored safely");
+
+    if (!test_positioned_gradient_math()) {
+        fprintf(stderr, "positioned gradient boundary/projection math failed\n");
+        ok = false;
+    }
+    if (!test_positioned_gradient_max_stops(lib, renderer)) {
+        fprintf(stderr, "positioned gradient maximum-stop parser test failed\n");
+        ok = false;
+    }
+    if (!test_positioned_gradient_motion(lib, renderer)) {
+        fprintf(stderr, "positioned gradient did not remain fixed during motion\n");
+        ok = false;
+    }
+
+    MangetsuGradientDebugState positioned_debug;
+    ok &= expect_one_positioned_gradient(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,50%,&H0000FF&,&HFFFFFF&)}Positioned",
+        3, 0.0, 100, 200, 700, 500, true,
+        "valid \\pgrd did not parse as a positioned primary gradient",
+        &positioned_debug);
+    ok &= expect_one_positioned_gradient(
+        lib, renderer,
+        "{\\1pgrd(700,500,100,200,450,&H000000&,&HFFFFFF&)}Alias",
+        2, 450.0, 100, 200, 700, 500, true,
+        "\\1pgrd alias did not normalize the positioned rectangle", NULL);
+    if (ok && positioned_debug.segments[0].target !=
+            MANGETSU_GRADIENT_TARGET_COLOR) {
+        fprintf(stderr, "positioned gradient did not target primary fill\n");
+        ok = false;
+    }
+    RgbaSig positioned_rgba;
+    ok &= render_rgba_case(
+        lib, renderer, "",
+        "{\\1c&HFFFFFF&\\pgrd(100,100,540,260,0,&H000000&,&HFFFFFF&)}RGBA",
+        &positioned_rgba);
+    if (ok && !positioned_rgba.needs_rgba) {
+        fprintf(stderr, "positioned gradient did not require RGBA output\n");
+        ok = false;
+    }
+
+    ok &= expect_one_positioned_gradient(
+        lib, renderer,
+        "{\\pgrd(-10.5,20.25,800.75,340.5,-45.5,&H000000&,&HFFFFFF&)}Decimal",
+        2, -45.5, -10.5, 20.25, 800.75, 340.5, true,
+        "decimal or off-frame positioned coordinates did not parse", NULL);
+    ok &= expect_one_positioned_gradient(
+        lib, renderer,
+        "{\\pgrd(100,100,100,300,0,&H000000&,&HFFFFFF&)}Degenerate",
+        2, 0.0, 100, 100, 100, 300, false,
+        "zero-width positioned rectangle was not safely disabled", NULL);
+
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\pgrd(100,200,700,500,&H000000&,&HFFFFFF&)}Missing",
+        0, "positioned gradient missing its angle was accepted");
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\pgrd(100,200,700,500,0)}Missing",
+        0, "positioned gradient missing stops was accepted");
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\pgrd(100x,200,700,500,0,&H000000&,&HFFFFFF&)}Garbage",
+        0, "positioned gradient coordinate garbage was accepted");
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\pgrd(100,200,700,500,nan,&H000000&,&HFFFFFF&)}NaN",
+        0, "positioned gradient NaN angle was accepted");
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\pgrd(100,200,700,500,inf,&H000000&,&HFFFFFF&)}Infinity",
+        0, "positioned gradient infinite angle was accepted");
+    ok &= expect_one_positioned_gradient(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\pgrd(100,,700,500,0,&HFFFFFF&,&H000000&)}Keep",
+        2, 0.0, 100, 200, 700, 500, true,
+        "rejected positioned gradient changed the active state", NULL);
+
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\pgrd()}Reset",
+        0, "\\pgrd() did not reset the positioned gradient");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\1pgrd()}Reset",
+        0, "\\1pgrd() did not reset the positioned gradient");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\1c&HFFFFFF&}Color",
+        0, "\\1c did not disable the positioned gradient");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\r}Reset",
+        0, "\\r did not disable the positioned gradient");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\rAlt}Reset",
+        0, "\\rStyleName did not disable the positioned gradient");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\1vc(&H000000&,&HFFFFFF&)}Vector",
+        0, "\\1vc did not replace the positioned gradient");
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\1img(missing)}Image",
+        0, "\\1img did not replace the positioned gradient");
+    ok &= expect_one_positioned_gradient(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)}Positioned",
+        2, 0.0, 100, 200, 700, 500, true,
+        "positioned gradient did not replace attached gradient", NULL);
+    ok &= expect_one_mangetsu_segment(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\1grd(90,&H000000&,&HFFFFFF&)}Attached",
+        2, 90.0, "attached gradient did not replace positioned gradient", NULL);
+
+    ok &= expect_one_positioned_gradient_at(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\t(0,1000,\\pgrd(200,220,800,520,90,&HFFFFFF&,&H000000&))}Transform",
+        500, 2, 45.0, 150, 210, 750, 510, true,
+        "positioned gradient transform did not interpolate coordinates and angle",
+        NULL);
+    ok &= expect_one_positioned_gradient_at(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\t(0,1000,\\pgrd(100,200,700,500,0,&H000000&,50%,&H0000FF&,&HFFFFFF&))}Stops",
+        500, 3, 0.0, 100, 200, 700, 500, true,
+        "positioned gradient transform did not merge stop positions", NULL);
+    ok &= expect_one_positioned_gradient_at(
+        lib, renderer,
+        "{\\1c&H000000&\\t(0,1000,\\pgrd(100,200,700,500,0,&H0000FF&,&HFFFFFF&))}Solid",
+        500, 2, 0.0, 100, 200, 700, 500, true,
+        "solid-to-positioned transform did not synthesize a source gradient",
+        NULL);
+    ok &= expect_one_mangetsu_segment_at(
+        lib, renderer,
+        "{\\1grd(0,&H000000&,&HFFFFFF&)\\t(0,1000,\\pgrd(100,200,700,500,90,&HFFFFFF&,&H000000&))}Cross",
+        500, 2, 0.0,
+        "attached-to-positioned transform was not rejected safely", NULL);
+    ok &= expect_one_positioned_gradient_at(
+        lib, renderer,
+        "{\\pgrd(100,200,700,500,0,&H000000&,&HFFFFFF&)\\t(0,1000,\\1grd(90,&HFFFFFF&,&H000000&))}Cross",
+        500, 2, 0.0, 100, 200, 700, 500, true,
+        "positioned-to-attached transform was not rejected safely", NULL);
 
     RgbaSig grd_border, bgrd_border;
     ok &= render_rgba_case(

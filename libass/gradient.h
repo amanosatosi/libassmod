@@ -68,14 +68,37 @@ typedef enum {
     MANGETSU_GRADIENT_TYPE_LINEAR = 0,
 } MangetsuGradientType;
 
+/*
+ * Attached gradients derive their rectangle from the rendered subtitle
+ * segment. Positioned gradients instead retain a rectangle in ASS script
+ * coordinates and are sampled in final frame coordinates.
+ */
+typedef enum {
+    MANGETSU_GRADIENT_NONE = 0,
+    MANGETSU_GRADIENT_ATTACHED,
+    MANGETSU_GRADIENT_POSITIONED_RECT,
+} MangetsuGradientCoordinateMode;
+
+typedef struct {
+    bool valid;
+    double left, right, top, bottom;
+    double dx, dy;
+    double projection_min;
+    double inverse_projection_span;
+} MangetsuGradientPositionedRect;
+
 typedef struct {
     bool active;
     MangetsuGradientType type;
+    MangetsuGradientCoordinateMode coordinate_mode;
     int segment_id;
     double angle;
     int n_stops;
     MangetsuGradientStop stops[MANGETSU_GRADIENT_MAX_STOPS];
+    /* Normalized ASS script-space bounds for POSITIONED_RECT. */
+    double script_x1, script_y1, script_x2, script_y2;
     GradientRect rect;
+    MangetsuGradientPositionedRect positioned_rect;
 } MangetsuGradientLayer;
 
 typedef struct {
@@ -90,11 +113,14 @@ typedef struct {
     MangetsuGradientTarget target;
     int layer;
     MangetsuGradientType type;
+    MangetsuGradientCoordinateMode coordinate_mode;
     int segment_id;
     double angle;
     int n_stops;
     int bitmap_count;
     bool rect_valid;
+    bool positioned_rect_valid;
+    double script_x1, script_y1, script_x2, script_y2;
     MangetsuGradientStop stops[MANGETSU_GRADIENT_MAX_STOPS];
 } MangetsuGradientDebugSegment;
 
@@ -136,5 +162,10 @@ uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
                                             double x, double y);
 uint8_t ass_mangetsu_gradient_sample_alpha(const MangetsuGradientLayer *layer,
                                            double x, double y);
+void ass_mangetsu_gradient_prepare_positioned(MangetsuGradientLayer *layer,
+                                              double x1, double y1,
+                                              double x2, double y2);
+bool ass_mangetsu_positioned_gradient_sample_color(
+    const MangetsuGradientLayer *layer, double x, double y, uint32_t *color);
 
 #endif /* LIBASS_GRADIENT_H */

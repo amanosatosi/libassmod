@@ -262,11 +262,19 @@ static bool mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
         return false;
     if (!a->active)
         return true;
-    if (a->type != b->type || a->segment_id != b->segment_id ||
-            a->angle != b->angle || a->n_stops != b->n_stops)
+    if (a->type != b->type || a->coordinate_mode != b->coordinate_mode ||
+            a->segment_id != b->segment_id || a->angle != b->angle ||
+            a->n_stops != b->n_stops)
         return false;
-    return !memcmp(a->stops, b->stops,
-                   a->n_stops * sizeof(a->stops[0]));
+    if (a->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT &&
+            (a->script_x1 != b->script_x1 || a->script_y1 != b->script_y1 ||
+             a->script_x2 != b->script_x2 || a->script_y2 != b->script_y2))
+        return false;
+    for (int i = 0; i < a->n_stops; i++)
+        if (a->stops[i].offset != b->stops[i].offset ||
+                a->stops[i].color != b->stops[i].color)
+            return false;
+    return true;
 }
 
 bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
@@ -307,7 +315,8 @@ static double mangetsu_project(double x, double y, double dx, double dy)
 static double mangetsu_gradient_position(const MangetsuGradientLayer *layer,
                                          double x, double y)
 {
-    if (!layer->rect.valid || layer->rect.x1 <= layer->rect.x0 ||
+    if (layer->coordinate_mode != MANGETSU_GRADIENT_ATTACHED ||
+            !layer->rect.valid || layer->rect.x1 <= layer->rect.x0 ||
             layer->rect.y1 <= layer->rect.y0)
         return 0.0;
 
@@ -327,14 +336,9 @@ static double mangetsu_gradient_position(const MangetsuGradientLayer *layer,
     return clamp01(t);
 }
 
-uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
-                                            double x, double y)
+static uint32_t mangetsu_gradient_sample_color_at(
+    const MangetsuGradientLayer *layer, double t)
 {
-    if (!layer || !layer->active || layer->n_stops <= 0)
-        return 0;
-
-    double t = mangetsu_gradient_position(layer, x, y);
-
     if (t <= layer->stops[0].offset)
         return layer->stops[0].color;
 
@@ -351,6 +355,93 @@ uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
     }
 
     return layer->stops[layer->n_stops - 1].color;
+}
+
+void ass_mangetsu_gradient_prepare_positioned(MangetsuGradientLayer *layer,
+                                              double x1, double y1,
+                                              double x2, double y2)
+{
+    if (!layer || layer->coordinate_mode !=
+            MANGETSU_GRADIENT_POSITIONED_RECT)
+        return;
+
+    layer->positioned_rect = (MangetsuGradientPositionedRect) {0};
+    if (!layer->active || layer->n_stops <= 0 || !isfinite(x1) ||
+            !isfinite(y1) || !isfinite(x2) || !isfinite(y2) ||
+            !isfinite(layer->angle))
+        return;
+
+    double left = fmin(x1, x2);
+    double right = fmax(x1, x2);
+    double top = fmin(y1, y2);
+    double bottom = fmax(y1, y2);
+    const double epsilon = 0.000000001;
+    if (right - left <= epsilon || bottom - top <= epsilon)
+        return;
+
+    double radians = layer->angle * MANGETSU_GRADIENT_PI / 180.0;
+    double dx = cos(radians);
+    double dy = sin(radians);
+    if (!isfinite(dx) || !isfinite(dy))
+        return;
+
+    double p00 = mangetsu_project(left, top, dx, dy);
+    double p10 = mangetsu_project(right, top, dx, dy);
+    double p01 = mangetsu_project(left, bottom, dx, dy);
+    double p11 = mangetsu_project(right, bottom, dx, dy);
+    double p_min = fmin(fmin(p00, p10), fmin(p01, p11));
+    double p_max = fmax(fmax(p00, p10), fmax(p01, p11));
+    double span = p_max - p_min;
+    if (!isfinite(p_min) || !isfinite(p_max) || span <= epsilon)
+        return;
+
+    layer->positioned_rect = (MangetsuGradientPositionedRect) {
+        .valid = true,
+        .left = left,
+        .right = right,
+        .top = top,
+        .bottom = bottom,
+        .dx = dx,
+        .dy = dy,
+        .projection_min = p_min,
+        .inverse_projection_span = 1.0 / span,
+    };
+}
+
+bool ass_mangetsu_positioned_gradient_sample_color(
+    const MangetsuGradientLayer *layer, double x, double y, uint32_t *color)
+{
+    if (!layer || !color || !layer->active || layer->n_stops <= 0 ||
+            layer->coordinate_mode != MANGETSU_GRADIENT_POSITIONED_RECT ||
+            !layer->positioned_rect.valid)
+        return false;
+
+    const MangetsuGradientPositionedRect *rect = &layer->positioned_rect;
+    if (x < rect->left || x > rect->right || y < rect->top || y > rect->bottom)
+        return false;
+
+    double t = (mangetsu_project(x, y, rect->dx, rect->dy) -
+                rect->projection_min) * rect->inverse_projection_span;
+    if (!isfinite(t))
+        return false;
+    *color = mangetsu_gradient_sample_color_at(layer, clamp01(t));
+    return true;
+}
+
+uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,
+                                            double x, double y)
+{
+    if (!layer || !layer->active || layer->n_stops <= 0)
+        return 0;
+
+    if (layer->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+        uint32_t color = 0;
+        return ass_mangetsu_positioned_gradient_sample_color(layer, x, y,
+                                                              &color) ? color : 0;
+    }
+
+    double t = mangetsu_gradient_position(layer, x, y);
+    return mangetsu_gradient_sample_color_at(layer, t);
 }
 
 uint8_t ass_mangetsu_gradient_sample_alpha(const MangetsuGradientLayer *layer,

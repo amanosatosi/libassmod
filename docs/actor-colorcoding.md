@@ -111,6 +111,12 @@ clears `\1gra`, `\3a` clears `\3gra`/`\1bga`, and `\2ba` clears `\2bga`.
 alpha behavior. Font/style changes and `\N` do not split an active Mangetsu
 gradient segment.
 
+`\pgrd(x1,y1,x2,y2,angle,stops...)` and its `\1pgrd` alias are primary-fill
+fixed-frame color gradients. They use the same color-stop grammar as `\1grd`.
+Actor colorcoding remains the ordinary primary color beneath this source, so it
+is used for every positioned-gradient pixel outside the fixed rectangle unless
+an ordinary `\c` or `\1c` later overrides it.
+
 Mangetsu true-gradient definitions can be animated with normal ASS `\t(...)`
 transforms. Angles use shortest-path interpolation, colors interpolate per RGB
 component, alpha gradients interpolate ASS alpha bytes numerically, and

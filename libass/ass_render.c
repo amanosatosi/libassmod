@@ -593,7 +593,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
     const GradientValues *vals = &info->gradient.layer[layer];
     const MangetsuGradientLayer *mangetsu = layer < MANGETSU_GRADIENT_LAYERS ?
         &info->mangetsu_gradient.layer[layer] : NULL;
-    bool use_mangetsu = mangetsu && mangetsu->active && mangetsu->rect.valid;
+    bool use_mangetsu = mangetsu && mangetsu->active &&
+        ((mangetsu->coordinate_mode == MANGETSU_GRADIENT_ATTACHED &&
+          mangetsu->rect.valid) ||
+         mangetsu->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT);
     const MangetsuGradientLayer *mangetsu_alpha =
         layer < MANGETSU_GRADIENT_LAYERS ?
             &info->mangetsu_gradient.alpha[layer] : NULL;
@@ -755,13 +758,20 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 int64_t num_u = ((int64_t) (src_x + x)) << 16;
                 uf = (int32_t) (num_u / denom_w);
             }
-            uint32_t color = use_mangetsu ?
-                ass_mangetsu_gradient_sample_color(mangetsu,
-                                                   dst_x + x + 0.5,
-                                                   dst_y + y + 0.5) :
-                (vals->color_enabled ?
-                    ass_gradient_sample_color_fixed(vals, uf, vf) :
-                    base_color);
+            uint32_t color;
+            if (use_mangetsu && mangetsu->coordinate_mode ==
+                    MANGETSU_GRADIENT_POSITIONED_RECT) {
+                /* Pixel centres are tested in final frame coordinates. */
+                if (!ass_mangetsu_positioned_gradient_sample_color(
+                        mangetsu, dst_x + x + 0.5, dst_y + y + 0.5, &color))
+                    color = base_color;
+            } else if (use_mangetsu) {
+                color = ass_mangetsu_gradient_sample_color(
+                    mangetsu, dst_x + x + 0.5, dst_y + y + 0.5);
+            } else {
+                color = vals->color_enabled ?
+                    ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
+            }
             ass_apply_fade_color(&color, info->fade_color);
             uint8_t alpha = use_mangetsu_alpha ?
                 ass_mangetsu_gradient_sample_alpha(mangetsu_alpha,
@@ -6286,15 +6296,26 @@ static const MangetsuGradientLayer *mangetsu_gradient_const_layer_at(
 }
 
 static void compute_mangetsu_gradient_rect_for_layer(
-    TextInfo *text_info, MangetsuGradientTarget target, int layer_index)
+    RenderContext *state, MangetsuGradientTarget target, int layer_index)
 {
+    TextInfo *text_info = &state->text_info;
+    ASS_Renderer *render_priv = state->renderer;
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
         CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
         MangetsuGradientLayer *layer =
             mangetsu_gradient_layer_at(&info->mangetsu_gradient, target,
                                        layer_index);
-        if (layer)
+        if (!layer)
+            continue;
+        if (layer->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+            ass_mangetsu_gradient_prepare_positioned(
+                layer, x2scr_pos_scaled(render_priv, layer->script_x1),
+                y2scr_pos(render_priv, layer->script_y1),
+                x2scr_pos_scaled(render_priv, layer->script_x2),
+                y2scr_pos(render_priv, layer->script_y2));
+        } else {
             layer->rect = (GradientRect) {0};
+        }
     }
 
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
@@ -6302,7 +6323,8 @@ static void compute_mangetsu_gradient_rect_for_layer(
         MangetsuGradientLayer *layer =
             mangetsu_gradient_layer_at(&info->mangetsu_gradient, target,
                                        layer_index);
-        if (!layer || !layer->active)
+        if (!layer || !layer->active || layer->coordinate_mode !=
+                MANGETSU_GRADIENT_ATTACHED)
             continue;
 
         GradientRect rect = {0};
@@ -6311,7 +6333,8 @@ static void compute_mangetsu_gradient_rect_for_layer(
             const MangetsuGradientLayer *other_layer =
                 mangetsu_gradient_const_layer_at(&other->mangetsu_gradient,
                                                  target, layer_index);
-            if (!other_layer->active ||
+            if (!other_layer->active || other_layer->coordinate_mode !=
+                    MANGETSU_GRADIENT_ATTACHED ||
                     other_layer->segment_id != layer->segment_id)
                 continue;
             update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
@@ -6322,20 +6345,18 @@ static void compute_mangetsu_gradient_rect_for_layer(
 
 static void compute_mangetsu_gradient_rects(RenderContext *state)
 {
-    TextInfo *text_info = &state->text_info;
-
     for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
         compute_mangetsu_gradient_rect_for_layer(
-            text_info, MANGETSU_GRADIENT_TARGET_COLOR, layer);
+            state, MANGETSU_GRADIENT_TARGET_COLOR, layer);
     for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
         compute_mangetsu_gradient_rect_for_layer(
-            text_info, MANGETSU_GRADIENT_TARGET_BORDER, layer);
+            state, MANGETSU_GRADIENT_TARGET_BORDER, layer);
     for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
         compute_mangetsu_gradient_rect_for_layer(
-            text_info, MANGETSU_GRADIENT_TARGET_ALPHA, layer);
+            state, MANGETSU_GRADIENT_TARGET_ALPHA, layer);
     for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
         compute_mangetsu_gradient_rect_for_layer(
-            text_info, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
+            state, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
 }
 
 static MangetsuGradientDebugSegment *find_mangetsu_debug_segment(
@@ -6370,14 +6391,20 @@ static void collect_mangetsu_gradient_debug_for_layer(
             segment->target = target;
             segment->layer = layer_index;
             segment->type = layer->type;
+            segment->coordinate_mode = layer->coordinate_mode;
             segment->segment_id = layer->segment_id;
             segment->angle = layer->angle;
             segment->n_stops = layer->n_stops;
+            segment->script_x1 = layer->script_x1;
+            segment->script_y1 = layer->script_y1;
+            segment->script_x2 = layer->script_x2;
+            segment->script_y2 = layer->script_y2;
             memcpy(segment->stops, layer->stops,
                    layer->n_stops * sizeof(layer->stops[0]));
         }
         segment->bitmap_count++;
         segment->rect_valid |= layer->rect.valid;
+        segment->positioned_rect_valid |= layer->positioned_rect.valid;
     }
 }
 

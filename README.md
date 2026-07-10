@@ -138,6 +138,12 @@ For implementation details and API notes, see:
 
 https://github.com/amanosatosi/libassmod/blob/master/docs/rgba-rendering.md
 
+Mangetsu also supports attached true gradients (`\1grd`..`\5grd`) and the
+primary-fill fixed-frame gradient aliases `\pgrd(...)` / `\1pgrd(...)`.
+The latter is bounded to a script-coordinate rectangle: text samples the
+gradient only while its final pixels overlap that rectangle, and otherwise uses
+the active primary color. See `docs/position-gradient.md`.
+
 ---
 
 ### Image fill (RGBA pipeline)

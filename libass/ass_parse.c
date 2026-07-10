@@ -410,6 +410,10 @@ static void apply_img_tag(RenderContext *state, int layer,
         state->image_fill.layer[layer].path.len = path_arg.end - path_arg.start;
         state->image_fill.layer[layer].xoffset = 0;
         state->image_fill.layer[layer].yoffset = 0;
+        /* Image fill is the latest primary-fill color source. */
+        if (layer == 0)
+            ass_mangetsu_gradient_layer_reset(
+                &state->mangetsu_gradient.layer[0]);
         state->needs_rgba = true;
     }
 
@@ -952,6 +956,7 @@ static bool colorcode_tag_allowed(char *p, char *name_end)
         "1c", "2c", "3c", "4c", "5c", "c",
         "1grd", "2grd", "3grd", "4grd", "5grd",
         "1gra", "2gra", "3gra", "4gra", "5gra",
+        "pgrd", "1pgrd",
         "b", "i", "u", "s",
     };
 
@@ -1077,12 +1082,13 @@ static bool parse_mangetsu_gradient_reset_arg(struct arg arg)
 }
 
 static bool split_mangetsu_gradient_raw_args(char *start, char *end,
-                                             struct arg *args, int *nargs)
+                                             struct arg *args, int max_args,
+                                             int *nargs)
 {
     *nargs = 0;
     char *arg_start = start;
     while (1) {
-        if (*nargs >= 2 * MANGETSU_GRADIENT_MAX_STOPS - 1)
+        if (*nargs >= max_args)
             return false;
 
         char *arg_end = arg_start;
@@ -1115,6 +1121,7 @@ static bool parse_mangetsu_gradient_args(struct arg *args, int nargs,
 
     parsed.active = true;
     parsed.type = MANGETSU_GRADIENT_TYPE_LINEAR;
+    parsed.coordinate_mode = MANGETSU_GRADIENT_ATTACHED;
     parsed.n_stops = 1;
     parsed.stops[0].offset = 0.0;
     double last_offset = 0.0;
@@ -1159,6 +1166,7 @@ static bool parse_mangetsu_alpha_gradient_args(struct arg *args, int nargs,
 
     parsed.active = true;
     parsed.type = MANGETSU_GRADIENT_TYPE_LINEAR;
+    parsed.coordinate_mode = MANGETSU_GRADIENT_ATTACHED;
     parsed.n_stops = 1;
     parsed.stops[0].offset = 0.0;
     double last_offset = 0.0;
@@ -1194,7 +1202,9 @@ static bool parse_mangetsu_gradient_raw_args(char *start, char *end,
 {
     struct arg args[2 * MANGETSU_GRADIENT_MAX_STOPS - 1];
     int nargs = 0;
-    return split_mangetsu_gradient_raw_args(start, end, args, &nargs) &&
+    return split_mangetsu_gradient_raw_args(start, end, args,
+                                            sizeof(args) / sizeof(args[0]),
+                                            &nargs) &&
            parse_mangetsu_gradient_args(args, nargs, out);
 }
 
@@ -1203,13 +1213,50 @@ static bool parse_mangetsu_alpha_gradient_raw_args(char *start, char *end,
 {
     struct arg args[2 * MANGETSU_GRADIENT_MAX_STOPS - 1];
     int nargs = 0;
-    return split_mangetsu_gradient_raw_args(start, end, args, &nargs) &&
+    return split_mangetsu_gradient_raw_args(start, end, args,
+                                            sizeof(args) / sizeof(args[0]),
+                                            &nargs) &&
            parse_mangetsu_alpha_gradient_args(args, nargs, out);
+}
+
+/* Four coordinates precede the existing Mangetsu angle-and-stop grammar. */
+#define MANGETSU_POSITIONED_GRADIENT_MAX_ARGS \
+    (4 + 2 * MANGETSU_GRADIENT_MAX_STOPS - 1)
+
+static bool parse_mangetsu_positioned_gradient_raw_args(
+    char *start, char *end, MangetsuGradientLayer *out)
+{
+    struct arg args[MANGETSU_POSITIONED_GRADIENT_MAX_ARGS];
+    int nargs = 0;
+    if (!split_mangetsu_gradient_raw_args(start, end, args,
+                                          sizeof(args) / sizeof(args[0]),
+                                          &nargs) || nargs < 7)
+        return false;
+
+    double x1, y1, x2, y2;
+    MangetsuGradientLayer parsed;
+    if (!parse_double_arg_strict(args[0], &x1) ||
+            !parse_double_arg_strict(args[1], &y1) ||
+            !parse_double_arg_strict(args[2], &x2) ||
+            !parse_double_arg_strict(args[3], &y2) ||
+            !parse_mangetsu_gradient_args(args + 4, nargs - 4, &parsed))
+        return false;
+
+    parsed.coordinate_mode = MANGETSU_GRADIENT_POSITIONED_RECT;
+    parsed.script_x1 = fmin(x1, x2);
+    parsed.script_x2 = fmax(x1, x2);
+    parsed.script_y1 = fmin(y1, y2);
+    parsed.script_y2 = fmax(y1, y2);
+    *out = parsed;
+    return true;
 }
 
 static void mark_rgba_needed(RenderContext *state);
 static void default_extra_border_color(RenderContext *state, int layer);
 static void sync_layer1_border(RenderContext *state);
+static uint32_t mangetsu_solid_color_for_target(RenderContext *state,
+                                                MangetsuGradientTarget target,
+                                                int layer);
 
 static bool parse_mangetsu_fill_gradient_tag(char *p, char *name_end,
                                              int *layer,
@@ -1232,6 +1279,14 @@ static bool parse_mangetsu_fill_gradient_tag(char *p, char *name_end,
     inline_arg->end = name_end;
     rskip_spaces(&inline_arg->end, inline_arg->start);
     return true;
+}
+
+static bool parse_mangetsu_positioned_primary_gradient_tag(char *p,
+                                                            char *name_end)
+{
+    size_t len = name_end - p;
+    return (len == 4 && !strncmp(p, "pgrd", len)) ||
+           (len == 5 && !strncmp(p, "1pgrd", len));
 }
 
 static void disable_mangetsu_gradient_layer(RenderContext *state, int layer)
@@ -1275,6 +1330,7 @@ static void apply_mangetsu_gradient_layer(RenderContext *state, int layer,
     MangetsuGradientLayer dst = *gradient;
     dst.segment_id = ++state->mangetsu_gradient_next_id;
     dst.rect = (GradientRect) {0};
+    dst.positioned_rect = (MangetsuGradientPositionedRect) {0};
     state->mangetsu_gradient.layer[layer] = dst;
 }
 
@@ -1288,6 +1344,7 @@ static void apply_mangetsu_border_gradient_layer(RenderContext *state,
     MangetsuGradientLayer dst = *gradient;
     dst.segment_id = ++state->mangetsu_gradient_next_id;
     dst.rect = (GradientRect) {0};
+    dst.positioned_rect = (MangetsuGradientPositionedRect) {0};
     state->mangetsu_gradient.border[layer] = dst;
 }
 
@@ -1301,6 +1358,7 @@ static void apply_mangetsu_alpha_gradient_layer(RenderContext *state,
     MangetsuGradientLayer dst = *gradient;
     dst.segment_id = ++state->mangetsu_gradient_next_id;
     dst.rect = (GradientRect) {0};
+    dst.positioned_rect = (MangetsuGradientPositionedRect) {0};
     state->mangetsu_gradient.alpha[layer] = dst;
 }
 
@@ -1313,6 +1371,7 @@ static void apply_mangetsu_border_alpha_gradient_layer(
     MangetsuGradientLayer dst = *gradient;
     dst.segment_id = ++state->mangetsu_gradient_next_id;
     dst.rect = (GradientRect) {0};
+    dst.positioned_rect = (MangetsuGradientPositionedRect) {0};
     state->mangetsu_gradient.border_alpha[layer] = dst;
 }
 
@@ -1452,7 +1511,7 @@ static double interpolate_mangetsu_angle(double old, double target,
     return result;
 }
 
-static void transform_mangetsu_gradient_layer(RenderContext *state,
+static bool transform_mangetsu_gradient_layer(RenderContext *state,
                                               MangetsuGradientLayer *dst,
                                               const MangetsuGradientLayer *target,
                                               uint32_t solid_value,
@@ -1460,6 +1519,8 @@ static void transform_mangetsu_gradient_layer(RenderContext *state,
 {
     MangetsuGradientLayer source = *dst;
     bool source_active = source.active && source.n_stops > 0;
+    if (source_active && source.coordinate_mode != target->coordinate_mode)
+        return false;
     double offsets[MANGETSU_GRADIENT_MAX_STOPS];
     int count = collect_mangetsu_transform_offsets(
         source_active ? &source : NULL, target, offsets);
@@ -1467,12 +1528,27 @@ static void transform_mangetsu_gradient_layer(RenderContext *state,
     MangetsuGradientLayer result = {0};
     result.active = true;
     result.type = MANGETSU_GRADIENT_TYPE_LINEAR;
+    result.coordinate_mode = target->coordinate_mode;
     result.segment_id = source_active ?
         source.segment_id : ++state->mangetsu_gradient_next_id;
     result.angle = source_active ?
         interpolate_mangetsu_angle(source.angle, target->angle, pwr) :
         target->angle;
     result.n_stops = count;
+    if (result.coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+        result.script_x1 = source_active ?
+            calc_anim(target->script_x1, source.script_x1, pwr) :
+            target->script_x1;
+        result.script_y1 = source_active ?
+            calc_anim(target->script_y1, source.script_y1, pwr) :
+            target->script_y1;
+        result.script_x2 = source_active ?
+            calc_anim(target->script_x2, source.script_x2, pwr) :
+            target->script_x2;
+        result.script_y2 = source_active ?
+            calc_anim(target->script_y2, source.script_y2, pwr) :
+            target->script_y2;
+    }
 
     if (is_alpha)
         solid_value &= 0xFF;
@@ -1496,6 +1572,50 @@ static void transform_mangetsu_gradient_layer(RenderContext *state,
     }
 
     *dst = result;
+    return true;
+}
+
+static bool apply_mangetsu_positioned_primary_gradient_tag(
+    RenderContext *state, char *name_end, char *q, double pwr, bool nested)
+{
+    /* Positioned tags are deliberately parenthesized-only. */
+    if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')')
+        return true;
+
+    char *raw_start = name_end + 1;
+    char *raw_end = q - 1;
+    MangetsuGradientLayer *dst = &state->mangetsu_gradient.layer[0];
+    if (raw_start == raw_end) {
+        if (!nested && dst->coordinate_mode ==
+                MANGETSU_GRADIENT_POSITIONED_RECT)
+            disable_mangetsu_gradient_layer(state, 0);
+        return true;
+    }
+
+    MangetsuGradientLayer gradient;
+    if (!parse_mangetsu_positioned_gradient_raw_args(raw_start, raw_end,
+                                                      &gradient))
+        return true;
+
+    /* Attached and fixed-frame coordinates have no meaningful shared space. */
+    if (nested && dst->active &&
+            dst->coordinate_mode != MANGETSU_GRADIENT_POSITIONED_RECT)
+        return true;
+
+    uint32_t solid = mangetsu_solid_color_for_target(
+        state, MANGETSU_GRADIENT_TARGET_COLOR, 0);
+    ass_gradient_disable_color(&state->gradient, 0, state->c[0], 1.0);
+    disable_image_fill_layer(state, 0);
+    disable_image_fill_layer(state, 1);
+    if (nested) {
+        if (!transform_mangetsu_gradient_layer(state, dst, &gradient,
+                                               solid, pwr, false))
+            return true;
+    } else {
+        apply_mangetsu_gradient_layer(state, 0, &gradient);
+    }
+    mark_rgba_needed(state);
+    return true;
 }
 
 static void disable_mangetsu_color_source(RenderContext *state, int layer)
@@ -2234,6 +2354,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                              &mangetsu_fill_layer,
                                              &mangetsu_fill_target,
                                              &mangetsu_fill_arg);
+        bool mangetsu_positioned_primary_gradient_tag =
+            parse_mangetsu_positioned_primary_gradient_tag(p, name_end);
         if (numbered_border_tag == BORDER_TAG_IGNORE) {
             continue;
         } else if (numbered_border_tag != BORDER_TAG_NONE) {
@@ -3001,6 +3123,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             apply_img_tag(state, 2, args, nargs, pwr);
         } else if (tag("4img")) {
             apply_img_tag(state, 3, args, nargs, pwr);
+        } else if (mangetsu_positioned_primary_gradient_tag) {
+            apply_mangetsu_positioned_primary_gradient_tag(state, name_end,
+                                                            q, pwr, nested);
         } else if (mangetsu_fill_tag) {
             apply_mangetsu_gradient_tag(state, mangetsu_fill_target,
                                         mangetsu_fill_layer, name_end, q,
