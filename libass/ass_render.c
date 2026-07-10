@@ -7564,7 +7564,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
     if (rotate_baseline)
-        get_base_point(&bbox_origin, state->text_alignment,
+        get_base_point(&bbox_origin, state->alignment,
                        &origin_x, &origin_y);
 
     apply_baseline_shear(state);

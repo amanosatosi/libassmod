@@ -163,14 +163,27 @@ int main(void)
     ok &= expect_same(
         lib, renderer,
         "{\\an3\\tan7\\pos(320,180)}Hello",
-        "{\\an7\\pos(320,180)}Hello",
-        "\\tan did not control positioned text offset");
+        "{\\an1\\pos(320,180)}Hello",
+        "\\tan did not select left horizontal alignment");
+
+    ok &= expect_same(
+        lib, renderer,
+        "{\\an3\\tan8\\pos(320,180)}Hello",
+        "{\\an2\\pos(320,180)}Hello",
+        "\\tan did not select center horizontal alignment");
 
     ok &= expect_different(
         lib, renderer,
         "{\\an3\\tan7\\pos(320,180)}Hello",
         "{\\an3\\pos(320,180)}Hello",
-        "\\tan did not change text layout relative to the object anchor");
+        "\\tan did not change horizontal text layout relative to the "
+        "object anchor");
+
+    ok &= expect_different(
+        lib, renderer,
+        "{\\an7\\tan3\\pos(320,180)}Hello",
+        "{\\an9\\pos(320,180)}Hello",
+        "\\tan incorrectly changed vertical text alignment");
 
     ok &= expect_same(
         lib, renderer,

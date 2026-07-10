@@ -496,7 +496,7 @@ struct render_context {
     uint32_t decoration_alpha;
 
     int alignment;              // object anchor; if zero, style value will be used
-    int text_alignment;         // text layout alignment; defaults to alignment
+    int text_alignment;         // text horizontal alignment; vertical follows alignment
     int justify;                // justify instructions
     double frx, fry, frz;
     double frs;
