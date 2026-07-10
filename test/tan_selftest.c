@@ -179,11 +179,11 @@ int main(void)
         "\\tan did not change horizontal text layout relative to the "
         "object anchor");
 
-    ok &= expect_different(
+    ok &= expect_same(
         lib, renderer,
         "{\\an7\\tan3\\pos(320,180)}Hello",
         "{\\an9\\pos(320,180)}Hello",
-        "\\tan incorrectly changed vertical text alignment");
+        "\\tan did not preserve top vertical text alignment");
 
     ok &= expect_same(
         lib, renderer,
