@@ -3,6 +3,7 @@
  */
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -149,6 +150,14 @@ static bool same_signature(const RenderSignature *a,
         a->images == b->images && a->needs_rgba == b->needs_rgba;
 }
 
+static void print_signature(const char *label, const RenderSignature *sig)
+{
+    fprintf(stderr,
+            "%s: hash=%016" PRIx64 " coverage=%" PRIu64
+            " images=%d needs_rgba=%d\n",
+            label, sig->hash, sig->coverage, sig->images, sig->needs_rgba);
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -198,6 +207,14 @@ int main(void)
                         "(effective=%u, alpha=%s, rgba=%s, run=%d)\n",
                         settings[i], threads, alpha_same ? "same" : "different",
                         rgba_same ? "same" : "different", run);
+                if (!alpha_same) {
+                    print_signature("alpha serial", &alpha_serial);
+                    print_signature("alpha threaded", &alpha);
+                }
+                if (!rgba_same) {
+                    print_signature("rgba serial", &rgba_serial);
+                    print_signature("rgba threaded", &rgba);
+                }
                 ok = false;
             }
         }
