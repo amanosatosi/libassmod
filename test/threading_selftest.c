@@ -34,6 +34,7 @@ static const char script[] =
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(105,65)}Shared glyphs\n"
     "Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(320,65)\\bord2\\2bs6\\2bc&H0000FF&}Shared glyphs\n"
+    "Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{comment-only event}\n"
     "Dialogue: 2,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(535,65)\\1grd(0,&H000000&,&HFFFFFF&)}Gradient\n"
     "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(105,180)\\furi1}<Base|Ruby>\n"
     "Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(320,180)\\distort(1.1,-0.1,1.2,1.1,-0.1,1)}Distort\n"
