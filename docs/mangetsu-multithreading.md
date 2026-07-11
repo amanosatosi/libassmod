@@ -525,6 +525,29 @@ No performance number is claimed until CI artifacts run on controlled samples.
 The first production gate is pixel identity and TSAN cleanliness; throughput is
 the second gate.
 
+The profile utility accepts an optional total thread count and output mode and
+reports the first frame separately from the remaining steady-state frames:
+
+```
+profile sample.ass 0 24 60 1 alpha
+profile sample.ass 0 24 60 2 alpha
+profile sample.ass 0 24 60 0 rgba
+```
+
+Here `0` requests automatic concurrency. For a useful comparison, run each
+configuration several times on the same otherwise-idle machine and report the
+median cold time and median warm time per frame. Use both one-event and
+many-event samples: the former measures the serial-path regression bound, while
+the latter measures event-level scaling. Native-gradient samples exercise the
+RGBA ticket and should be reported separately from alpha-only samples.
+
+The implementation commits corresponding to the roadmap are independently
+buildable CI units: portability/build support, shared font and logging safety,
+concurrent caches, alpha dispatch, deterministic RGBA dispatch, cross-thread
+output tests, and profiling support. Local compilation was intentionally not
+performed; the repository contract assigns compilation and sanitizer execution
+to GitHub Actions.
+
 ## 6. Future optimization candidates
 
 - A two-pass RGBA size calculation and deterministic prefix allocation to allow
