@@ -302,11 +302,20 @@ static inline void thread_set_namew(PCWSTR name)
 static inline void thread_set_name(const char *name)
 {
 #if HAVE_PTHREAD_SETNAME_NP
+    /*
+     * pthread_setname_np is non-standard and has incompatible signatures:
+     * macOS names only the calling thread, NetBSD takes a printf-style
+     * format and one argument, while Linux, FreeBSD and others take a thread
+     * plus the final name.  Keep these differences inside this abstraction.
+     */
 #if defined(__APPLE__)
     pthread_setname_np(name);
-#else // defined(__APPLE__)
+#elif defined(__NetBSD__)
+    // Use a literal format so '%' in name is never interpreted by NetBSD.
+    pthread_setname_np(pthread_self(), "%s", (void *) name);
+#else
     pthread_setname_np(pthread_self(), name);
-#endif // defined(__APPLE__)
+#endif
 #endif // HAVE_PTHREAD_SETNAME_NP
 }
 
