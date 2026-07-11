@@ -60,6 +60,7 @@ static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer);
 static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer);
 static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer);
 static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
+static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv);
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
@@ -223,6 +224,264 @@ static void render_context_done(RenderContext *state)
     state->cache_client = NULL;
 }
 
+#if ENABLE_THREADS
+struct render_worker {
+    ASS_Renderer *renderer;
+    pthread_t thread;
+    uintptr_t generation;
+    RenderContext state;
+};
+
+static void render_event_job(RenderContext *state, ASS_Renderer *renderer,
+                             size_t index)
+{
+    EventImages *images = &renderer->eimg[index];
+    ASS_Event *event = images->event;
+    images->rendered = ass_render_event(state, event, images, NULL);
+}
+
+static bool claim_render_job(ASS_Renderer *renderer, size_t *index)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    AtomicInt claimed = atomic_fetch_add_explicit(&pool->next_job, 1,
+                                                   memory_order_relaxed);
+    if (claimed < 0 || (size_t) claimed >= pool->job_count)
+        return false;
+    *index = (size_t) claimed;
+    return true;
+}
+
+static void finish_render_job(ASS_Renderer *renderer)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    AtomicInt remaining = atomic_fetch_sub_explicit(&pool->remaining_jobs, 1,
+                                                     memory_order_acq_rel) - 1;
+    assert(remaining >= 0);
+    if (remaining)
+        return;
+
+    pthread_mutex_lock(&pool->mutex);
+    pthread_cond_signal(&pool->done_cond);
+    pthread_mutex_unlock(&pool->mutex);
+}
+
+static void consume_render_jobs(RenderContext *state, ASS_Renderer *renderer)
+{
+    size_t index;
+    while (claim_render_job(renderer, &index)) {
+        render_event_job(state, renderer, index);
+        finish_render_job(renderer);
+    }
+}
+
+static void *render_worker_main(void *opaque)
+{
+    RenderWorker *worker = opaque;
+    ASS_Renderer *renderer = worker->renderer;
+    RenderThreadPool *pool = &renderer->thread_pool;
+
+    thread_set_name("libass/render");
+
+    pthread_mutex_lock(&pool->mutex);
+    for (;;) {
+        while (!pool->shutdown && worker->generation == pool->generation)
+            pthread_cond_wait(&pool->work_cond, &pool->mutex);
+        if (pool->shutdown)
+            break;
+
+        worker->generation = pool->generation;
+        pthread_mutex_unlock(&pool->mutex);
+        consume_render_jobs(&worker->state, renderer);
+        pthread_mutex_lock(&pool->mutex);
+    }
+    pthread_mutex_unlock(&pool->mutex);
+    return NULL;
+}
+
+static void render_pool_init(ASS_Renderer *renderer)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (pthread_mutex_init(&pool->mutex, NULL) != 0)
+        goto fail;
+    if (pthread_cond_init(&pool->work_cond, NULL) != 0) {
+        pthread_mutex_destroy(&pool->mutex);
+        goto fail;
+    }
+    if (pthread_cond_init(&pool->done_cond, NULL) != 0) {
+        pthread_cond_destroy(&pool->work_cond);
+        pthread_mutex_destroy(&pool->mutex);
+        goto fail;
+    }
+
+    atomic_init(&pool->next_job, 0);
+    atomic_init(&pool->remaining_jobs, 0);
+    pool->initialized = true;
+    return;
+
+fail:
+    ass_msg(renderer->library, MSGL_WARN,
+            "Failed to initialize rendering workers; using one thread");
+}
+
+static void render_pool_stop(ASS_Renderer *renderer, bool promote)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (!pool->initialized)
+        return;
+
+    if (pool->n_workers) {
+        pthread_mutex_lock(&pool->mutex);
+        pool->shutdown = true;
+        pthread_cond_broadcast(&pool->work_cond);
+        pthread_mutex_unlock(&pool->mutex);
+
+        for (unsigned i = 0; i < pool->n_workers; i++)
+            pthread_join(pool->workers[i]->thread, NULL);
+    }
+
+    ass_cache_client_set_concurrent(renderer->cache.cache_clients, false);
+    if (promote)
+        ass_cache_promote(renderer->cache.cache_clients);
+
+    for (unsigned i = 0; i < pool->n_workers; i++) {
+        render_context_done(&pool->workers[i]->state);
+        free(pool->workers[i]);
+    }
+    free(pool->workers);
+    pool->workers = NULL;
+    pool->n_workers = 0;
+    pool->shutdown = false;
+}
+
+static void render_pool_done(ASS_Renderer *renderer)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (!pool->initialized)
+        return;
+
+    render_pool_stop(renderer, true);
+    pthread_cond_destroy(&pool->done_cond);
+    pthread_cond_destroy(&pool->work_cond);
+    pthread_mutex_destroy(&pool->mutex);
+    pool->initialized = false;
+}
+
+static unsigned ensure_render_workers(ASS_Renderer *renderer, unsigned desired)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (!pool->initialized)
+        return 0;
+
+    if (desired < pool->n_workers)
+        render_pool_stop(renderer, false);
+    if (desired <= pool->n_workers)
+        return pool->n_workers;
+
+    RenderWorker **workers = ass_realloc_array(pool->workers, desired,
+                                                sizeof(*workers));
+    if (!workers)
+        goto fail;
+    pool->workers = workers;
+
+    while (pool->n_workers < desired) {
+        RenderWorker *worker = calloc(1, sizeof(*worker));
+        if (!worker)
+            goto fail;
+
+        worker->renderer = renderer;
+        worker->generation = pool->generation;
+        if (!render_context_init(&worker->state, renderer)) {
+            render_context_done(&worker->state);
+            free(worker);
+            goto fail;
+        }
+        if (pthread_create(&worker->thread, NULL, render_worker_main,
+                           worker) != 0) {
+            render_context_done(&worker->state);
+            free(worker);
+            goto fail;
+        }
+
+        pool->workers[pool->n_workers++] = worker;
+    }
+
+    pool->warned_start_failure = false;
+    return pool->n_workers;
+
+fail:
+    if (!pool->warned_start_failure) {
+        ass_msg(renderer->library, MSGL_WARN,
+                "Could not create all rendering workers; using %u threads",
+                pool->n_workers + 1);
+        pool->warned_start_failure = true;
+    }
+    return pool->n_workers;
+}
+
+static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    unsigned requested_workers = renderer->settings.threads > 1 ?
+        renderer->settings.threads - 1 : 0;
+    unsigned useful_workers = count > 1 ? (unsigned) (count - 1) : 0;
+    unsigned desired = FFMIN(requested_workers, useful_workers);
+    unsigned target = requested_workers < pool->n_workers ? requested_workers :
+        FFMAX(pool->n_workers, desired);
+    unsigned workers = ensure_render_workers(renderer, target);
+
+    for (unsigned i = 0; i < workers; i++) {
+        setup_shaper(pool->workers[i]->state.shaper, renderer);
+        setup_shaper(pool->workers[i]->state.furi_shaper, renderer);
+    }
+
+    if (!workers || count < 2) {
+        for (size_t i = 0; i < count; i++)
+            render_event_job(&renderer->state, renderer, i);
+        return;
+    }
+
+    assert(count <= INTPTR_MAX);
+    ass_cache_client_set_concurrent(renderer->cache.cache_clients, true);
+
+    pthread_mutex_lock(&pool->mutex);
+    pool->job_count = count;
+    atomic_store_explicit(&pool->next_job, 0, memory_order_release);
+    atomic_store_explicit(&pool->remaining_jobs, (AtomicInt) count,
+                          memory_order_release);
+    pool->generation++;
+    pthread_cond_broadcast(&pool->work_cond);
+    pthread_mutex_unlock(&pool->mutex);
+
+    consume_render_jobs(&renderer->state, renderer);
+
+    pthread_mutex_lock(&pool->mutex);
+    while (atomic_load_explicit(&pool->remaining_jobs,
+                                memory_order_acquire))
+        pthread_cond_wait(&pool->done_cond, &pool->mutex);
+    pthread_mutex_unlock(&pool->mutex);
+
+    ass_cache_client_set_concurrent(renderer->cache.cache_clients, false);
+}
+#else
+static void render_pool_init(ASS_Renderer *renderer)
+{
+}
+
+static void render_pool_done(ASS_Renderer *renderer)
+{
+}
+
+static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        EventImages *images = &renderer->eimg[i];
+        ASS_Event *event = images->event;
+        images->rendered = ass_render_event(&renderer->state, event,
+                                            images, NULL);
+    }
+}
+#endif
+
 ASS_Renderer *ass_renderer_init(ASS_Library *library)
 {
     int error;
@@ -286,6 +545,9 @@ ASS_Renderer *ass_renderer_init(ASS_Library *library)
 
     priv->settings.font_size_coeff = 1.;
     priv->settings.selective_style_overrides = ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE;
+    priv->settings.threads = 1;
+
+    render_pool_init(priv);
 
     ass_shaper_info(library);
     priv->settings.shaper = ASS_SHAPING_COMPLEX;
@@ -305,6 +567,8 @@ void ass_renderer_done(ASS_Renderer *render_priv)
 {
     if (!render_priv)
         return;
+
+    render_pool_done(render_priv);
 
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
@@ -6404,7 +6668,7 @@ static MangetsuGradientDebugSegment *find_mangetsu_debug_segment(
 }
 
 static void collect_mangetsu_gradient_debug_for_layer(
-    TextInfo *text_info, MangetsuGradientDebugState *debug,
+    TextInfo *text_info, MangetsuGradientDebugState **debug_ptr,
     MangetsuGradientTarget target, int layer_index)
 {
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
@@ -6414,6 +6678,14 @@ static void collect_mangetsu_gradient_debug_for_layer(
                                              target, layer_index);
         if (!layer || !layer->active)
             continue;
+
+        MangetsuGradientDebugState *debug = *debug_ptr;
+        if (!debug) {
+            debug = calloc(1, sizeof(*debug));
+            if (!debug)
+                return;
+            *debug_ptr = debug;
+        }
 
         MangetsuGradientDebugSegment *segment =
             find_mangetsu_debug_segment(debug, layer->segment_id);
@@ -6443,24 +6715,57 @@ static void collect_mangetsu_gradient_debug_for_layer(
     }
 }
 
-static void collect_mangetsu_gradient_debug(RenderContext *state)
+static MangetsuGradientDebugState *collect_mangetsu_gradient_debug(
+    RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
-    MangetsuGradientDebugState *debug =
-        &state->renderer->mangetsu_gradient_debug;
+    MangetsuGradientDebugState *debug = NULL;
 
     for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
         collect_mangetsu_gradient_debug_for_layer(
-            text_info, debug, MANGETSU_GRADIENT_TARGET_COLOR, layer);
+            text_info, &debug, MANGETSU_GRADIENT_TARGET_COLOR, layer);
     for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
         collect_mangetsu_gradient_debug_for_layer(
-            text_info, debug, MANGETSU_GRADIENT_TARGET_BORDER, layer);
+            text_info, &debug, MANGETSU_GRADIENT_TARGET_BORDER, layer);
     for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
         collect_mangetsu_gradient_debug_for_layer(
-            text_info, debug, MANGETSU_GRADIENT_TARGET_ALPHA, layer);
+            text_info, &debug, MANGETSU_GRADIENT_TARGET_ALPHA, layer);
     for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
         collect_mangetsu_gradient_debug_for_layer(
-            text_info, debug, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
+            text_info, &debug, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
+
+    return debug;
+}
+
+void ass_merge_event_debug(ASS_Renderer *render_priv, EventImages *images,
+                           int count)
+{
+    MangetsuGradientDebugState *dst = &render_priv->mangetsu_gradient_debug;
+    for (int i = 0; i < count; i++) {
+        MangetsuGradientDebugState *src = images[i].gradient_debug;
+        if (!src)
+            continue;
+
+        for (int j = 0; j < src->n_segments; j++) {
+            MangetsuGradientDebugSegment *source = &src->segments[j];
+            MangetsuGradientDebugSegment *target =
+                find_mangetsu_debug_segment(dst, source->segment_id);
+            if (!target) {
+                if (dst->n_segments >= MANGETSU_GRADIENT_DEBUG_MAX_SEGMENTS)
+                    continue;
+                target = &dst->segments[dst->n_segments++];
+                *target = *source;
+                continue;
+            }
+
+            target->bitmap_count += source->bitmap_count;
+            target->rect_valid |= source->rect_valid;
+            target->positioned_rect_valid |= source->positioned_rect_valid;
+        }
+
+        free(src);
+        images[i].gradient_debug = NULL;
+    }
 }
 
 static bool text_needs_rgba(const TextInfo *text_info)
@@ -8147,10 +8452,12 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     render_and_combine_glyphs(state, device_x, device_y);
     compute_line_gradient_rects(state);
     compute_mangetsu_gradient_rects(state);
-    collect_mangetsu_gradient_debug(state);
+    MangetsuGradientDebugState *gradient_debug =
+        collect_mangetsu_gradient_debug(state);
     state->needs_rgba = text_needs_rgba(text_info);
 
     memset(event_images, 0, sizeof(*event_images));
+    event_images->gradient_debug = gradient_debug;
     // VSFilter does *not* shift lines with a border > margin to be within the
     // frame, so negative values for top and left may occur
     if (text_info->n_furi_groups) {
@@ -8587,23 +8894,48 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         return NULL;
     }
 
-    // render events separately
-    int cnt = 0;
+    // Collect active events into stable slots before dispatching workers.
+    int jobs = 0;
     for (int i = 0; i < track->n_events; i++) {
         ASS_Event *event = track->events + i;
         if ((event->Start <= now)
             && (now < (event->Start + event->Duration))) {
-            if (cnt >= priv->eimg_size) {
-                priv->eimg_size += 100;
-                priv->eimg =
-                    realloc(priv->eimg,
-                            priv->eimg_size * sizeof(EventImages));
+            if (jobs >= priv->eimg_size) {
+                if (priv->eimg_size > INT_MAX - 100) {
+                    ass_msg(priv->library, MSGL_ERR,
+                            "Too many active subtitle events");
+                    break;
+                }
+                int new_size = priv->eimg_size + 100;
+                EventImages *images = ass_realloc_array(
+                    priv->eimg, new_size, sizeof(*images));
+                if (!images) {
+                    ass_msg(priv->library, MSGL_ERR,
+                            "Could not allocate active event list");
+                    break;
+                }
+                priv->eimg = images;
+                priv->eimg_size = new_size;
             }
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt, NULL)) {
-                priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
-                cnt++;
-            }
+
+            EventImages *images = &priv->eimg[jobs++];
+            memset(images, 0, sizeof(*images));
+            images->event = event;
         }
+    }
+
+    dispatch_render_events(priv, jobs);
+    ass_merge_event_debug(priv, priv->eimg, jobs);
+
+    // Compact failed/empty events without changing source order.
+    int cnt = 0;
+    for (int i = 0; i < jobs; i++) {
+        if (!priv->eimg[i].rendered)
+            continue;
+        priv->frame_needs_rgba |= priv->eimg[i].needs_rgba;
+        if (cnt != i)
+            priv->eimg[cnt] = priv->eimg[i];
+        cnt++;
     }
 
     // sort by layer

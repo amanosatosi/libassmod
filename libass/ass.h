@@ -401,6 +401,21 @@ void ass_set_message_cb(ASS_Library *priv, void (*msg_cb)
 ASS_Renderer *ass_renderer_init(ASS_Library *);
 
 /**
+ * \brief Set total event-rendering concurrency, including the calling thread.
+ * The default is 1, which preserves serial rendering and creates no workers.
+ * Passing 0 selects the available logical CPU count, capped at 64. Values above
+ * the useful active-event count do not create additional workers.
+ * \param priv renderer handle
+ * \param threads requested concurrency, or 0 for automatic selection
+ * \return normalized concurrency, or 0 if threading support is unavailable
+ *
+ * With a value above 1, message callbacks remain serialized but may be invoked
+ * from an internal worker thread. Renderer configuration and rendering calls on
+ * the same renderer must not overlap.
+ */
+unsigned ass_set_threads(ASS_Renderer *priv, unsigned threads);
+
+/**
  * \brief Finalize the renderer.
  * \param priv renderer handle
  */

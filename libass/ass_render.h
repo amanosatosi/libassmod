@@ -89,6 +89,7 @@ typedef struct {
     ASS_Hinting hinting;
     ASS_ShapingLevel shaper;
     int selective_style_overrides; // ASS_OVERRIDE_* flags
+    unsigned threads;           // total event-rendering concurrency, including caller
 
     char *default_font;
     char *default_family;
@@ -102,7 +103,9 @@ typedef struct {
     int detect_collisions;
     int shift_direction;
     ASS_Event *event;
+    MangetsuGradientDebugState *gradient_debug;
     bool needs_rgba;
+    bool rendered;
 } EventImages;
 
 typedef enum {
@@ -614,6 +617,7 @@ struct render_context {
 };
 
 typedef struct render_context RenderContext;
+typedef struct render_worker RenderWorker;
 
 typedef struct {
     Cache *font_cache;
@@ -627,6 +631,25 @@ typedef struct {
     size_t bitmap_max_size;
     size_t composite_max_size;
 } CacheStore;
+
+typedef struct {
+#if ENABLE_THREADS
+    pthread_mutex_t mutex;
+    pthread_cond_t work_cond;
+    pthread_cond_t done_cond;
+    RenderWorker **workers;
+    unsigned n_workers;
+    uintptr_t generation;
+    size_t job_count;
+    _Atomic AtomicInt next_job;
+    _Atomic AtomicInt remaining_jobs;
+    bool initialized;
+    bool shutdown;
+    bool warned_start_failure;
+#else
+    char unused;
+#endif
+} RenderThreadPool;
 
 struct ass_renderer {
     ASS_Library *library;
@@ -660,6 +683,7 @@ struct ass_renderer {
 
     RenderContext state;
     CacheStore cache;
+    RenderThreadPool thread_pool;
 
     BitmapEngine engine;
 
@@ -704,6 +728,8 @@ bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out);
 bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now);
 int ass_cmp_event_layer(const void *p1, const void *p2);
+void ass_merge_event_debug(ASS_Renderer *render_priv, EventImages *images,
+                           int count);
 void ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
 int ass_detect_change(ASS_Renderer *priv);
 const ASS_TagImageEntry *ass_lookup_tag_image(ASS_Renderer *priv,

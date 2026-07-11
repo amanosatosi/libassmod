@@ -29,6 +29,8 @@
 #include "ass_render.h"
 #include "ass_utils.h"
 
+#define MAX_RENDER_THREADS 64
+
 static void ass_reconfigure(ASS_Renderer *priv)
 {
     ASS_Settings *settings = &priv->settings;
@@ -55,6 +57,26 @@ static void ass_reconfigure(ASS_Renderer *priv)
         (long long) priv->frame_content_height * priv->width ?
             priv->height :
             (double) priv->frame_content_height * priv->width / priv->frame_content_width;
+}
+
+unsigned ass_set_threads(ASS_Renderer *priv, unsigned threads)
+{
+#if ENABLE_THREADS
+    if (!priv->thread_pool.initialized) {
+        priv->settings.threads = 1;
+        return 1;
+    }
+    if (!threads)
+        threads = default_threads();
+    if (!threads)
+        threads = 1;
+    if (threads > MAX_RENDER_THREADS)
+        threads = MAX_RENDER_THREADS;
+    priv->settings.threads = threads;
+    return threads;
+#else
+    return 0;
+#endif
 }
 
 static bool ass_tag_image_format_supported(ASS_TagImageFormat format)
