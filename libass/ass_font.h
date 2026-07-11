@@ -31,6 +31,7 @@ typedef struct ass_font ASS_Font;
 #include "ass_cache.h"
 #include "ass_outline.h"
 #include "ass_arabic_charmap.h"
+#include "ass_threading.h"
 
 #define VERTICAL_LOWER_BOUND 0x02f1
 
@@ -47,7 +48,12 @@ struct ass_font {
     int faces_uid[ASS_FONT_MAX_FACES];
     FT_Face faces[ASS_FONT_MAX_FACES];
     struct hb_font_t *hb_fonts[ASS_FONT_MAX_FACES];
-    int n_faces;
+    _Atomic AtomicInt n_faces;
+
+#if ENABLE_THREADS
+    pthread_mutex_t mutex;
+    bool mutex_initialized;
+#endif
 };
 
 void ass_charmap_magic(ASS_Library *library, FT_Face face);
@@ -64,6 +70,9 @@ uint32_t ass_font_index_magic(FT_Face face, uint32_t symbol);
 bool ass_font_get_glyph(ASS_Font *font, int face_index, int index,
                         ASS_Hinting hinting);
 void ass_font_clear(ASS_Font *font);
+
+void ass_font_lock(ASS_Font *font);
+void ass_font_unlock(ASS_Font *font);
 
 bool ass_get_glyph_outline(ASS_Outline *outline, int32_t *advance,
                            FT_Face face, unsigned flags);

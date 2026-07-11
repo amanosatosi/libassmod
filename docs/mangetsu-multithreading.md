@@ -357,6 +357,12 @@ without a cache/font lock-order cycle.
 Thread-enabled builds require FriBidi 0.19.7 or newer. Each context retains its
 own shapers and HarfBuzz buffers.
 
+The broken-font fallback that probes every charmap restores the face's original
+charmap after obtaining a glyph index. Previously it left the last probed
+charmap installed, so later glyph lookup depended on which event happened to
+encounter the broken mapping first. Restoring it is a narrowly scoped behavior
+change for malformed fonts and is required for thread-count-independent output.
+
 ### 3.6 RGBA determinism
 
 RGBA memory accounting and its limit behavior remain renderer-global to preserve
@@ -536,4 +542,3 @@ the second gate.
 - Host-provided executors for applications that already own a thread pool. This
   would require a separate API proposal and must not complicate the internal
   default path.
-

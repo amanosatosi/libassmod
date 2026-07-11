@@ -239,11 +239,15 @@ size_t ass_face_size_metrics_construct(void *key, void *value, void *priv)
     FaceSizeMetricsHashKey *k = key;
     FT_Size_Metrics *v = value;
 
+    ass_font_lock(k->font);
+
     FT_Face face = k->font->faces[k->face_index];
 
     ass_face_set_size(face, k->size);
 
     memcpy(v, &face->size->metrics, sizeof(FT_Size_Metrics));
+
+    ass_font_unlock(k->font);
 
     return 1;
 }
@@ -256,13 +260,15 @@ size_t ass_glyph_metrics_construct(void *key, void *value, void *priv)
     int load_flags = FT_LOAD_DEFAULT | FT_LOAD_IGNORE_GLOBAL_ADVANCE_WIDTH
         | FT_LOAD_IGNORE_TRANSFORM;
 
+    ass_font_lock(k->font);
+
     FT_Face face = k->font->faces[k->face_index];
 
     ass_face_set_size(face, k->size);
 
     if (FT_Load_Glyph(face, k->glyph_index, load_flags)) {
         v->width = -1;
-        return 1;
+        goto cleanup;
     }
 
     memcpy(v, &face->glyph->metrics, sizeof(FT_Glyph_Metrics));
@@ -270,31 +276,46 @@ size_t ass_glyph_metrics_construct(void *key, void *value, void *priv)
     if (priv)  // rotate
         v->horiAdvance = v->vertAdvance;
 
+cleanup:
+    ass_font_unlock(k->font);
+
     return 1;
 }
+
+struct font_ref {
+    ASS_Font *font;
+    int face_index;
+};
 
 static hb_blob_t*
 get_reference_table(hb_face_t *hbface, hb_tag_t tag, void *font_data)
 {
-  FT_Face face = font_data;
+  struct font_ref *ref = font_data;
   FT_ULong len = 0;
+  hb_blob_t *blob = NULL;
+
+  ass_font_lock(ref->font);
+
+  FT_Face face = ref->font->faces[ref->face_index];
 
   if (FT_Load_Sfnt_Table(face, tag, 0, NULL, &len) != FT_Err_Ok)
-    return NULL;
+    goto cleanup;
 
   char *buf = malloc(len);
   if (!buf)
-    return NULL;
+    goto cleanup;
 
   if (FT_Load_Sfnt_Table(face, tag, 0, (FT_Byte*)buf, &len) != FT_Err_Ok) {
     free(buf);
-    return NULL;
+    goto cleanup;
   }
 
-  hb_blob_t *blob = hb_blob_create(buf, len, HB_MEMORY_MODE_WRITABLE, buf, free);
+  blob = hb_blob_create(buf, len, HB_MEMORY_MODE_WRITABLE, buf, free);
   if (len > 0 && hb_blob_is_immutable(blob))
       free(buf);
 
+cleanup:
+  ass_font_unlock(ref->font);
   return blob;
 }
 
@@ -303,11 +324,13 @@ get_glyph_nominal(hb_font_t *font, void *font_data, hb_codepoint_t unicode,
                   hb_codepoint_t *glyph, void *user_data)
 {
     struct ass_shaper_metrics_data *metrics_priv = font_data;
+    ass_font_lock(metrics_priv->hash_key.font);
     FT_Face face = metrics_priv->hash_key.font->faces[metrics_priv->hash_key.face_index];
 
     *glyph = ass_font_index_magic(face, unicode);
     if (*glyph)
         *glyph = FT_Get_Char_Index(face, *glyph);
+    ass_font_unlock(metrics_priv->hash_key.font);
     if (!*glyph)
         return false;
 
@@ -321,11 +344,13 @@ get_glyph_variation(hb_font_t *font, void *font_data, hb_codepoint_t unicode,
                     hb_codepoint_t variation, hb_codepoint_t *glyph, void *user_data)
 {
     struct ass_shaper_metrics_data *metrics_priv = font_data;
+    ass_font_lock(metrics_priv->hash_key.font);
     FT_Face face = metrics_priv->hash_key.font->faces[metrics_priv->hash_key.face_index];
 
     *glyph = ass_font_index_magic(face, unicode);
     if (*glyph)
         *glyph = FT_Face_GetCharVariantIndex(face, *glyph, variation);
+    ass_font_unlock(metrics_priv->hash_key.font);
     if (!*glyph)
         return false;
 
@@ -387,8 +412,13 @@ get_h_kerning(hb_font_t *font, void *font_data, hb_codepoint_t first,
     FT_Face face = metrics_priv->hash_key.font->faces[metrics_priv->hash_key.face_index];
     FT_Vector kern;
 
+    ass_font_lock(metrics_priv->hash_key.font);
+    ass_face_set_size(face, metrics_priv->hash_key.size);
+
     if (FT_Get_Kerning(face, first, second, FT_KERNING_DEFAULT, &kern))
-        return 0;
+        kern.x = 0;
+
+    ass_font_unlock(metrics_priv->hash_key.font);
 
     return kern.x;
 }
@@ -425,25 +455,42 @@ get_contour_point(hb_font_t *font, void *font_data, hb_codepoint_t glyph,
     FT_Face face = metrics_priv->hash_key.font->faces[metrics_priv->hash_key.face_index];
     int load_flags = FT_LOAD_DEFAULT | FT_LOAD_IGNORE_GLOBAL_ADVANCE_WIDTH
         | FT_LOAD_IGNORE_TRANSFORM;
+    bool result = false;
+
+    ass_font_lock(metrics_priv->hash_key.font);
+    ass_face_set_size(face, metrics_priv->hash_key.size);
 
     if (FT_Load_Glyph(face, glyph, load_flags))
-        return false;
+        goto cleanup;
 
     if (point_index >= (unsigned)face->glyph->outline.n_points)
-        return false;
+        goto cleanup;
 
     *x = face->glyph->outline.points[point_index].x;
     *y = face->glyph->outline.points[point_index].y;
-    return true;
+    result = true;
+
+cleanup:
+    ass_font_unlock(metrics_priv->hash_key.font);
+    return result;
 }
 
 bool ass_create_hb_font(ASS_Font *font, int index)
 {
-    FT_Face face = font->faces[index];
-    hb_face_t *hb_face = hb_face_create_for_tables(get_reference_table, face, NULL);
+    struct font_ref *ref = malloc(sizeof(*ref));
+    if (!ref)
+        return false;
+
+    ref->font = font;
+    ref->face_index = index;
+
+    // HarfBuzz takes ownership of ref even if face creation fails.
+    hb_face_t *hb_face = hb_face_create_for_tables(get_reference_table,
+                                                   ref, free);
     if (hb_face_is_immutable(hb_face))
         return false;
 
+    FT_Face face = font->faces[index];
     hb_face_set_index(hb_face, face->face_index);
     hb_face_set_upem(hb_face, face->units_per_EM);
 
@@ -793,11 +840,13 @@ static void shape_fribidi(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
     // update indexes
     for (i = 0; i < len; i++) {
         GlyphInfo *info = glyphs + i;
+        ass_font_lock(info->font);
         FT_Face face = info->font->faces[info->face_index];
         info->symbol = shaper->event_text[i];
         info->glyph_index = ass_font_index_magic(face, shaper->event_text[i]);
         if (info->glyph_index)
             info->glyph_index = FT_Get_Char_Index(face, info->glyph_index);
+        ass_font_unlock(info->font);
     }
 
     free(joins);

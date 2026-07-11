@@ -30,6 +30,7 @@
 #include "ass.h"
 #include "ass_utils.h"
 #include "ass_string.h"
+#include "ass_threading.h"
 
 // Fallbacks
 #ifndef HAVE_STRDUP
@@ -117,10 +118,14 @@ void *ass_try_realloc_array(void *ptr, size_t nmemb, size_t size)
 
 void ass_msg(ASS_Library *priv, int lvl, const char *fmt, ...)
 {
+    pthread_mutex_lock(&priv->log_mutex);
+
     va_list va;
     va_start(va, fmt);
     priv->msg_callback(lvl, fmt, va, priv->msg_callback_data);
     va_end(va);
+
+    pthread_mutex_unlock(&priv->log_mutex);
 }
 
 unsigned ass_utf8_get_char(char **str)
