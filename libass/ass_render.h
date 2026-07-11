@@ -104,6 +104,7 @@ typedef struct {
     int shift_direction;
     ASS_Event *event;
     MangetsuGradientDebugState *gradient_debug;
+    size_t render_order;
     bool needs_rgba;
     bool rendered;
 } EventImages;
@@ -637,14 +638,18 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t work_cond;
     pthread_cond_t done_cond;
+    pthread_cond_t rgba_cond;
     RenderWorker **workers;
     unsigned n_workers;
     uintptr_t generation;
     size_t job_count;
+    size_t rgba_turn;
     _Atomic AtomicInt next_job;
     _Atomic AtomicInt remaining_jobs;
     bool initialized;
     bool shutdown;
+    bool rgba;
+    bool serialize_rgba;
     bool warned_start_failure;
 #else
     char unused;
@@ -727,6 +732,10 @@ ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out);
 bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now);
+int ass_collect_active_events(ASS_Renderer *render_priv, ASS_Track *track,
+                              long long now);
+void ass_render_events(ASS_Renderer *render_priv, size_t count, bool rgba);
+int ass_compact_rendered_events(ASS_Renderer *render_priv, int count);
 int ass_cmp_event_layer(const void *p1, const void *p2);
 void ass_merge_event_debug(ASS_Renderer *render_priv, EventImages *images,
                            int count);

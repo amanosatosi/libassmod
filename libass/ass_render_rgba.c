@@ -20,7 +20,6 @@
 #include "ass_compat.h"
 
 #include <stdlib.h>
-#include <string.h>
 
 #include "ass_render.h"
 #include "ass_utils.h"
@@ -289,27 +288,10 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
         return NULL;
     }
 
-    int cnt = 0;
-    for (int i = 0; i < track->n_events; i++) {
-        ASS_Event *event = track->events + i;
-        if ((event->Start <= now) && (now < (event->Start + event->Duration))) {
-            if (cnt >= priv->eimg_size) {
-                priv->eimg_size += 100;
-                priv->eimg = realloc(priv->eimg,
-                                     priv->eimg_size * sizeof(EventImages));
-            }
-            EventImages *images = &priv->eimg[cnt];
-            memset(images, 0, sizeof(*images));
-            if (ass_render_event(&priv->state, event, images,
-                                 &images->imgs_rgba)) {
-                images->rendered = true;
-                priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
-                cnt++;
-            }
-        }
-    }
-
-    ass_merge_event_debug(priv, priv->eimg, cnt);
+    int jobs = ass_collect_active_events(priv, track, now);
+    ass_render_events(priv, jobs, true);
+    ass_merge_event_debug(priv, priv->eimg, jobs);
+    int cnt = ass_compact_rendered_events(priv, jobs);
 
     if (cnt > 0)
         qsort(priv->eimg, cnt, sizeof(EventImages), ass_cmp_event_layer);

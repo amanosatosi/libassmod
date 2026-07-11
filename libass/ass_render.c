@@ -232,12 +232,44 @@ struct render_worker {
     RenderContext state;
 };
 
+static void wait_rgba_turn(ASS_Renderer *renderer, size_t index)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (!pool->initialized)
+        return;
+
+    pthread_mutex_lock(&pool->mutex);
+    while (pool->serialize_rgba && pool->rgba_turn != index)
+        pthread_cond_wait(&pool->rgba_cond, &pool->mutex);
+    pthread_mutex_unlock(&pool->mutex);
+}
+
+static void finish_rgba_turn(ASS_Renderer *renderer, size_t index)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (!pool->initialized)
+        return;
+
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->serialize_rgba) {
+        while (pool->rgba_turn != index)
+            pthread_cond_wait(&pool->rgba_cond, &pool->mutex);
+        pool->rgba_turn++;
+        pthread_cond_broadcast(&pool->rgba_cond);
+    }
+    pthread_mutex_unlock(&pool->mutex);
+}
+
 static void render_event_job(RenderContext *state, ASS_Renderer *renderer,
-                             size_t index)
+                             size_t index, bool rgba)
 {
     EventImages *images = &renderer->eimg[index];
     ASS_Event *event = images->event;
-    images->rendered = ass_render_event(state, event, images, NULL);
+    images->render_order = index;
+    ASS_ImageRGBA **rgba_out = rgba ? &images->imgs_rgba : NULL;
+    images->rendered = ass_render_event(state, event, images, rgba_out);
+    if (rgba)
+        finish_rgba_turn(renderer, index);
 }
 
 static bool claim_render_job(ASS_Renderer *renderer, size_t *index)
@@ -265,11 +297,12 @@ static void finish_render_job(ASS_Renderer *renderer)
     pthread_mutex_unlock(&pool->mutex);
 }
 
-static void consume_render_jobs(RenderContext *state, ASS_Renderer *renderer)
+static void consume_render_jobs(RenderContext *state, ASS_Renderer *renderer,
+                                bool rgba)
 {
     size_t index;
     while (claim_render_job(renderer, &index)) {
-        render_event_job(state, renderer, index);
+        render_event_job(state, renderer, index, rgba);
         finish_render_job(renderer);
     }
 }
@@ -290,8 +323,9 @@ static void *render_worker_main(void *opaque)
             break;
 
         worker->generation = pool->generation;
+        bool rgba = pool->rgba;
         pthread_mutex_unlock(&pool->mutex);
-        consume_render_jobs(&worker->state, renderer);
+        consume_render_jobs(&worker->state, renderer, rgba);
         pthread_mutex_lock(&pool->mutex);
     }
     pthread_mutex_unlock(&pool->mutex);
@@ -308,6 +342,12 @@ static void render_pool_init(ASS_Renderer *renderer)
         goto fail;
     }
     if (pthread_cond_init(&pool->done_cond, NULL) != 0) {
+        pthread_cond_destroy(&pool->work_cond);
+        pthread_mutex_destroy(&pool->mutex);
+        goto fail;
+    }
+    if (pthread_cond_init(&pool->rgba_cond, NULL) != 0) {
+        pthread_cond_destroy(&pool->done_cond);
         pthread_cond_destroy(&pool->work_cond);
         pthread_mutex_destroy(&pool->mutex);
         goto fail;
@@ -360,6 +400,7 @@ static void render_pool_done(ASS_Renderer *renderer)
         return;
 
     render_pool_stop(renderer, true);
+    pthread_cond_destroy(&pool->rgba_cond);
     pthread_cond_destroy(&pool->done_cond);
     pthread_cond_destroy(&pool->work_cond);
     pthread_mutex_destroy(&pool->mutex);
@@ -418,7 +459,7 @@ fail:
     return pool->n_workers;
 }
 
-static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
+void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
 {
     RenderThreadPool *pool = &renderer->thread_pool;
     unsigned requested_workers = renderer->settings.threads > 1 ?
@@ -436,7 +477,7 @@ static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
 
     if (!workers || count < 2) {
         for (size_t i = 0; i < count; i++)
-            render_event_job(&renderer->state, renderer, i);
+            render_event_job(&renderer->state, renderer, i, rgba);
         return;
     }
 
@@ -445,6 +486,9 @@ static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
 
     pthread_mutex_lock(&pool->mutex);
     pool->job_count = count;
+    pool->rgba = rgba;
+    pool->serialize_rgba = rgba;
+    pool->rgba_turn = 0;
     atomic_store_explicit(&pool->next_job, 0, memory_order_release);
     atomic_store_explicit(&pool->remaining_jobs, (AtomicInt) count,
                           memory_order_release);
@@ -452,12 +496,14 @@ static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
     pthread_cond_broadcast(&pool->work_cond);
     pthread_mutex_unlock(&pool->mutex);
 
-    consume_render_jobs(&renderer->state, renderer);
+    consume_render_jobs(&renderer->state, renderer, rgba);
 
     pthread_mutex_lock(&pool->mutex);
     while (atomic_load_explicit(&pool->remaining_jobs,
                                 memory_order_acquire))
         pthread_cond_wait(&pool->done_cond, &pool->mutex);
+    pool->serialize_rgba = false;
+    pool->rgba = false;
     pthread_mutex_unlock(&pool->mutex);
 
     ass_cache_client_set_concurrent(renderer->cache.cache_clients, false);
@@ -471,13 +517,21 @@ static void render_pool_done(ASS_Renderer *renderer)
 {
 }
 
-static void dispatch_render_events(ASS_Renderer *renderer, size_t count)
+static void wait_rgba_turn(ASS_Renderer *renderer, size_t index)
+{
+    (void) renderer;
+    (void) index;
+}
+
+void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
 {
     for (size_t i = 0; i < count; i++) {
         EventImages *images = &renderer->eimg[i];
         ASS_Event *event = images->event;
+        images->render_order = i;
+        ASS_ImageRGBA **rgba_out = rgba ? &images->imgs_rgba : NULL;
         images->rendered = ass_render_event(&renderer->state, event,
-                                            images, NULL);
+                                            images, rgba_out);
     }
 }
 #endif
@@ -8455,9 +8509,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     MangetsuGradientDebugState *gradient_debug =
         collect_mangetsu_gradient_debug(state);
     state->needs_rgba = text_needs_rgba(text_info);
+    size_t render_order = event_images->render_order;
+
+    // RGBA allocations share a frame budget and must match serial event order.
+    if (rgba_out)
+        wait_rgba_turn(render_priv, render_order);
 
     memset(event_images, 0, sizeof(*event_images));
     event_images->gradient_debug = gradient_debug;
+    event_images->render_order = render_order;
     // VSFilter does *not* shift lines with a border > margin to be within the
     // frame, so negative values for top and left may occur
     if (text_info->n_furi_groups) {
@@ -8581,6 +8641,55 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     check_cache_limits(render_priv, &render_priv->cache);
 
     return true;
+}
+
+int ass_collect_active_events(ASS_Renderer *render_priv, ASS_Track *track,
+                              long long now)
+{
+    int count = 0;
+    for (int i = 0; i < track->n_events; i++) {
+        ASS_Event *event = track->events + i;
+        if (event->Start > now || now >= event->Start + event->Duration)
+            continue;
+
+        if (count >= render_priv->eimg_size) {
+            if (render_priv->eimg_size > INT_MAX - 100) {
+                ass_msg(render_priv->library, MSGL_ERR,
+                        "Too many active subtitle events");
+                break;
+            }
+            int new_size = render_priv->eimg_size + 100;
+            EventImages *images = ass_realloc_array(
+                render_priv->eimg, new_size, sizeof(*images));
+            if (!images) {
+                ass_msg(render_priv->library, MSGL_ERR,
+                        "Could not allocate active event list");
+                break;
+            }
+            render_priv->eimg = images;
+            render_priv->eimg_size = new_size;
+        }
+
+        EventImages *images = &render_priv->eimg[count];
+        memset(images, 0, sizeof(*images));
+        images->event = event;
+        images->render_order = count++;
+    }
+    return count;
+}
+
+int ass_compact_rendered_events(ASS_Renderer *render_priv, int count)
+{
+    int rendered = 0;
+    for (int i = 0; i < count; i++) {
+        if (!render_priv->eimg[i].rendered)
+            continue;
+        render_priv->frame_needs_rgba |= render_priv->eimg[i].needs_rgba;
+        if (rendered != i)
+            render_priv->eimg[rendered] = render_priv->eimg[i];
+        rendered++;
+    }
+    return rendered;
 }
 
 int ass_cmp_event_layer(const void *p1, const void *p2)
@@ -8894,49 +9003,12 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         return NULL;
     }
 
-    // Collect active events into stable slots before dispatching workers.
-    int jobs = 0;
-    for (int i = 0; i < track->n_events; i++) {
-        ASS_Event *event = track->events + i;
-        if ((event->Start <= now)
-            && (now < (event->Start + event->Duration))) {
-            if (jobs >= priv->eimg_size) {
-                if (priv->eimg_size > INT_MAX - 100) {
-                    ass_msg(priv->library, MSGL_ERR,
-                            "Too many active subtitle events");
-                    break;
-                }
-                int new_size = priv->eimg_size + 100;
-                EventImages *images = ass_realloc_array(
-                    priv->eimg, new_size, sizeof(*images));
-                if (!images) {
-                    ass_msg(priv->library, MSGL_ERR,
-                            "Could not allocate active event list");
-                    break;
-                }
-                priv->eimg = images;
-                priv->eimg_size = new_size;
-            }
-
-            EventImages *images = &priv->eimg[jobs++];
-            memset(images, 0, sizeof(*images));
-            images->event = event;
-        }
-    }
-
-    dispatch_render_events(priv, jobs);
+    int jobs = ass_collect_active_events(priv, track, now);
+    ass_render_events(priv, jobs, false);
     ass_merge_event_debug(priv, priv->eimg, jobs);
 
     // Compact failed/empty events without changing source order.
-    int cnt = 0;
-    for (int i = 0; i < jobs; i++) {
-        if (!priv->eimg[i].rendered)
-            continue;
-        priv->frame_needs_rgba |= priv->eimg[i].needs_rgba;
-        if (cnt != i)
-            priv->eimg[cnt] = priv->eimg[i];
-        cnt++;
-    }
+    int cnt = ass_compact_rendered_events(priv, jobs);
 
     // sort by layer
     if (cnt > 0)
