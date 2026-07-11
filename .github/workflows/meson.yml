@@ -212,7 +212,8 @@ jobs:
       - name: configure
         run: |
           muon version
-          muon setup -Dtest=enabled build
+          # Muon currently forwards the threads dependency to NASM.
+          muon setup -Dtest=enabled -Dthreads=disabled build
 
       - name: build
         run: |
