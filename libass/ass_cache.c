@@ -367,22 +367,57 @@ const CacheDesc glyph_metrics_cache_desc = {
 
 
 // Cache data
-typedef struct cache_item {
+#define CACHE_SHARDS 64
+
+typedef struct cache_item CacheItem;
+
+typedef struct {
+#if ENABLE_THREADS
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+#else
+    char unused;
+#endif
+} CacheShard;
+
+struct cache_item {
     Cache *cache;
     const CacheDesc *desc;
-    struct cache_item *next, **prev;
-    struct cache_item *queue_next, **queue_prev;
-    size_t size, ref_count;
-} CacheItem;
+    CacheItem *next, **prev;
+    CacheItem *queue_next, **queue_prev;
+    CacheItem *promote_next;
+    size_t size;
+    _Atomic AtomicInt ref_count;
+    ass_hashcode hash;
+    uintptr_t last_used_frame;
+    unsigned shard;
+    bool cache_owned;
+};
 
 struct cache {
     unsigned buckets;
     CacheItem **map;
     CacheItem *queue_first, **queue_last;
+    CacheShard shards[CACHE_SHARDS];
 
     const CacheDesc *desc;
 
-    size_t cache_size;
+    _Atomic AtomicInt cache_size;
+};
+
+struct cache_client_set {
+    CacheClient *first_client;
+    uintptr_t generation;
+    bool concurrent;
+#if ENABLE_THREADS
+    pthread_mutex_t mutex;
+#endif
+};
+
+struct cache_client {
+    CacheClientSet *set;
+    CacheClient *next, **prev;
+    CacheItem *promote_first;
 };
 
 #define CACHE_ALIGN 8
@@ -396,6 +431,46 @@ static inline size_t align_cache(size_t size)
 static inline CacheItem *value_to_item(void *value)
 {
     return (CacheItem *) ((char *) value - CACHE_ITEM_SIZE);
+}
+
+static inline void cache_shard_lock(Cache *cache, unsigned shard,
+                                    bool concurrent)
+{
+    if (concurrent)
+        pthread_mutex_lock(&cache->shards[shard].mutex);
+}
+
+static inline void cache_shard_unlock(Cache *cache, unsigned shard,
+                                      bool concurrent)
+{
+    if (concurrent)
+        pthread_mutex_unlock(&cache->shards[shard].mutex);
+}
+
+static inline size_t cache_size(Cache *cache)
+{
+    AtomicInt size = atomic_load_explicit(&cache->cache_size,
+                                          memory_order_relaxed);
+    assert(size >= 0);
+    return (size_t) size;
+}
+
+static inline void cache_size_add(Cache *cache, size_t size)
+{
+    assert(size <= INTPTR_MAX);
+    AtomicInt old = atomic_fetch_add_explicit(&cache->cache_size,
+                                               (AtomicInt) size,
+                                               memory_order_relaxed);
+    assert(old >= 0 && (uintptr_t) old <= (uintptr_t) INTPTR_MAX - size);
+}
+
+static inline void cache_size_sub(Cache *cache, size_t size)
+{
+    assert(size <= INTPTR_MAX);
+    AtomicInt old = atomic_fetch_sub_explicit(&cache->cache_size,
+                                               (AtomicInt) size,
+                                               memory_order_relaxed);
+    assert(old >= 0 && (uintptr_t) old >= size);
 }
 
 
@@ -414,70 +489,216 @@ Cache *ass_cache_create(const CacheDesc *desc)
         return NULL;
     }
 
+    atomic_init(&cache->cache_size, 0);
+
+#if ENABLE_THREADS
+    unsigned initialized = 0;
+    for (; initialized < CACHE_SHARDS; initialized++) {
+        if (pthread_mutex_init(&cache->shards[initialized].mutex, NULL) != 0)
+            goto fail;
+        if (pthread_cond_init(&cache->shards[initialized].cond, NULL) != 0) {
+            pthread_mutex_destroy(&cache->shards[initialized].mutex);
+            goto fail;
+        }
+    }
+#endif
+
     return cache;
+
+#if ENABLE_THREADS
+fail:
+    while (initialized) {
+        initialized--;
+        pthread_cond_destroy(&cache->shards[initialized].cond);
+        pthread_mutex_destroy(&cache->shards[initialized].mutex);
+    }
+    free(cache->map);
+    free(cache);
+    return NULL;
+#endif
+}
+
+CacheClientSet *ass_cache_client_set_create(void)
+{
+    CacheClientSet *set = calloc(1, sizeof(*set));
+    if (!set)
+        return NULL;
+
+#if ENABLE_THREADS
+    if (pthread_mutex_init(&set->mutex, NULL) != 0) {
+        free(set);
+        return NULL;
+    }
+#endif
+
+    return set;
+}
+
+void ass_cache_client_set_done(CacheClientSet *set)
+{
+    if (!set)
+        return;
+
+    assert(!set->first_client);
+    while (set->first_client)
+        ass_cache_client_destroy(set->first_client);
+
+#if ENABLE_THREADS
+    pthread_mutex_destroy(&set->mutex);
+#endif
+    free(set);
+}
+
+void ass_cache_client_set_concurrent(CacheClientSet *set, bool concurrent)
+{
+    assert(set);
+#if ENABLE_THREADS
+    set->concurrent = concurrent;
+#else
+    set->concurrent = false;
+#endif
+}
+
+CacheClient *ass_cache_client_create(CacheClientSet *set)
+{
+    assert(set);
+    CacheClient *client = calloc(1, sizeof(*client));
+    if (!client)
+        return NULL;
+
+    client->set = set;
+
+    pthread_mutex_lock(&set->mutex);
+    client->next = set->first_client;
+    if (client->next)
+        client->next->prev = &client->next;
+    client->prev = &set->first_client;
+    set->first_client = client;
+    pthread_mutex_unlock(&set->mutex);
+
+    return client;
+}
+
+void ass_cache_client_destroy(CacheClient *client)
+{
+    if (!client)
+        return;
+
+    assert(!client->promote_first);
+    CacheClientSet *set = client->set;
+    pthread_mutex_lock(&set->mutex);
+    if (client->next)
+        client->next->prev = client->prev;
+    *client->prev = client->next;
+    pthread_mutex_unlock(&set->mutex);
+    free(client);
+}
+
+static void schedule_promotion(CacheClient *client, CacheItem *item)
+{
+    uintptr_t generation = client->set->generation;
+    if (item->last_used_frame == generation)
+        return;
+
+    item->last_used_frame = generation;
+    assert(!item->promote_next);
+
+    if (!item->cache_owned) {
+        inc_ref(&item->ref_count);
+        item->cache_owned = true;
+    }
+
+    item->promote_next = client->promote_first;
+    client->promote_first = item;
 }
 
 // Retrieve a value corresponding to a particular cache key,
 // creating one if it does not already exist.
 // The returned item is guaranteed to be valid until the next ass_cache_cut call;
 // to extend its lifetime further, call ass_cache_inc_ref().
-void *ass_cache_get(Cache *cache, void *key, void *priv)
+void *ass_cache_get(Cache *cache, CacheClient *client, void *key, void *priv)
 {
+    assert(cache && client && client->set);
     const CacheDesc *desc = cache->desc;
     size_t key_offs = CACHE_ITEM_SIZE + align_cache(desc->value_size);
-    unsigned bucket = desc->hash_func(key, ASS_HASH_INIT) % cache->buckets;
+    ass_hashcode hash = desc->hash_func(key, ASS_HASH_INIT);
+    unsigned bucket = hash % cache->buckets;
+    unsigned shard = bucket % CACHE_SHARDS;
+    bool concurrent = client->set->concurrent;
+
+    cache_shard_lock(cache, shard, concurrent);
+
     CacheItem *item = cache->map[bucket];
     while (item) {
-        if (desc->compare_func(key, (char *) item + key_offs)) {
-            assert(item->size);
-            if (!item->queue_prev || item->queue_next) {
-                if (item->queue_prev) {
-                    item->queue_next->queue_prev = item->queue_prev;
-                    *item->queue_prev = item->queue_next;
-                } else
-                    item->ref_count++;
-                *cache->queue_last = item;
-                item->queue_prev = cache->queue_last;
-                cache->queue_last = &item->queue_next;
-                item->queue_next = NULL;
-            }
-            desc->key_move_func(NULL, key);
+        if (item->hash == hash &&
+                desc->compare_func(key, (char *) item + key_offs)) {
+            schedule_promotion(client, item);
 
-            return (char *) item + CACHE_ITEM_SIZE;
+#if ENABLE_THREADS
+            while (!item->size && concurrent)
+                pthread_cond_wait(&cache->shards[shard].cond,
+                                  &cache->shards[shard].mutex);
+#endif
+            assert(item->size);
+            void *value = (char *) item + CACHE_ITEM_SIZE;
+            cache_shard_unlock(cache, shard, concurrent);
+            desc->key_move_func(NULL, key);
+            return value;
         }
         item = item->next;
     }
 
     item = malloc(key_offs + desc->key_size);
     if (!item) {
+        cache_shard_unlock(cache, shard, concurrent);
         desc->key_move_func(NULL, key);
         return NULL;
     }
+
     item->cache = cache;
     item->desc = desc;
     void *new_key = (char *) item + key_offs;
     if (!desc->key_move_func(new_key, key)) {
+        cache_shard_unlock(cache, shard, concurrent);
         free(item);
         return NULL;
     }
-    void *value = (char *) item + CACHE_ITEM_SIZE;
-    item->size = desc->construct_func(new_key, value, priv);
-    assert(item->size);
 
-    CacheItem **bucketptr = &cache->map[bucket];
-    if (*bucketptr)
-        (*bucketptr)->prev = &item->next;
-    item->prev = bucketptr;
-    item->next = *bucketptr;
-    *bucketptr = item;
-
-    *cache->queue_last = item;
-    item->queue_prev = cache->queue_last;
-    cache->queue_last = &item->queue_next;
+    item->size = 0;
+    atomic_init(&item->ref_count, 1);
+    item->hash = hash;
+    item->last_used_frame = client->set->generation;
+    item->shard = shard;
+    item->cache_owned = true;
     item->queue_next = NULL;
-    item->ref_count = 1;
+    item->queue_prev = NULL;
+    item->promote_next = client->promote_first;
+    client->promote_first = item;
 
-    cache->cache_size += item->size + (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
+    CacheItem **bucket_ptr = &cache->map[bucket];
+    if (*bucket_ptr)
+        (*bucket_ptr)->prev = &item->next;
+    item->prev = bucket_ptr;
+    item->next = *bucket_ptr;
+    *bucket_ptr = item;
+
+    cache_shard_unlock(cache, shard, concurrent);
+
+    void *value = (char *) item + CACHE_ITEM_SIZE;
+    size_t size = desc->construct_func(new_key, value, priv);
+    assert(size);
+
+    size_t accounted = size + (size == 1 ? 0 : CACHE_ITEM_SIZE);
+    cache_size_add(cache, accounted);
+
+    cache_shard_lock(cache, shard, concurrent);
+    item->size = size;
+#if ENABLE_THREADS
+    if (concurrent)
+        pthread_cond_broadcast(&cache->shards[shard].cond);
+#endif
+    cache_shard_unlock(cache, shard, concurrent);
+
     return value;
 }
 
@@ -490,6 +711,7 @@ void *ass_cache_key(void *value)
 static inline void destroy_item(const CacheDesc *desc, CacheItem *item)
 {
     assert(item->desc == desc);
+    assert(!item->next && !item->prev);
     char *value = (char *) item + CACHE_ITEM_SIZE;
     desc->destruct_func(value + align_cache(desc->value_size), value);
     free(item);
@@ -500,8 +722,9 @@ void ass_cache_inc_ref(void *value)
     if (!value)
         return;
     CacheItem *item = value_to_item(value);
-    assert(item->size && item->ref_count);
-    item->ref_count++;
+    assert(item->size && atomic_load_explicit(&item->ref_count,
+                                              memory_order_acquire));
+    inc_ref(&item->ref_count);
 }
 
 void ass_cache_dec_ref(void *value)
@@ -509,64 +732,148 @@ void ass_cache_dec_ref(void *value)
     if (!value)
         return;
     CacheItem *item = value_to_item(value);
-    assert(item->size && item->ref_count);
-    if (--item->ref_count)
+    assert(item->size && atomic_load_explicit(&item->ref_count,
+                                              memory_order_acquire));
+    if (dec_ref(&item->ref_count))
         return;
 
     Cache *cache = item->cache;
     if (cache) {
+        unsigned shard = item->shard;
+        pthread_mutex_lock(&cache->shards[shard].mutex);
+
+        // A cache lookup may have reacquired ownership before this lock.
+        if (atomic_load_explicit(&item->ref_count, memory_order_acquire)) {
+            pthread_mutex_unlock(&cache->shards[shard].mutex);
+            return;
+        }
+
+        assert(!item->cache_owned && !item->queue_prev);
         if (item->next)
             item->next->prev = item->prev;
         *item->prev = item->next;
 
-        cache->cache_size -= item->size + (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
+        item->next = NULL;
+        item->prev = NULL;
+        item->cache = NULL;
+
+        size_t accounted = item->size +
+            (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
+        cache_size_sub(cache, accounted);
+        pthread_mutex_unlock(&cache->shards[shard].mutex);
     }
     destroy_item(item->desc, item);
 }
 
+void ass_cache_promote(CacheClientSet *set)
+{
+    if (!set)
+        return;
+
+    for (CacheClient *client = set->first_client; client;
+            client = client->next) {
+        CacheItem *pending = NULL;
+        while (client->promote_first) {
+            CacheItem *item = client->promote_first;
+            client->promote_first = item->promote_next;
+            item->promote_next = pending;
+            pending = item;
+        }
+
+        // Apply first uses in access order so the last use remains MRU.
+        while (pending) {
+            CacheItem *item = pending;
+            Cache *cache = item->cache;
+            assert(cache && item->cache_owned);
+
+            if (!item->queue_prev || item->queue_next) {
+                if (item->queue_prev) {
+                    *item->queue_prev = item->queue_next;
+                    item->queue_next->queue_prev = item->queue_prev;
+                }
+
+                item->queue_next = NULL;
+                item->queue_prev = cache->queue_last;
+                *cache->queue_last = item;
+                cache->queue_last = &item->queue_next;
+            }
+
+            pending = item->promote_next;
+            item->promote_next = NULL;
+        }
+    }
+
+    set->generation++;
+}
+
 void ass_cache_cut(Cache *cache, size_t max_size)
 {
-    if (cache->cache_size <= max_size)
+    if (cache_size(cache) <= max_size)
         return;
 
     do {
         CacheItem *item = cache->queue_first;
         if (!item)
             break;
-        assert(item->size);
+        assert(item->size && item->cache_owned);
 
         cache->queue_first = item->queue_next;
-        if (--item->ref_count) {
-            item->queue_prev = NULL;
+        if (cache->queue_first)
+            cache->queue_first->queue_prev = &cache->queue_first;
+        else
+            cache->queue_last = &cache->queue_first;
+
+        item->queue_next = NULL;
+        item->queue_prev = NULL;
+        item->cache_owned = false;
+
+        if (dec_ref(&item->ref_count))
             continue;
-        }
 
         if (item->next)
             item->next->prev = item->prev;
         *item->prev = item->next;
 
-        cache->cache_size -= item->size + (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
+        item->next = NULL;
+        item->prev = NULL;
+        item->cache = NULL;
+
+        size_t accounted = item->size +
+            (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
+        cache_size_sub(cache, accounted);
         destroy_item(cache->desc, item);
-    } while (cache->cache_size > max_size);
-    if (cache->queue_first)
-        cache->queue_first->queue_prev = &cache->queue_first;
-    else
-        cache->queue_last = &cache->queue_first;
+    } while (cache_size(cache) > max_size);
 }
 
 void ass_cache_empty(Cache *cache)
 {
+    if (!cache)
+        return;
+
     for (int i = 0; i < cache->buckets; i++) {
         CacheItem *item = cache->map[i];
         while (item) {
-            assert(item->size);
+            assert(item->size && !item->promote_next);
             CacheItem *next = item->next;
-            if (item->queue_prev)
-                item->ref_count--;
-            if (item->ref_count)
-                item->cache = NULL;
-            else
-                destroy_item(cache->desc, item);
+
+            item->next = NULL;
+            item->prev = NULL;
+            item->queue_next = NULL;
+            item->queue_prev = NULL;
+            item->cache = NULL;
+
+            size_t accounted = item->size +
+                (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
+            cache_size_sub(cache, accounted);
+
+            if (item->cache_owned) {
+                item->cache_owned = false;
+                if (!dec_ref(&item->ref_count))
+                    destroy_item(cache->desc, item);
+            } else {
+                assert(atomic_load_explicit(&item->ref_count,
+                                            memory_order_acquire));
+            }
             item = next;
         }
         cache->map[i] = NULL;
@@ -574,12 +881,24 @@ void ass_cache_empty(Cache *cache)
 
     cache->queue_first = NULL;
     cache->queue_last = &cache->queue_first;
-    cache->cache_size = 0;
+    assert(!cache_size(cache));
+    atomic_store_explicit(&cache->cache_size, 0, memory_order_release);
 }
 
 void ass_cache_done(Cache *cache)
 {
+    if (!cache)
+        return;
+
     ass_cache_empty(cache);
+
+#if ENABLE_THREADS
+    for (unsigned i = 0; i < CACHE_SHARDS; i++) {
+        pthread_cond_destroy(&cache->shards[i].cond);
+        pthread_mutex_destroy(&cache->shards[i].mutex);
+    }
+#endif
+
     free(cache->map);
     free(cache);
 }

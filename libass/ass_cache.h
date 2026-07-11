@@ -20,12 +20,16 @@
 #ifndef LIBASS_CACHE_H
 #define LIBASS_CACHE_H
 
+typedef struct cache Cache;
+typedef struct cache_client CacheClient;
+typedef struct cache_client_set CacheClientSet;
+
 #include "ass.h"
 #include "ass_font.h"
 #include "ass_outline.h"
 #include "ass_bitmap.h"
+#include "ass_threading.h"
 
-typedef struct cache Cache;
 typedef uint64_t ass_hashcode;
 
 #define ASS_BORDER_LAYERS_MAX 10
@@ -114,7 +118,13 @@ typedef struct
 } CacheDesc;
 
 Cache *ass_cache_create(const CacheDesc *desc);
-void *ass_cache_get(Cache *cache, void *key, void *priv);
+CacheClientSet *ass_cache_client_set_create(void);
+void ass_cache_client_set_done(CacheClientSet *set);
+void ass_cache_client_set_concurrent(CacheClientSet *set, bool concurrent);
+CacheClient *ass_cache_client_create(CacheClientSet *set);
+void ass_cache_client_destroy(CacheClient *client);
+void ass_cache_promote(CacheClientSet *set);
+void *ass_cache_get(Cache *cache, CacheClient *client, void *key, void *priv);
 void *ass_cache_key(void *value);
 void ass_cache_inc_ref(void *value);
 void ass_cache_dec_ref(void *value);

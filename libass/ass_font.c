@@ -494,9 +494,11 @@ cleanup:
 /**
  * \brief Create a new ASS_Font according to "desc" argument
  */
-ASS_Font *ass_font_new(ASS_Renderer *render_priv, ASS_FontDesc *desc)
+ASS_Font *ass_font_new(ASS_Renderer *render_priv, CacheClient *cache_client,
+                       ASS_FontDesc *desc)
 {
-    ASS_Font *font = ass_cache_get(render_priv->cache.font_cache, desc, render_priv);
+    ASS_Font *font = ass_cache_get(render_priv->cache.font_cache, cache_client,
+                                   desc, render_priv);
     if (!font)
         return NULL;
     if (font->library)

@@ -188,13 +188,21 @@ static bool render_context_init(RenderContext *state, ASS_Renderer *priv)
 {
     state->renderer = priv;
 
+    state->cache_client = ass_cache_client_create(priv->cache.cache_clients);
+    if (!state->cache_client)
+        return false;
+
     if (!text_info_init(&state->text_info))
         return false;
 
-    if (!(state->shaper = ass_shaper_new(priv->cache.metrics_cache, priv->cache.face_size_metrics_cache)))
+    if (!(state->shaper = ass_shaper_new(priv->cache.metrics_cache,
+                                         priv->cache.face_size_metrics_cache,
+                                         state->cache_client)))
         return false;
 
-    if (!(state->furi_shaper = ass_shaper_new(priv->cache.metrics_cache, priv->cache.face_size_metrics_cache)))
+    if (!(state->furi_shaper = ass_shaper_new(priv->cache.metrics_cache,
+                                              priv->cache.face_size_metrics_cache,
+                                              state->cache_client)))
         return false;
 
     return ass_rasterizer_init(&priv->engine, &state->rasterizer, RASTERIZER_PRECISION);
@@ -210,6 +218,9 @@ static void render_context_done(RenderContext *state)
         ass_shaper_free(state->furi_shaper);
 
     text_info_done(&state->text_info);
+
+    ass_cache_client_destroy(state->cache_client);
+    state->cache_client = NULL;
 }
 
 ASS_Renderer *ass_renderer_init(ASS_Library *library)
@@ -259,6 +270,10 @@ ASS_Renderer *ass_renderer_init(ASS_Library *library)
         !priv->cache.face_size_metrics_cache || !priv->cache.metrics_cache)
         goto fail;
 
+    priv->cache.cache_clients = ass_cache_client_set_create();
+    if (!priv->cache.cache_clients)
+        goto fail;
+
     priv->cache.glyph_max = GLYPH_CACHE_MAX;
     priv->cache.bitmap_max_size = BITMAP_CACHE_MAX_SIZE;
     priv->cache.composite_max_size = COMPOSITE_CACHE_MAX_SIZE;
@@ -294,6 +309,10 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
 
+    ass_cache_promote(render_priv->cache.cache_clients);
+    render_context_done(&render_priv->state);
+    ass_cache_client_set_done(render_priv->cache.cache_clients);
+
     ass_cache_done(render_priv->cache.composite_cache);
     ass_cache_done(render_priv->cache.bitmap_cache);
     ass_cache_done(render_priv->cache.outline_cache);
@@ -307,8 +326,6 @@ void ass_renderer_done(ASS_Renderer *render_priv)
         FT_Done_FreeType(render_priv->ftlibrary);
     free(render_priv->eimg);
     ass_clear_tag_images_internal(render_priv);
-
-    render_context_done(&render_priv->state);
 
     free(render_priv->settings.default_font);
     free(render_priv->settings.default_family);
@@ -1678,12 +1695,14 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
 
     ASS_Vector pos;
     BitmapHashKey key = {0};
-    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
+    key.outline = ass_cache_get(render_priv->cache.outline_cache,
+                                state->cache_client, &ol_key, render_priv);
     if (!key.outline || !key.outline->valid ||
             !quantize_transform(m, &pos, NULL, true, &key))
         return;
 
-    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache,
+                                    state->cache_client, &key, state);
     if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
@@ -1802,12 +1821,14 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
 
     ASS_Vector pos;
     BitmapHashKey key = {0};
-    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
+    key.outline = ass_cache_get(render_priv->cache.outline_cache,
+                                state->cache_client, &ol_key, render_priv);
     if (!key.outline || !key.outline->valid ||
             !quantize_transform(m, &pos, NULL, true, &key))
         return;
 
-    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache,
+                                    state->cache_client, &key, state);
     if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
@@ -3069,7 +3090,8 @@ get_outline_glyph(RenderContext *state, GlyphInfo *info)
     if (info->drawing_text.str) {
         key.type = OUTLINE_DRAWING;
         key.u.drawing.text = info->drawing_text;
-        val = ass_cache_get(priv->cache.outline_cache, &key, priv);
+        val = ass_cache_get(priv->cache.outline_cache, state->cache_client,
+                            &key, priv);
         if (!val || !val->valid)
             return;
 
@@ -3092,7 +3114,8 @@ get_outline_glyph(RenderContext *state, GlyphInfo *info)
         k->italic = info->italic;
         k->flags = info->flags;
 
-        val = ass_cache_get(priv->cache.outline_cache, &key, priv);
+        val = ass_cache_get(priv->cache.outline_cache, state->cache_client,
+                            &key, priv);
         if (!val || !val->valid)
             return;
 
@@ -3392,8 +3415,9 @@ static bool load_border_bitmap(RenderContext *state, GlyphInfo *info,
             goto cleanup;
         outline_border = &temp_outline;
     } else {
-        outline_border =
-            ass_cache_get(render_priv->cache.outline_cache, ol_key, render_priv);
+        outline_border = ass_cache_get(render_priv->cache.outline_cache,
+                                       state->cache_client, ol_key,
+                                       render_priv);
     }
 
     BitmapHashKey key = *base_key;
@@ -3413,7 +3437,8 @@ static bool load_border_bitmap(RenderContext *state, GlyphInfo *info,
             ok = true;
         }
     } else {
-        *out_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+        *out_bm = ass_cache_get(render_priv->cache.bitmap_cache,
+                                state->cache_client, &key, state);
         if (*out_bm && (*out_bm)->buffer)
             ok = true;
         else
@@ -3485,7 +3510,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
             info->bm = &info->distort_bitmap;
         info->has_distort_bitmap = info->bm != NULL;
     } else {
-        info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+        info->bm = ass_cache_get(render_priv->cache.bitmap_cache,
+                                 state->cache_client, &key, state);
         if (!info->bm || !info->bm->buffer)
             info->bm = NULL;
     }
@@ -6884,7 +6910,9 @@ static void render_and_combine_glyphs(RenderContext *state,
         key.filter = info->filter;
         key.bitmap_count = info->bitmap_count;
         key.bitmaps = info->bitmaps;
-        CompositeHashValue *val = ass_cache_get(render_priv->cache.composite_cache, &key, render_priv);
+        CompositeHashValue *val = ass_cache_get(
+            render_priv->cache.composite_cache, state->cache_client,
+            &key, render_priv);
         if (!val)
             continue;
 
@@ -7559,8 +7587,9 @@ static bool bs4_get_bitmap(RenderContext *state, const double matrix[3][3],
     ASS_Renderer *render_priv = state->renderer;
     OutlineHashKey outline_key = {0};
     outline_key.type = OUTLINE_BOX;
-    OutlineHashValue *outline = ass_cache_get(render_priv->cache.outline_cache,
-                                              &outline_key, render_priv);
+    OutlineHashValue *outline = ass_cache_get(
+        render_priv->cache.outline_cache, state->cache_client,
+        &outline_key, render_priv);
     if (!outline || !outline->valid)
         return false;
 
@@ -7571,7 +7600,8 @@ static bool bs4_get_bitmap(RenderContext *state, const double matrix[3][3],
     if (!quantize_transform(transform, pos, NULL, true, &key))
         return false;
 
-    *bitmap = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    *bitmap = ass_cache_get(render_priv->cache.bitmap_cache,
+                            state->cache_client, &key, state);
     return *bitmap && (*bitmap)->buffer && (*bitmap)->w && (*bitmap)->h;
 }
 
@@ -8240,6 +8270,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     render_priv->prev_images_root = render_priv->images_root;
     render_priv->images_root = NULL;
 
+    ass_cache_promote(render_priv->cache.cache_clients);
     check_cache_limits(render_priv, &render_priv->cache);
 
     return true;
