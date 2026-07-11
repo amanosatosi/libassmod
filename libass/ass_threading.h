@@ -38,6 +38,7 @@
 #endif
 
 #ifdef _WIN32
+#include <fenv.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
@@ -199,6 +200,8 @@ struct ThreadStruct {
     void *arg;
     void *ret;
     HANDLE handle;
+    fenv_t fenv;
+    bool fenv_valid;
 };
 
 typedef struct ThreadStruct *pthread_t;
@@ -240,6 +243,16 @@ __attribute__((force_align_arg_pointer))
 thread_start_func(void *arg)
 {
     pthread_t thread = arg;
+
+    /*
+     * pthread_create inherits the creator's floating-point environment,
+     * while CreateThread does not provide that POSIX guarantee.  Restore it
+     * before running client code so workers use the same rounding and x87
+     * precision settings as the calling renderer, notably on 32-bit x86.
+     */
+    if (thread->fenv_valid)
+        fesetenv(&thread->fenv);
+
     thread->ret = thread->start_routine(thread->arg);
     return 0;
 }
@@ -256,6 +269,7 @@ static inline int pthread_create(pthread_t *threadp, const void *attr, void *(*s
         return ENOMEM;
     thread->start_routine = start_routine;
     thread->arg = arg;
+    thread->fenv_valid = fegetenv(&thread->fenv) == 0;
     if ((thread->handle = CreateThread(NULL, 0, thread_start_func, thread, 0, NULL))) {
         *threadp = thread;
         return 0;
