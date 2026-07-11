@@ -45,12 +45,12 @@ multiborder_unit = executable(
     link_with: libass_for_tools,
 )
 
-colorcoding_sources = files('colorcoding_selftest.c')
+colorcoding_sources = files('colorcoding_selftest.c') + [config_h]
 # The positioned-gradient math checks use internal gradient helpers. They are
 # not part of the shared-library export surface, so provide the implementation
 # directly when tests are linked against a shared libass.
 if get_option('default_library') == 'shared'
-    colorcoding_sources += [gradient_test_src, config_h]
+    colorcoding_sources += gradient_test_src
 endif
 
 colorcoding_unit = executable(

@@ -68,14 +68,12 @@ static void hash_i32(uint64_t *hash, int value)
     hash_u32(hash, (uint32_t) value);
 }
 
-static ASS_Renderer *create_renderer(ASS_Library *lib, unsigned threads,
-                                     unsigned *normalized)
+static ASS_Renderer *create_renderer(ASS_Library *lib)
 {
     ASS_Renderer *renderer = ass_renderer_init(lib);
     if (!renderer)
         return NULL;
 
-    *normalized = threads == 1 ? 1 : ass_set_threads(renderer, threads);
     ass_set_storage_size(renderer, 640, 360);
     ass_set_frame_size(renderer, 640, 360);
     ass_set_fonts(renderer, NULL, "sans-serif",
@@ -83,19 +81,16 @@ static ASS_Renderer *create_renderer(ASS_Library *lib, unsigned threads,
     return renderer;
 }
 
-static bool capture_alpha(ASS_Library *lib, unsigned threads,
-                          RenderSignature *sig, unsigned *normalized)
+static void reset_render_caches(ASS_Renderer *renderer)
 {
-    ASS_Renderer *renderer = create_renderer(lib, threads, normalized);
-    if (!renderer)
-        return false;
-    ASS_Track *track = ass_read_memory(lib, (char *) script,
-                                       sizeof(script) - 1, NULL);
-    if (!track) {
-        ass_renderer_done(renderer);
-        return false;
-    }
+    ass_set_frame_size(renderer, 639, 360);
+    ass_set_frame_size(renderer, 640, 360);
+}
 
+static bool capture_alpha(ASS_Renderer *renderer, ASS_Track *track,
+                          RenderSignature *sig)
+{
+    reset_render_caches(renderer);
     *sig = (RenderSignature) { .hash = 1469598103934665603ULL };
     ASS_Image *images = ass_render_frame(renderer, track, 1000, NULL);
     sig->needs_rgba = ass_frame_needs_rgba(renderer) != 0;
@@ -116,24 +111,13 @@ static bool capture_alpha(ASS_Library *lib, unsigned threads,
         }
     }
 
-    ass_renderer_done(renderer);
-    ass_free_track(track);
     return sig->images > 0 && sig->coverage > 0;
 }
 
-static bool capture_rgba(ASS_Library *lib, unsigned threads,
-                         RenderSignature *sig, unsigned *normalized)
+static bool capture_rgba(ASS_Renderer *renderer, ASS_Track *track,
+                         RenderSignature *sig)
 {
-    ASS_Renderer *renderer = create_renderer(lib, threads, normalized);
-    if (!renderer)
-        return false;
-    ASS_Track *track = ass_read_memory(lib, (char *) script,
-                                       sizeof(script) - 1, NULL);
-    if (!track) {
-        ass_renderer_done(renderer);
-        return false;
-    }
-
+    reset_render_caches(renderer);
     *sig = (RenderSignature) { .hash = 1469598103934665603ULL };
     ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, 1000, NULL);
     sig->needs_rgba = ass_frame_needs_rgba(renderer) != 0;
@@ -155,8 +139,6 @@ static bool capture_rgba(ASS_Library *lib, unsigned threads,
     }
 
     ass_free_images_rgba(images);
-    ass_renderer_done(renderer);
-    ass_free_track(track);
     return sig->images > 0 && sig->coverage > 0;
 }
 
@@ -174,35 +156,55 @@ int main(void)
         return 1;
     ass_set_message_cb(lib, msg_cb, NULL);
 
+    ASS_Renderer *renderer = create_renderer(lib);
+    ASS_Track *track = ass_read_memory(lib, (char *) script,
+                                       sizeof(script) - 1, NULL);
+    if (!renderer || !track) {
+        ass_renderer_done(renderer);
+        ass_free_track(track);
+        ass_library_done(lib);
+        return 1;
+    }
+
     RenderSignature alpha_serial, rgba_serial;
-    unsigned normalized;
-    bool ok = capture_alpha(lib, 1, &alpha_serial, &normalized) &&
-              capture_rgba(lib, 1, &rgba_serial, &normalized);
+    bool ok = capture_alpha(renderer, track, &alpha_serial) &&
+              capture_rgba(renderer, track, &rgba_serial);
     ok = ok && alpha_serial.needs_rgba && rgba_serial.needs_rgba;
+    if (!ok) {
+        fprintf(stderr, "SKIP: no usable font/output for threading fixture\n");
+        ass_renderer_done(renderer);
+        ass_free_track(track);
+        ass_library_done(lib);
+        return 77;
+    }
 
     const unsigned settings[] = {2, 0};
     for (size_t i = 0; ok && i < sizeof(settings) / sizeof(settings[0]); i++) {
+        unsigned threads = ass_set_threads(renderer, settings[i]);
+        if (!threads)
+            continue;
         for (int run = 0; ok && run < 2; run++) {
             RenderSignature alpha, rgba;
-            unsigned alpha_threads, rgba_threads;
-            ok = capture_alpha(lib, settings[i], &alpha, &alpha_threads) &&
-                 capture_rgba(lib, settings[i], &rgba, &rgba_threads);
+            ok = capture_alpha(renderer, track, &alpha) &&
+                 capture_rgba(renderer, track, &rgba);
             if (!ok)
                 break;
 
-            if (!alpha_threads || !rgba_threads)
-                continue;
-            if (!same_signature(&alpha_serial, &alpha) ||
-                !same_signature(&rgba_serial, &rgba)) {
+            bool alpha_same = same_signature(&alpha_serial, &alpha);
+            bool rgba_same = same_signature(&rgba_serial, &rgba);
+            if (!alpha_same || !rgba_same) {
                 fprintf(stderr,
                         "render output differs at requested thread count %u "
-                        "(alpha=%u, rgba=%u, run=%d)\n",
-                        settings[i], alpha_threads, rgba_threads, run);
+                        "(effective=%u, alpha=%s, rgba=%s, run=%d)\n",
+                        settings[i], threads, alpha_same ? "same" : "different",
+                        rgba_same ? "same" : "different", run);
                 ok = false;
             }
         }
     }
 
+    ass_renderer_done(renderer);
+    ass_free_track(track);
     ass_library_done(lib);
     return ok ? 0 : 1;
 }
