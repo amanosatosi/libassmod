@@ -5,6 +5,12 @@ test_test_SOURCES = test/test.c
 test_test_LDADD = libass/libass.la
 test_test_LDFLAGS = $(AM_LDFLAGS) $(LIBPNG_LIBS) -static
 
+check_PROGRAMS += test/threading_unit
+TESTS += test/threading_unit$(EXEEXT)
+test_threading_unit_SOURCES = test/threading_selftest.c
+test_threading_unit_LDADD = libass/libass.la
+test_threading_unit_LDFLAGS = $(AM_LDFLAGS) -static
+
 if ENABLE_PROFILE
 noinst_PROGRAMS += profile/profile
 endif
