@@ -39,6 +39,7 @@ static const char script[] =
     "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(105,180)\\furi1}<Base|Ruby>\n"
     "Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(320,180)\\distort(1.1,-0.1,1.2,1.1,-0.1,1)}Distort\n"
     "Dialogue: 2,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(535,180)\\clip(m 430 120 l 640 120 640 240 430 240)}Clip\n"
+    "Dialogue: 2,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(320,245)\\col1\\colan5}A|B\\NC|D{\\col0}\n"
     "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(210,295)\\rndx6\\rndy4}Jitter\n"
     "Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(430,295)\\bs4\\boxp10\\frz12}Box\n";
 
