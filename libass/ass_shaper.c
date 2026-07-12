@@ -1066,13 +1066,16 @@ error:
  */
 void ass_shaper_cleanup(ASS_Shaper *shaper, TextInfo *text_info)
 {
+    (void) shaper;
     int i;
 
     for (i = 0; i < text_info->length; i++) {
-        GlyphInfo *info = text_info->glyphs + i;
-        info = info->next;
+        GlyphInfo *root = text_info->glyphs + i;
+        GlyphInfo *info = root->next;
+        root->next = NULL;
         while (info) {
             GlyphInfo *next = info->next;
+            ass_free_glyph_render_resources(info);
             free(info);
             info = next;
         }

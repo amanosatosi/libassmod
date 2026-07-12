@@ -83,6 +83,29 @@ static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
  * Disabled by default to avoid noisy builds. */
 /* #define ASS_RND_DEBUG */
 
+void ass_free_glyph_render_resources(GlyphInfo *info)
+{
+    if (!info)
+        return;
+    if (info->has_distort_bitmap) {
+        ass_free_bitmap(&info->distort_bitmap);
+        ass_free_bitmap(&info->distort_bitmap_o);
+        for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+            ass_free_bitmap(&info->distort_bitmap_border[i]);
+        info->bm = NULL;
+        info->bm_o = NULL;
+        for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+            info->bm_border[i] = NULL;
+        info->has_distort_bitmap = false;
+    }
+    if (info->has_distort_outline && info->distorted_outline) {
+        ass_outline_free(&info->distorted_outline->outline[0]);
+        ass_outline_free(&info->distorted_outline->outline[1]);
+        free(info->distorted_outline);
+    }
+    info->distorted_outline = NULL;
+    info->has_distort_outline = false;
+}
 
 static void free_glyph_list_chains(GlyphInfo *glyphs, int length)
 {
@@ -91,17 +114,7 @@ static void free_glyph_list_chains(GlyphInfo *glyphs, int length)
         glyphs[i].next = NULL;
         while (info) {
             GlyphInfo *next = info->next;
-            if (info->has_distort_bitmap) {
-                ass_free_bitmap(&info->distort_bitmap);
-                ass_free_bitmap(&info->distort_bitmap_o);
-                for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
-                    ass_free_bitmap(&info->distort_bitmap_border[i]);
-            }
-            if (info->has_distort_outline && info->distorted_outline) {
-                ass_outline_free(&info->distorted_outline->outline[0]);
-                ass_outline_free(&info->distorted_outline->outline[1]);
-                free(info->distorted_outline);
-            }
+            ass_free_glyph_render_resources(info);
             free(info);
             info = next;
         }
@@ -115,17 +128,7 @@ static void free_furi_groups(TextInfo *text_info)
         free_glyph_list_chains(group->glyphs, group->length);
         for (int j = 0; j < group->length; j++) {
             GlyphInfo *info = &group->glyphs[j];
-            if (info->has_distort_bitmap) {
-                ass_free_bitmap(&info->distort_bitmap);
-                ass_free_bitmap(&info->distort_bitmap_o);
-                for (int k = 0; k < ASS_BORDER_LAYERS_MAX - 1; k++)
-                    ass_free_bitmap(&info->distort_bitmap_border[k]);
-            }
-            if (info->has_distort_outline && info->distorted_outline) {
-                ass_outline_free(&info->distorted_outline->outline[0]);
-                ass_outline_free(&info->distorted_outline->outline[1]);
-                free(info->distorted_outline);
-            }
+            ass_free_glyph_render_resources(info);
         }
         free(group->glyphs);
         free(group->event_text);
@@ -3028,40 +3031,37 @@ void ass_column_set_spacing(RenderContext *state, double spacing)
     text_info->column_spacing[column] = spacing <= 0 ? 1.0 : spacing;
 }
 
+static void free_temporary_composite(CompositeHashValue *image)
+{
+    ass_free_bitmap(&image->bm);
+    ass_free_bitmap(&image->bm_o);
+    ass_free_bitmap(&image->bm_s);
+    for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+        ass_free_bitmap(&image->bm_border[j]);
+}
+
+static void free_owned_source_image(CombinedBitmapInfo *info)
+{
+    if (!info->owned_source_image)
+        return;
+    free_temporary_composite(info->owned_source_image);
+    free(info->owned_source_image);
+    info->owned_source_image = NULL;
+}
+
 static void free_distortion_resources(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
     for (int i = 0; i < text_info->length; i++) {
-        for (GlyphInfo *info = text_info->glyphs + i; info; info = info->next) {
-            if (info->has_distort_bitmap) {
-                ass_free_bitmap(&info->distort_bitmap);
-                ass_free_bitmap(&info->distort_bitmap_o);
-                for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
-                    ass_free_bitmap(&info->distort_bitmap_border[j]);
-                info->bm = NULL;
-                info->bm_o = NULL;
-                for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
-                    info->bm_border[j] = NULL;
-                info->has_distort_bitmap = false;
-            }
-            if (info->has_distort_outline && info->distorted_outline) {
-                ass_outline_free(&info->distorted_outline->outline[0]);
-                ass_outline_free(&info->distorted_outline->outline[1]);
-                free(info->distorted_outline);
-                info->distorted_outline = NULL;
-                info->has_distort_outline = false;
-            }
-        }
+        for (GlyphInfo *info = text_info->glyphs + i; info; info = info->next)
+            ass_free_glyph_render_resources(info);
     }
 
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
         CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
+        free_owned_source_image(info);
         if (info->temp_image) {
-            ass_free_bitmap(&info->temp_image->bm);
-            ass_free_bitmap(&info->temp_image->bm_o);
-            ass_free_bitmap(&info->temp_image->bm_s);
-            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
-                ass_free_bitmap(&info->temp_image->bm_border[j]);
+            free_temporary_composite(info->temp_image);
             free(info->temp_image);
             info->temp_image = NULL;
         }
@@ -6626,6 +6626,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info->max_bitmap_count = MAX_SUB_BITMAPS_INITIAL;
                 current_info->has_distortion = false;
                 current_info->temp_image = NULL;
+                current_info->owned_source_image = NULL;
 
                 (*nb_bitmaps)++;
                 new_run = false;
@@ -6707,6 +6708,34 @@ static int decoration_filter_flags(const GlyphInfo *info)
         info->border_style == 3)
         flags |= FILTER_FILL_IN_BORDER;
     return flags;
+}
+
+static Bitmap *decoration_owned_bitmap(const GlyphInfo *deco,
+                                       CompositeHashValue *owned,
+                                       Bitmap *bitmap)
+{
+    if (bitmap == &deco->distort_bitmap)
+        return &owned->bm;
+    if (bitmap == &deco->distort_bitmap_o)
+        return &owned->bm_o;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+        if (bitmap == &deco->distort_bitmap_border[i])
+            return &owned->bm_border[i];
+    return bitmap;
+}
+
+static void move_decoration_distort_bitmaps(CompositeHashValue *owned,
+                                            GlyphInfo *deco)
+{
+    owned->bm = deco->distort_bitmap;
+    owned->bm_o = deco->distort_bitmap_o;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+        owned->bm_border[i] = deco->distort_bitmap_border[i];
+    deco->distort_bitmap = (Bitmap) {0};
+    deco->distort_bitmap_o = (Bitmap) {0};
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+        deco->distort_bitmap_border[i] = (Bitmap) {0};
+    deco->has_distort_bitmap = false;
 }
 
 static bool append_decoration_bitmap_info(RenderContext *state,
@@ -6801,18 +6830,49 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     current_info->x = pos.x;
     current_info->y = pos.y;
     current_info->bitmaps = malloc(sizeof(BitmapRef));
-    if (!current_info->bitmaps)
+    if (!current_info->bitmaps) {
+        if (deco.has_distort_bitmap) {
+            ass_free_bitmap(&deco.distort_bitmap);
+            ass_free_bitmap(&deco.distort_bitmap_o);
+            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                ass_free_bitmap(&deco.distort_bitmap_border[j]);
+        }
+        current_info->bitmap_count = current_info->max_bitmap_count = 0;
         return false;
+    }
     current_info->bitmap_count = current_info->max_bitmap_count = 1;
 
     BitmapRef *ref = current_info->bitmaps;
     memset(ref, 0, sizeof(*ref));
-    ref->bm = deco.bm;
-    ref->bm_o = deco.bm_o;
+    if (deco.has_distort_bitmap) {
+        CompositeHashValue *owned = calloc(1, sizeof(*owned));
+        if (!owned) {
+            ass_free_bitmap(&deco.distort_bitmap);
+            ass_free_bitmap(&deco.distort_bitmap_o);
+            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+                ass_free_bitmap(&deco.distort_bitmap_border[j]);
+            free(current_info->bitmaps);
+            current_info->bitmaps = NULL;
+            current_info->bitmap_count = current_info->max_bitmap_count = 0;
+            return false;
+        }
+        current_info->owned_source_image = owned;
+        current_info->has_distortion = true;
+        ref->bm = decoration_owned_bitmap(&deco, owned, deco.bm);
+        ref->bm_o = decoration_owned_bitmap(&deco, owned, deco.bm_o);
+        for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+            ref->bm_border[j] = decoration_owned_bitmap(
+                &deco, owned, deco.bm_border[j]);
+        move_decoration_distort_bitmaps(owned, &deco);
+    } else {
+        ref->bm = deco.bm;
+        ref->bm_o = deco.bm_o;
+        for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
+            ref->bm_border[j] = deco.bm_border[j];
+    }
     ref->pos = pos;
     ref->pos_o = pos_o;
     for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++) {
-        ref->bm_border[j] = deco.bm_border[j];
         ref->pos_border[j] = deco.pos_border[j];
     }
     return true;
@@ -6893,12 +6953,15 @@ static void render_and_combine_glyphs(RenderContext *state,
             if (!val) {
                 free(info->bitmaps);
                 info->bitmaps = NULL;
+                free_owned_source_image(info);
                 continue;
             }
             if (!ass_composite_construct(&key, val, render_priv)) {
                 free(info->bitmaps);
+                free_temporary_composite(val);
                 free(val);
                 info->bitmaps = NULL;
+                free_owned_source_image(info);
                 continue;
             }
             info->bm = val->bm.buffer ? &val->bm : NULL;
@@ -6912,6 +6975,7 @@ static void render_and_combine_glyphs(RenderContext *state,
 
             free(info->bitmaps);
             info->bitmaps = NULL;
+            free_owned_source_image(info);
             continue;
         }
 
@@ -7921,6 +7985,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
             text_info->length);
     if (!ass_shaper_shape(state->shaper, text_info)) {
         ass_msg(render_priv->library, MSGL_ERR, "Failed to shape text");
+        ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
         return false;
     }

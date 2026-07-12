@@ -183,6 +183,9 @@ typedef struct {
 
     bool has_distortion;
     CompositeHashValue *temp_image;
+    /* Stack-local decoration glyphs can own rnd* bitmaps. Keep a moved copy
+     * here until composition has consumed those sources. */
+    CompositeHashValue *owned_source_image;
     int x, y;
     Bitmap *bm, *bm_o, *bm_s;   // glyphs, layer-1 outline, shadow bitmaps
     Bitmap *bm_border[ASS_BORDER_LAYERS_MAX - 1];
@@ -321,6 +324,11 @@ typedef struct glyph_info {
     // next glyph in this cluster
     struct glyph_info *next;
 } GlyphInfo;
+
+/* Release renderer-owned dynamic resources embedded in a glyph. The shaper
+ * uses this before freeing temporary chain nodes, and renderer teardown uses
+ * it for the persistent root nodes. */
+void ass_free_glyph_render_resources(GlyphInfo *info);
 
 typedef struct {
     int base_start;

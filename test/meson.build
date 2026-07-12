@@ -71,6 +71,15 @@ fad_unit = executable(
     link_with: libass_for_tools,
 )
 
+decoration_rnd_unit = executable(
+    'decoration_rnd_unit',
+    files('decoration_rnd_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 unicode_digits_unit = executable(
     'unicode_digits_unit',
     files('unicode_digits_selftest.c'),
@@ -110,6 +119,15 @@ if get_option('default_library') != 'shared'
         dependencies: deps,
         link_with: libass_for_tools,
     )
+
+    shaper_chain_cleanup_unit = executable(
+        'shaper_chain_cleanup_unit',
+        files('shaper_chain_cleanup_selftest.c'),
+        install: false,
+        include_directories: incs,
+        dependencies: deps,
+        link_with: libass_for_tools,
+    )
 endif
 
 test('distortion-warp', distort_unit)
@@ -118,11 +136,13 @@ test('furi-extension', furi_unit)
 test('multi-border-extension', multiborder_unit)
 test('actor-colorcoding', colorcoding_unit)
 test('fad-color-fade', fad_unit)
+test('rnd-custom-decoration-lifetime', decoration_rnd_unit)
 test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
 if get_option('default_library') != 'shared'
     test('rgba-ownership-lifetime', rgba_ownership_unit, timeout: 120)
+    test('shaper-chain-cleanup', shaper_chain_cleanup_unit)
     if get_option('rgba-ownership-extended-stress')
         # The ASan/UBSan workload is intentionally long. It is enabled only
         # by the scheduled/manual stress workflow, not regular PR CI.

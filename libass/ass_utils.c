@@ -94,12 +94,14 @@ typedef struct {
     const char *free_file;
     int free_line;
     uint64_t id;
+    uint64_t release_id;
 } AlignedDebugFreed;
 
 static AlignedDebugAllocation *aligned_debug_buckets[ALIGNED_DEBUG_BUCKETS];
 static AlignedDebugFreed aligned_debug_freed[ALIGNED_DEBUG_FREED_HISTORY];
 static size_t aligned_debug_freed_cursor;
 static uint64_t aligned_debug_next_id = 1;
+static uint64_t aligned_debug_next_release_id = 1;
 
 #ifdef _WIN32
 static volatile LONG aligned_debug_lock_state;
@@ -172,12 +174,48 @@ static const AlignedDebugFreed *aligned_debug_find_freed(void *ptr)
     return NULL;
 }
 
+/* The pointer passed to free may be corrupted, while its Bitmap owner still
+ * identifies the expected allocation. These run while the registry is locked. */
+static const AlignedDebugAllocation *aligned_debug_find_owner(
+    const void *owner, ASS_AlignedAllocCategory category)
+{
+    const AlignedDebugAllocation *match = NULL;
+    if (!owner)
+        return NULL;
+    for (size_t i = 0; i < ALIGNED_DEBUG_BUCKETS; i++) {
+        for (AlignedDebugAllocation *entry = aligned_debug_buckets[i]; entry;
+             entry = entry->next) {
+            if (entry->owner == owner && entry->category == category &&
+                    (!match || entry->id > match->id))
+                match = entry;
+        }
+    }
+    return match;
+}
+
+static const AlignedDebugFreed *aligned_debug_find_freed_owner(
+    const void *owner, ASS_AlignedAllocCategory category)
+{
+    const AlignedDebugFreed *match = NULL;
+    if (!owner)
+        return NULL;
+    for (size_t i = 0; i < ALIGNED_DEBUG_FREED_HISTORY; i++) {
+        const AlignedDebugFreed *entry = &aligned_debug_freed[i];
+        if (entry->owner == owner && entry->category == category &&
+                (!match || entry->release_id > match->release_id))
+            match = entry;
+    }
+    return match;
+}
+
 static void aligned_debug_fail(const char *reason, void *ptr,
                                ASS_AlignedAllocCategory free_category,
                                const void *free_owner, const char *free_file,
                                int free_line,
                                const AlignedDebugAllocation *live,
-                               const AlignedDebugFreed *freed)
+                               const AlignedDebugFreed *freed,
+                               const AlignedDebugAllocation *owner_live,
+                               const AlignedDebugFreed *owner_freed)
 {
     const char *allocation_file = live && live->file ? live->file :
         freed && freed->allocation_file ? freed->allocation_file : "unknown";
@@ -185,7 +223,7 @@ static void aligned_debug_fail(const char *reason, void *ptr,
         live->last_operation : "unknown";
     const char *previous_free_file = freed && freed->free_file ?
         freed->free_file : "none";
-    char diagnostic[2048];
+    char diagnostic[4096];
     int length = snprintf(
         diagnostic, sizeof(diagnostic),
         "Invalid aligned free: reason=%s pointer=%p "
@@ -193,7 +231,13 @@ static void aligned_debug_fail(const char *reason, void *ptr,
         "allocation_id=%" PRIu64 " allocation_size=%zu "
         "allocation_category=%s allocation_owner=%p "
         "allocation_site=%s:%d last_operation=%s "
-        "previous_free_site=%s:%d\n",
+        "previous_free_site=%s:%d "
+        "owner_live_pointer=%p owner_live_id=%" PRIu64 " "
+        "owner_live_size=%zu owner_live_site=%s:%d "
+        "owner_live_operation=%s "
+        "owner_previous_pointer=%p owner_previous_id=%" PRIu64 " "
+        "owner_previous_size=%zu owner_previous_site=%s:%d "
+        "owner_previous_free_site=%s:%d\n",
         reason ? reason : "unknown", ptr,
         aligned_category_name(free_category), free_owner,
         free_file ? free_file : "unknown", free_line,
@@ -203,7 +247,22 @@ static void aligned_debug_fail(const char *reason, void *ptr,
                               freed ? freed->category : ASS_ALIGNED_ALLOC_OTHER),
         live ? live->owner : freed ? freed->owner : NULL,
         allocation_file, live ? live->line : freed ? freed->allocation_line : 0,
-        last_operation, previous_free_file, freed ? freed->free_line : 0);
+        last_operation, previous_free_file, freed ? freed->free_line : 0,
+        owner_live ? owner_live->ptr : NULL,
+        owner_live ? owner_live->id : 0,
+        owner_live ? owner_live->size : 0,
+        owner_live && owner_live->file ? owner_live->file : "none",
+        owner_live ? owner_live->line : 0,
+        owner_live && owner_live->last_operation ? owner_live->last_operation :
+            "none",
+        owner_freed ? owner_freed->ptr : NULL,
+        owner_freed ? owner_freed->id : 0,
+        owner_freed ? owner_freed->size : 0,
+        owner_freed && owner_freed->allocation_file ?
+            owner_freed->allocation_file : "none",
+        owner_freed ? owner_freed->allocation_line : 0,
+        owner_freed && owner_freed->free_file ? owner_freed->free_file : "none",
+        owner_freed ? owner_freed->free_line : 0);
     if (length < 0)
         fputs("Invalid aligned free: diagnostic formatting failed\n", stderr);
     else {
@@ -234,7 +293,7 @@ static void aligned_debug_track(void *ptr, void *raw, size_t size,
     AlignedDebugAllocation **link = aligned_debug_find_link(ptr);
     if (*link)
         aligned_debug_fail("live pointer allocated twice", ptr, category, owner,
-                           file, line, *link, NULL);
+                           file, line, *link, NULL, NULL, NULL);
     uint64_t id = aligned_debug_next_id++;
     if (!id)
         id = aligned_debug_next_id++;
@@ -305,16 +364,21 @@ void ass_aligned_free_impl(void *ptr, ASS_AlignedAllocCategory category,
     AlignedDebugAllocation *entry = *link;
     if (!entry) {
         const AlignedDebugFreed *freed = aligned_debug_find_freed(ptr);
+        const AlignedDebugAllocation *owner_live =
+            aligned_debug_find_owner(owner, category);
+        const AlignedDebugFreed *owner_freed =
+            aligned_debug_find_freed_owner(owner, category);
         aligned_debug_fail(freed ? "double free" : "untracked pointer",
-                           ptr, category, owner, file, line, NULL, freed);
+                           ptr, category, owner, file, line, NULL, freed,
+                           owner_live, owner_freed);
     }
     void *metadata_raw = *((void **) ptr - 1);
     if (metadata_raw != entry->raw)
         aligned_debug_fail("aligned header corrupted", ptr, category, owner,
-                           file, line, entry, NULL);
+                           file, line, entry, NULL, NULL, NULL);
     if (entry->owner && owner && entry->owner != owner)
         aligned_debug_fail("owner mismatch", ptr, category, owner,
-                           file, line, entry, NULL);
+                           file, line, entry, NULL, NULL, NULL);
 
     *link = entry->next;
     AlignedDebugFreed *freed =
@@ -329,7 +393,10 @@ void ass_aligned_free_impl(void *ptr, ASS_AlignedAllocCategory category,
         .free_file = file,
         .free_line = line,
         .id = entry->id,
+        .release_id = aligned_debug_next_release_id++,
     };
+    if (!freed->release_id)
+        freed->release_id = aligned_debug_next_release_id++;
     void *raw = entry->raw;
     aligned_debug_unlock();
     free(entry);
@@ -353,7 +420,9 @@ void ass_aligned_retag(void *ptr, ASS_AlignedAllocCategory category,
     AlignedDebugAllocation *entry = *aligned_debug_find_link(ptr);
     if (!entry)
         aligned_debug_fail("retag of untracked pointer", ptr, category, owner,
-                           operation, 0, NULL, aligned_debug_find_freed(ptr));
+                           operation, 0, NULL, aligned_debug_find_freed(ptr),
+                           aligned_debug_find_owner(owner, category),
+                           aligned_debug_find_freed_owner(owner, category));
     entry->category = category;
     entry->owner = owner;
     entry->last_operation = operation;
