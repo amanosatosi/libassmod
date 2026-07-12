@@ -119,12 +119,26 @@ jobs:
           Copy-Item $dll.FullName artifact\\assmod.dll -Force
           Copy-Item $dll.FullName artifact\\libass.dll -Force
 
+          # Keep the matching PDB with the DLL. Crash dumps require the exact
+          # GUID/age-matched PDB; a later rebuild cannot safely symbolize them.
+          $pdbCandidates = @(
+            Get-ChildItem -Path $env:BUILD_DIR -Recurse -File -Filter *.pdb -ErrorAction SilentlyContinue |
+              Where-Object { $_.BaseName -eq $dll.BaseName }
+          )
+          if ($pdbCandidates.Count -ne 1) {
+            $found = $pdbCandidates | ForEach-Object { $_.FullName }
+            throw "Expected exactly one PDB matching $($dll.Name); found: $($found -join ', ')"
+          }
+          $pdb = $pdbCandidates[0]
+          Copy-Item $pdb.FullName (Join-Path artifact $pdb.Name) -Force
+
           $info = @(
             "repo: $env:GITHUB_REPOSITORY"
             "commit: $(git rev-parse HEAD)"
             "ref: $env:GITHUB_REF"
             "build_time_utc: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
             "toolchain: msvc-static"
+            "pdb: $($pdb.Name)"
           )
           $info | Set-Content -Path artifact\\libassmod-build.txt -Encoding ASCII
 
