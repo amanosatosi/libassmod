@@ -322,17 +322,22 @@ void ass_renderer_done(ASS_Renderer *render_priv)
  * \brief Create a new ASS_Image
  * Parameters are the same as ASS_Image fields.
  */
-static ASS_Image *my_draw_bitmap(unsigned char *bitmap, int bitmap_w,
+static ASS_Image *my_draw_bitmap(ASS_Renderer *render_priv,
+                                 unsigned char *bitmap, int bitmap_w,
                                  int bitmap_h, int stride, int dst_x,
                                  int dst_y, uint32_t color,
                                  CompositeHashValue *source)
 {
-    ASS_ImagePriv *img = malloc(sizeof(ASS_ImagePriv));
-    if (!img) {
-        if (!source)
-            ass_aligned_free(bitmap);
+    ASS_ImagePriv *img = NULL;
+    if (!source && render_priv->debug_fail_next_owned_image_allocation)
+        render_priv->debug_fail_next_owned_image_allocation = false;
+    else
+        img = malloc(sizeof(ASS_ImagePriv));
+    /* The caller retains the bitmap on failure. This makes allocation
+     * failure a single-owner path instead of freeing here and again in
+     * render_glyph()/render_glyph_i(). */
+    if (!img)
         return NULL;
-    }
 
     img->result.w = bitmap_w;
     img->result.h = bitmap_h;
@@ -346,6 +351,9 @@ static ASS_Image *my_draw_bitmap(unsigned char *bitmap, int bitmap_w,
     ass_cache_inc_ref(source);
     img->buffer = source ? NULL : bitmap;
     img->ref_count = 0;
+    if (!source)
+        ass_aligned_retag(bitmap, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, img,
+                          "legacy image ownership transfer");
 
     return &img->result;
 }
@@ -809,7 +817,9 @@ static unsigned char *copy_bitmap_region(const Bitmap *bm, int x0, int y0,
 
     int stride = (int) aligned_stride;
     size_t size = aligned_stride * (size_t) h + (unsigned) align;
-    unsigned char *buf = ass_aligned_alloc((unsigned) align, size, false);
+    unsigned char *buf = ass_aligned_alloc_tagged(
+        (unsigned) align, size, false,
+        ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
     if (!buf)
         return NULL;
 
@@ -931,11 +941,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                 if (rgba_tail && combined &&
                     combined->image_fill.layer[layer1].enabled)
                     legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
-                img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
+                img = my_draw_bitmap(render_priv, sub_buf, sub_w, sub_h, sub_stride,
                                      dst_x + r[j].x0, dst_y + r[j].y0, legacy_color, source);
                 if (!img) {
                     if (!source)
-                        ass_aligned_free(sub_buf);
+                        ass_aligned_free_tagged(
+                            sub_buf, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
                     break;
                 }
                 img->type = type;
@@ -968,11 +979,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                 if (rgba_tail && combined &&
                     combined->image_fill.layer[layer2].enabled)
                     legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
-                img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
+                img = my_draw_bitmap(render_priv, sub_buf, sub_w, sub_h, sub_stride,
                                      dst_x + lbrk, dst_y + r[j].y0, legacy_color, source);
                 if (!img) {
                     if (!source)
-                        ass_aligned_free(sub_buf);
+                        ass_aligned_free_tagged(
+                            sub_buf, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
                     break;
                 }
                 img->type = type;
@@ -1083,11 +1095,12 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
         if (rgba_tail && combined &&
             combined->image_fill.layer[layer1].enabled)
             legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
-        img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
+        img = my_draw_bitmap(render_priv, sub_buf, sub_w, sub_h, sub_stride,
                              dst_x + b_x0, dst_y + b_y0, legacy_color, source);
         if (!img) {
             if (!source)
-                ass_aligned_free(sub_buf);
+                ass_aligned_free_tagged(
+                    sub_buf, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
             return tail;
         }
         img->type = type;
@@ -1121,11 +1134,12 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
         if (rgba_tail && combined &&
             combined->image_fill.layer[layer2].enabled)
             legacy_color = (legacy_color & 0xFFFFFF00u) | 0xFFu;
-        img = my_draw_bitmap(sub_buf, sub_w, sub_h, sub_stride,
+        img = my_draw_bitmap(render_priv, sub_buf, sub_w, sub_h, sub_stride,
                              dst_x + brk, dst_y + b_y0, legacy_color, source);
         if (!img) {
             if (!source)
-                ass_aligned_free(sub_buf);
+                ass_aligned_free_tagged(
+                    sub_buf, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
             return tail;
         }
         img->type = type;
@@ -1739,7 +1753,8 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
             if ((size_t) as > (SIZE_MAX - align) / (size_t) ah)
                 break;
             size_t alloc_size = (size_t) as * ah + align;
-            nbuffer = ass_aligned_alloc(align, alloc_size, false);
+            nbuffer = ass_aligned_alloc_tagged(
+                align, alloc_size, false, ASS_ALIGNED_ALLOC_CLIP_BUFFER, cur);
             if (!nbuffer)
                 break;
 
@@ -1759,7 +1774,9 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
                 ns_size > (SIZE_MAX - align) / (size_t) h)
                 break;
             unsigned ns = (unsigned) ns_size;
-            nbuffer = ass_aligned_alloc(align, ns_size * h + align, false);
+            nbuffer = ass_aligned_alloc_tagged(
+                align, ns_size * h + align, false,
+                ASS_ALIGNED_ALLOC_CLIP_BUFFER, cur);
             if (!nbuffer)
                 break;
 
@@ -1777,10 +1794,13 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
         ASS_ImagePriv *priv = (ASS_ImagePriv *) cur;
         unsigned char *old_buffer = priv->buffer;
         priv->buffer = cur->bitmap = nbuffer;
+        ass_aligned_retag(nbuffer, ASS_ALIGNED_ALLOC_CLIP_BUFFER, priv,
+                          "legacy vector clip ownership transfer");
         ass_cache_dec_ref(priv->source);
         priv->source = NULL;
         if (old_buffer)
-            ass_aligned_free(old_buffer);
+            ass_aligned_free_tagged(
+                old_buffer, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, priv);
     }
 }
 
@@ -7606,7 +7626,8 @@ static uint8_t *bs4_copy_bitmap_mask(const Bitmap *bitmap)
         return NULL;
 
     size_t size = (size_t) bitmap->w * bitmap->h;
-    uint8_t *mask = ass_aligned_alloc(1, size, false);
+    uint8_t *mask = ass_aligned_alloc_tagged(
+        1, size, false, ASS_ALIGNED_ALLOC_BS4_MASK, bitmap);
     if (!mask)
         return NULL;
     for (int y = 0; y < bitmap->h; y++)
@@ -7815,7 +7836,7 @@ static void add_background(RenderContext *state, EventImages *event_images,
             box_tail = append_bs4_bitmap(state, &ring, outer_pos, layer->color,
                                          IMAGE_TYPE_OUTLINE, box_tail, rgba_tail);
         }
-        ass_aligned_free(mask);
+        ass_aligned_free_tagged(mask, ASS_ALIGNED_ALLOC_BS4_MASK, outer);
     }
 
     double fill_matrix[3][3];
@@ -8572,7 +8593,8 @@ static ASS_Image *ass_free_image(ASS_Image *img) {
 
     ASS_ImagePriv *priv = (ASS_ImagePriv *) img;
     ass_cache_dec_ref(priv->source);
-    ass_aligned_free(priv->buffer);
+    ass_aligned_free_tagged(
+        priv->buffer, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, priv);
     free(priv);
 
     return next;
@@ -8683,4 +8705,10 @@ void ass_frame_unref(ASS_Image *img)
     do {
         img = ass_free_image(img);
     } while (img);
+}
+
+void ass_debug_fail_next_owned_image_allocation(ASS_Renderer *priv)
+{
+    if (priv)
+        priv->debug_fail_next_owned_image_allocation = true;
 }

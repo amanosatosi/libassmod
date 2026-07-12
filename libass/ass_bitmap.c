@@ -81,7 +81,8 @@ void ass_synth_blur(const BitmapEngine *engine, Bitmap *bm,
     // Apply box blur (multiple passes, if requested)
     unsigned align = 1 << engine->align_order;
     size_t size = sizeof(uint16_t) * bm->stride * 2;
-    uint16_t *tmp = ass_aligned_alloc(align, size, false);
+    uint16_t *tmp = ass_aligned_alloc_tagged(
+        align, size, false, ASS_ALIGNED_ALLOC_BLUR_SCRATCH, bm);
     if (!tmp)
         return;
 
@@ -97,7 +98,7 @@ void ass_synth_blur(const BitmapEngine *engine, Bitmap *bm,
         be_blur_post(buf, stride, w, h);
     }
     engine->be_blur(buf, stride, w, h, tmp);
-    ass_aligned_free(tmp);
+    ass_aligned_free_tagged(tmp, ASS_ALIGNED_ALLOC_BLUR_SCRATCH, bm);
 }
 
 bool ass_alloc_bitmap(const BitmapEngine *engine, Bitmap *bm,
@@ -108,7 +109,8 @@ bool ass_alloc_bitmap(const BitmapEngine *engine, Bitmap *bm,
     // Too often we use ints as offset for bitmaps => use INT_MAX.
     if (s > (INT_MAX - align) / FFMAX(h, 1))
         return false;
-    uint8_t *buf = ass_aligned_alloc(align, s * h + align, zero);
+    uint8_t *buf = ass_aligned_alloc_tagged(
+        align, s * h + align, zero, ASS_ALIGNED_ALLOC_BITMAP, bm);
     if (!buf)
         return false;
     bm->w = w;
@@ -129,13 +131,15 @@ bool ass_realloc_bitmap(const BitmapEngine *engine, Bitmap *bm, int32_t w, int32
         return false;
     bm->logical_w = w;
     bm->logical_h = h;
-    ass_aligned_free(old);
+    ass_aligned_free_tagged(old, ASS_ALIGNED_ALLOC_BITMAP, bm);
     return true;
 }
 
 void ass_free_bitmap(Bitmap *bm)
 {
-    ass_aligned_free(bm->buffer);
+    uint8_t *buffer = bm->buffer;
+    bm->buffer = NULL;
+    ass_aligned_free_tagged(buffer, ASS_ALIGNED_ALLOC_BITMAP, bm);
 }
 
 bool ass_copy_bitmap(const BitmapEngine *engine, Bitmap *dst, const Bitmap *src)
@@ -195,6 +199,8 @@ bool ass_outline_to_bitmap(RenderContext *state, Bitmap *bm,
     int32_t tile_h = (h + mask) & ~mask;
     if (!ass_alloc_bitmap(&render_priv->engine, bm, tile_w, tile_h, false))
         return false;
+    ass_aligned_retag(bm->buffer, ASS_ALIGNED_ALLOC_GLYPH_BITMAP, bm,
+                      "outline rasterization");
     bm->left = x_min;
     bm->top  = y_min;
     bm->logical_w = logical_w;

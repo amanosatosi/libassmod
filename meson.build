@@ -341,6 +341,7 @@ if not asm_option.disabled()
 endif
 
 conf.set('CONFIG_LARGE_TILES', get_option('large-tiles').to_int())
+conf.set('CONFIG_ALIGNED_ALLOC_DEBUG', get_option('aligned-allocation-debug').to_int())
 
 conf.set('CONFIG_SOURCEVERSION', '"meson, commit: @VCS_TAG@"')
 

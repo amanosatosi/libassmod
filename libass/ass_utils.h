@@ -91,8 +91,35 @@ static inline bool ass_string_equal(ASS_StringView str1, ASS_StringView str2)
     return str1.len == str2.len && !memcmp(str1.str, str2.str, str1.len);
 }
 
-void *ass_aligned_alloc(size_t alignment, size_t size, bool zero);
-void ass_aligned_free(void *ptr);
+typedef enum {
+    ASS_ALIGNED_ALLOC_OTHER = 0,
+    ASS_ALIGNED_ALLOC_BITMAP,
+    ASS_ALIGNED_ALLOC_GLYPH_BITMAP,
+    ASS_ALIGNED_ALLOC_LEGACY_IMAGE,
+    ASS_ALIGNED_ALLOC_RGBA_IMAGE,
+    ASS_ALIGNED_ALLOC_CLIP_BUFFER,
+    ASS_ALIGNED_ALLOC_COMPOSITE_BUFFER,
+    ASS_ALIGNED_ALLOC_BLUR_SCRATCH,
+    ASS_ALIGNED_ALLOC_RASTERIZER_TILE,
+    ASS_ALIGNED_ALLOC_BS4_MASK,
+} ASS_AlignedAllocCategory;
+
+void *ass_aligned_alloc_impl(size_t alignment, size_t size, bool zero,
+                             ASS_AlignedAllocCategory category,
+                             const void *owner, const char *file, int line);
+void ass_aligned_free_impl(void *ptr, ASS_AlignedAllocCategory category,
+                           const void *owner, const char *file, int line);
+void ass_aligned_retag(void *ptr, ASS_AlignedAllocCategory category,
+                       const void *owner, const char *operation);
+
+#define ass_aligned_alloc_tagged(alignment, size, zero, category, owner) \
+    ass_aligned_alloc_impl(alignment, size, zero, category, owner, __FILE__, __LINE__)
+#define ass_aligned_free_tagged(ptr, category, owner) \
+    ass_aligned_free_impl(ptr, category, owner, __FILE__, __LINE__)
+#define ass_aligned_alloc(alignment, size, zero) \
+    ass_aligned_alloc_tagged(alignment, size, zero, ASS_ALIGNED_ALLOC_OTHER, NULL)
+#define ass_aligned_free(ptr) \
+    ass_aligned_free_tagged(ptr, ASS_ALIGNED_ALLOC_OTHER, NULL)
 
 void *ass_realloc_array(void *ptr, size_t nmemb, size_t size);
 void *ass_try_realloc_array(void *ptr, size_t nmemb, size_t size);

@@ -200,7 +200,9 @@ bool ass_gaussian_blur(const BitmapEngine *engine, Bitmap *bm, double r2x, doubl
     if (size > INT_MAX / 4)
         return false;
 
-    int16_t *tmp = ass_aligned_alloc(2 * stripe_width, 4 * size, false);
+    int16_t *tmp = ass_aligned_alloc_tagged(
+        2 * stripe_width, 4 * size, false,
+        ASS_ALIGNED_ALLOC_BLUR_SCRATCH, bm);
     if (!tmp)
         return false;
 
@@ -243,14 +245,14 @@ bool ass_gaussian_blur(const BitmapEngine *engine, Bitmap *bm, double r2x, doubl
     assert(w == end_w && h == end_h);
 
     if (!ass_realloc_bitmap(engine, bm, w, h)) {
-        ass_aligned_free(tmp);
+        ass_aligned_free_tagged(tmp, ASS_ALIGNED_ALLOC_BLUR_SCRATCH, bm);
         return false;
     }
     bm->left -= ((blur_x.radius + 4) << blur_x.level) - 4;
     bm->top  -= ((blur_y.radius + 4) << blur_y.level) - 4;
 
     engine->stripe_pack(bm->buffer, bm->stride, buf[index], w, h);
-    ass_aligned_free(tmp);
+    ass_aligned_free_tagged(tmp, ASS_ALIGNED_ALLOC_BLUR_SCRATCH, bm);
     return true;
 }
 

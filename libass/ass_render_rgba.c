@@ -23,6 +23,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifndef NDEBUG
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+#endif
+
 #include "ass_render.h"
 #include "ass_utils.h"
 #include "ass_priv.h"
@@ -51,6 +59,36 @@ static uint64_t rgba_debug_next_id = 1;
 static size_t rgba_debug_allocation_count;
 static uint64_t rgba_debug_registry_scans;
 static uint64_t rgba_debug_registry_scan_steps;
+
+#ifdef _WIN32
+static volatile LONG rgba_debug_lock_state;
+
+static void rgba_debug_lock(void)
+{
+    while (InterlockedCompareExchange(&rgba_debug_lock_state, 1, 0) != 0)
+        Sleep(0);
+}
+
+static void rgba_debug_unlock(void)
+{
+    InterlockedExchange(&rgba_debug_lock_state, 0);
+}
+#else
+static volatile int rgba_debug_lock_state;
+
+static void rgba_debug_lock(void)
+{
+    while (__sync_lock_test_and_set(&rgba_debug_lock_state, 1)) {
+        while (rgba_debug_lock_state)
+            sched_yield();
+    }
+}
+
+static void rgba_debug_unlock(void)
+{
+    __sync_lock_release(&rgba_debug_lock_state);
+}
+#endif
 
 static const char *rgba_owner_name(ASS_RGBAOwner owner)
 {
@@ -85,23 +123,31 @@ static void rgba_debug_fail(const char *operation, ASS_ImageRGBA *img,
 
 static RgbaDebugAllocation *rgba_debug_find_buffer(uint8_t *buffer)
 {
+    rgba_debug_lock();
     rgba_debug_registry_scans++;
     for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next) {
         rgba_debug_registry_scan_steps++;
-        if (cur->base == buffer)
+        if (cur->base == buffer) {
+            rgba_debug_unlock();
             return cur;
+        }
     }
+    rgba_debug_unlock();
     return NULL;
 }
 
 static RgbaDebugAllocation *rgba_debug_find_image(ASS_ImageRGBA *img)
 {
+    rgba_debug_lock();
     rgba_debug_registry_scans++;
     for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next) {
         rgba_debug_registry_scan_steps++;
-        if ((ASS_ImageRGBA *) cur->image == img)
+        if ((ASS_ImageRGBA *) cur->image == img) {
+            rgba_debug_unlock();
             return cur;
+        }
     }
+    rgba_debug_unlock();
     return NULL;
 }
 
@@ -116,19 +162,22 @@ static void rgba_debug_track_buffer(uint8_t *buffer, size_t size,
     *allocation = (RgbaDebugAllocation) {
         .base = buffer,
         .size = size,
-        .id = rgba_debug_next_id++,
         .creation_site = creation_site,
         .last_operation = "allocated",
-        .next = rgba_debug_allocations,
     };
+    rgba_debug_lock();
+    allocation->id = rgba_debug_next_id++;
     if (!allocation->id)
         allocation->id = rgba_debug_next_id++;
+    allocation->next = rgba_debug_allocations;
     rgba_debug_allocations = allocation;
     rgba_debug_allocation_count++;
+    rgba_debug_unlock();
 }
 
 static void rgba_debug_remove(RgbaDebugAllocation *allocation)
 {
+    rgba_debug_lock();
     RgbaDebugAllocation **link = &rgba_debug_allocations;
     rgba_debug_registry_scans++;
     while (*link && *link != allocation) {
@@ -141,6 +190,7 @@ static void rgba_debug_remove(RgbaDebugAllocation *allocation)
         rgba_debug_fail("remove allocation", NULL, allocation);
     *link = allocation->next;
     rgba_debug_allocation_count--;
+    rgba_debug_unlock();
     free(allocation);
 }
 
@@ -198,7 +248,10 @@ static void rgba_debug_release_unowned_buffer(uint8_t *buffer,
 size_t ass_rgba_debug_live_allocation_count(void)
 {
 #ifndef NDEBUG
-    return rgba_debug_allocation_count;
+    rgba_debug_lock();
+    size_t count = rgba_debug_allocation_count;
+    rgba_debug_unlock();
+    return count;
 #else
     return 0;
 #endif
@@ -209,12 +262,14 @@ void ass_rgba_debug_allocation_stats(size_t *live_allocations,
                                      uint64_t *registry_scan_steps)
 {
 #ifndef NDEBUG
+    rgba_debug_lock();
     if (live_allocations)
         *live_allocations = rgba_debug_allocation_count;
     if (registry_scans)
         *registry_scans = rgba_debug_registry_scans;
     if (registry_scan_steps)
         *registry_scan_steps = rgba_debug_registry_scan_steps;
+    rgba_debug_unlock();
 #else
     if (live_allocations)
         *live_allocations = 0;
@@ -293,7 +348,8 @@ uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
     if (!rgba_reserve(priv, replace_size, size))
         return NULL;
 
-    uint8_t *buffer = ass_aligned_alloc(align, size, false);
+    uint8_t *buffer = ass_aligned_alloc_tagged(
+        align, size, false, ASS_ALIGNED_ALLOC_RGBA_IMAGE, priv);
     if (!buffer) {
         priv->rgba_output_size = old_used;
         return NULL;
@@ -320,7 +376,8 @@ uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
         return NULL;
 
     unsigned align = 1U << priv->engine.align_order;
-    uint8_t *buffer = ass_aligned_alloc(align, size, false);
+    uint8_t *buffer = ass_aligned_alloc_tagged(
+        align, size, false, ASS_ALIGNED_ALLOC_RGBA_IMAGE, priv);
     if (!buffer) {
         priv->rgba_output_size = old_used;
         return NULL;
@@ -354,7 +411,8 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
         else if (priv)
             priv->rgba_output_size = 0;
         rgba_debug_release_unowned_buffer(buffer, "image object allocation failure");
-        ass_aligned_free(buffer);
+        ass_aligned_free_tagged(
+            buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, NULL);
         return NULL;
     }
 
@@ -368,6 +426,8 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
     img->result.next = NULL;
     img->buffer = buffer;
     img->alloc_size = alloc_size;
+    ass_aligned_retag(buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, img,
+                      allocation_site);
 #ifndef NDEBUG
     rgba_debug_claim_buffer(img, buffer, alloc_size, owner, "image allocation");
 #else
@@ -401,9 +461,12 @@ void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
 #endif
     if (!priv)
         return;
-    ass_aligned_free(priv->buffer);
+    ass_aligned_free_tagged(
+        priv->buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, priv);
     priv->buffer = buffer;
     priv->alloc_size = alloc_size;
+    ass_aligned_retag(buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, priv,
+                      "RGBA buffer replacement");
     img->w = w;
     img->h = h;
     img->stride = stride;
@@ -437,7 +500,8 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img)
     allocation->last_operation = "image destruction";
     rgba_debug_remove(allocation);
 #endif
-    ass_aligned_free(rgba_priv->buffer);
+    ass_aligned_free_tagged(
+        rgba_priv->buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, rgba_priv);
     free(rgba_priv);
 }
 

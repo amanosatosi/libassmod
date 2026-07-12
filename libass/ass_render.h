@@ -677,6 +677,7 @@ struct ass_renderer {
     BitmapEngine engine;
 
     ASS_Style user_override_style;
+    bool debug_fail_next_owned_image_allocation;
 };
 
 typedef struct render_priv {
@@ -742,6 +743,7 @@ const ASS_TagImageEntry *ass_lookup_tag_image(ASS_Renderer *priv,
                                               ASS_Track *track,
                                               ASS_StringView path);
 void ass_clear_tag_images_internal(ASS_Renderer *priv);
+void ass_debug_fail_next_owned_image_allocation(ASS_Renderer *priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on
 void ass_lazy_track_init(ASS_Library *lib, ASS_Track *track);

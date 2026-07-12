@@ -61,7 +61,8 @@ bool ass_rasterizer_init(const BitmapEngine *engine, RasterizerData *rst, int ou
 
     unsigned align = 1 << engine->align_order;
     unsigned size = 1 << (2 * engine->tile_order);
-    rst->tile = ass_aligned_alloc(align, size, false);
+    rst->tile = ass_aligned_alloc_tagged(
+        align, size, false, ASS_ALIGNED_ALLOC_RASTERIZER_TILE, rst);
     return rst->tile;
 }
 
@@ -94,7 +95,9 @@ void ass_rasterizer_done(RasterizerData *rst)
     free(rst->linebuf[0]);
     free(rst->linebuf[1]);
 
-    ass_aligned_free(rst->tile);
+    void *tile = rst->tile;
+    rst->tile = NULL;
+    ass_aligned_free_tagged(tile, ASS_ALIGNED_ALLOC_RASTERIZER_TILE, rst);
 }
 
 

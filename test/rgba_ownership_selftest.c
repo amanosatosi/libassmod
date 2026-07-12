@@ -240,6 +240,17 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
         return expect(false, "could not create RGBA ownership stress track");
 
     bool ok = true;
+    /* BS4/distorted legacy nodes own clipped aligned bitmap copies even when
+     * the auto API ultimately returns RGBA. Force ASS_ImagePriv allocation to
+     * fail after that copy has been allocated. Before the ownership fix,
+     * my_draw_bitmap() freed the copy and render_glyph() freed it again. */
+    ass_debug_fail_next_owned_image_allocation(renderer);
+    ASS_RenderResult failed_image =
+        ass_render_frame_auto(renderer, track, 2250, NULL);
+    ass_render_result_free(&failed_image);
+    ok &= expect(ass_rgba_debug_live_allocation_count() == 0,
+                 "forced legacy image allocation failure leaked RGBA buffers");
+
     uint32_t random = stress_seed;
     clock_t stress_start = clock();
     clock_t block_start = stress_start;

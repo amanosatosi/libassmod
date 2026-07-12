@@ -8,6 +8,8 @@ option('fuzz-link-args', type: 'string', description: 'Additional link flags for
 option('fuzz-link-language', type : 'combo', choices : ['c', 'cpp'], value : 'c', description: 'Linking language for fuzz targets.')
 option('rgba-ownership-extended-stress', type: 'boolean', value: false,
        description: 'enable the long RGBA ownership lifetime stress test')
+option('aligned-allocation-debug', type: 'boolean', value: false,
+       description: 'track aligned allocation ownership and abort with diagnostics before invalid frees')
 
 option('fontconfig', type: 'feature', description: 'Fontconfig support')
 option('directwrite', type: 'feature', description: 'DirectWrite support (win32 only)')
