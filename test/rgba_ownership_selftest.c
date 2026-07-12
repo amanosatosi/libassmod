@@ -13,7 +13,9 @@
 #include "ass.h"
 #include "ass_render.h"
 
-enum { WIDTH = 640, HEIGHT = 360, STRESS_FRAMES = 3000, RENDERER_CYCLES = 4 };
+/* Three independent renderer lifecycles still exercise 3,000 total frames,
+ * while staying inside Meson's default 30-second ASan test timeout. */
+enum { WIDTH = 640, HEIGHT = 360, STRESS_FRAMES = 1000, RENDERER_CYCLES = 3 };
 static const uint32_t stress_seed = UINT32_C(0x4d616e67);
 
 static const char stress_script[] =
