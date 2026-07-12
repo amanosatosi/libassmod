@@ -5,6 +5,7 @@
  */
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -21,6 +22,8 @@ enum {
     NORMAL_RENDERER_CYCLES = 3,
     EXTENDED_STRESS_FRAMES = 3000,
     EXTENDED_RENDERER_CYCLES = 4,
+    AUTO_PROGRESS_INTERVAL = 25,
+    AUTO_VERBOSE_FRAMES = 3,
 };
 static const uint32_t stress_seed = UINT32_C(0x4d616e67);
 
@@ -84,6 +87,28 @@ static void report_phase(const char *phase, clock_t start)
 {
     fprintf(stderr, "phase: %s complete, %.1fs\n", phase,
             elapsed_seconds(start));
+}
+
+static void report_auto_progress(int completed_frames, int stress_frames,
+                                 clock_t stress_start, clock_t block_start,
+                                 uint64_t *block_registry_scans,
+                                 uint64_t *block_registry_scan_steps)
+{
+    size_t live_allocations;
+    uint64_t registry_scans, registry_scan_steps;
+    ass_rgba_debug_allocation_stats(&live_allocations, &registry_scans,
+                                    &registry_scan_steps);
+    fprintf(stderr,
+            "auto lifetime stress: frame %d/%d complete, elapsed %.1fs, "
+            "block %.1fs, live registry entries=%zu, registry scans=%" PRIu64
+            " (+%" PRIu64 "), scan steps=%" PRIu64 " (+%" PRIu64 ")\n",
+            completed_frames, stress_frames, elapsed_seconds(stress_start),
+            elapsed_seconds(block_start),
+            live_allocations, registry_scans,
+            registry_scans - *block_registry_scans, registry_scan_steps,
+            registry_scan_steps - *block_registry_scan_steps);
+    *block_registry_scans = registry_scans;
+    *block_registry_scan_steps = registry_scan_steps;
 }
 
 static void fill_opaque(ASS_ImageRGBAPriv *priv)
@@ -216,6 +241,15 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
 
     bool ok = true;
     uint32_t random = stress_seed;
+    clock_t stress_start = clock();
+    clock_t block_start = stress_start;
+    uint64_t block_registry_scans, block_registry_scan_steps;
+    ass_rgba_debug_allocation_stats(NULL, &block_registry_scans,
+                                    &block_registry_scan_steps);
+    fprintf(stderr,
+            "auto lifetime stress: frame 0/%d, elapsed 0.0s, "
+            "live registry entries=%zu\n",
+            stress_frames, ass_rgba_debug_live_allocation_count());
     for (int frame = 0; frame < stress_frames; frame++) {
         uint32_t value = next_random(&random);
         int width = value & 1 ? WIDTH : WIDTH / 2;
@@ -227,7 +261,14 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
         long long now = frame < 64 ? (frame & 1 ? 750 : 250) :
                         frame == 64 ? 3000 : value % 3500;
 
+        if (frame < AUTO_VERBOSE_FRAMES)
+            fprintf(stderr, "frame %d: before ass_render_frame_auto\n", frame);
         ASS_RenderResult result = ass_render_frame_auto(renderer, track, now, NULL);
+        if (frame < AUTO_VERBOSE_FRAMES)
+            fprintf(stderr,
+                    "frame %d: after ass_render_frame_auto, "
+                    "live registry entries=%zu\n",
+                    frame, ass_rgba_debug_live_allocation_count());
         if (frame < 64)
             ok &= expect(result.use_rgba == (frame & 1),
                          "legacy/RGBA auto alternation selected the wrong output");
@@ -235,18 +276,51 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
             ok &= expect(!result.use_rgba && result.imgs == NULL,
                          "empty frame retained subtitle output");
         if (result.use_rgba) {
+            if (frame < AUTO_VERBOSE_FRAMES)
+                fprintf(stderr, "frame %d: before result cleanup (caller RGBA list)\n",
+                        frame);
             ok &= expect(result.imgs_rgba != NULL,
                          "RGBA-required auto frame returned no RGBA list");
             ass_free_images_rgba(result.imgs_rgba);
         } else {
+            if (frame < AUTO_VERBOSE_FRAMES)
+                fprintf(stderr,
+                        "frame %d: before result cleanup "
+                        "(legacy RGBA cleanup was internal)\n",
+                        frame);
             ok &= expect(result.imgs_rgba == NULL,
                          "legacy-only auto frame retained an RGBA list");
         }
+        if (frame < AUTO_VERBOSE_FRAMES)
+            fprintf(stderr,
+                    "frame %d: after result cleanup, live registry entries=%zu\n",
+                    frame, ass_rgba_debug_live_allocation_count());
 
         /* Exercise caller-side cleanup independently of auto mode. */
         if ((frame & 15) == 0) {
+            if (frame < AUTO_VERBOSE_FRAMES)
+                fprintf(stderr, "frame %d: before ass_render_frame_rgba\n", frame);
             ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, now, NULL);
+            if (frame < AUTO_VERBOSE_FRAMES)
+                fprintf(stderr,
+                        "frame %d: after ass_render_frame_rgba, "
+                        "live registry entries=%zu\n",
+                        frame, ass_rgba_debug_live_allocation_count());
+            if (frame < AUTO_VERBOSE_FRAMES)
+                fprintf(stderr, "frame %d: before direct RGBA cleanup\n", frame);
             ass_free_images_rgba(images);
+            if (frame < AUTO_VERBOSE_FRAMES)
+                fprintf(stderr,
+                        "frame %d: after direct RGBA cleanup, "
+                        "live registry entries=%zu\n",
+                        frame, ass_rgba_debug_live_allocation_count());
+        }
+        if ((frame + 1) % AUTO_PROGRESS_INTERVAL == 0 ||
+            frame + 1 == stress_frames || !ok) {
+            report_auto_progress(frame + 1, stress_frames, stress_start,
+                                 block_start, &block_registry_scans,
+                                 &block_registry_scan_steps);
+            block_start = clock();
         }
         if (!ok)
             break;
@@ -258,6 +332,7 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
 
 int main(int argc, char *argv[])
 {
+    setvbuf(stderr, NULL, _IONBF, 0);
     bool extended = false;
     if (argc == 2 && !strcmp(argv[1], "--extended"))
         extended = true;

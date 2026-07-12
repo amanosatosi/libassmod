@@ -48,6 +48,9 @@ typedef struct rgba_debug_allocation {
 
 static RgbaDebugAllocation *rgba_debug_allocations;
 static uint64_t rgba_debug_next_id = 1;
+static size_t rgba_debug_allocation_count;
+static uint64_t rgba_debug_registry_scans;
+static uint64_t rgba_debug_registry_scan_steps;
 
 static const char *rgba_owner_name(ASS_RGBAOwner owner)
 {
@@ -82,17 +85,23 @@ static void rgba_debug_fail(const char *operation, ASS_ImageRGBA *img,
 
 static RgbaDebugAllocation *rgba_debug_find_buffer(uint8_t *buffer)
 {
-    for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next)
+    rgba_debug_registry_scans++;
+    for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next) {
+        rgba_debug_registry_scan_steps++;
         if (cur->base == buffer)
             return cur;
+    }
     return NULL;
 }
 
 static RgbaDebugAllocation *rgba_debug_find_image(ASS_ImageRGBA *img)
 {
-    for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next)
+    rgba_debug_registry_scans++;
+    for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next) {
+        rgba_debug_registry_scan_steps++;
         if ((ASS_ImageRGBA *) cur->image == img)
             return cur;
+    }
     return NULL;
 }
 
@@ -115,16 +124,23 @@ static void rgba_debug_track_buffer(uint8_t *buffer, size_t size,
     if (!allocation->id)
         allocation->id = rgba_debug_next_id++;
     rgba_debug_allocations = allocation;
+    rgba_debug_allocation_count++;
 }
 
 static void rgba_debug_remove(RgbaDebugAllocation *allocation)
 {
     RgbaDebugAllocation **link = &rgba_debug_allocations;
-    while (*link && *link != allocation)
+    rgba_debug_registry_scans++;
+    while (*link && *link != allocation) {
+        rgba_debug_registry_scan_steps++;
         link = &(*link)->next;
+    }
+    if (*link)
+        rgba_debug_registry_scan_steps++;
     if (!*link)
         rgba_debug_fail("remove allocation", NULL, allocation);
     *link = allocation->next;
+    rgba_debug_allocation_count--;
     free(allocation);
 }
 
@@ -178,6 +194,36 @@ static void rgba_debug_release_unowned_buffer(uint8_t *buffer,
 #define rgba_debug_release_unowned_buffer(buffer, operation) ((void) 0)
 
 #endif
+
+size_t ass_rgba_debug_live_allocation_count(void)
+{
+#ifndef NDEBUG
+    return rgba_debug_allocation_count;
+#else
+    return 0;
+#endif
+}
+
+void ass_rgba_debug_allocation_stats(size_t *live_allocations,
+                                     uint64_t *registry_scans,
+                                     uint64_t *registry_scan_steps)
+{
+#ifndef NDEBUG
+    if (live_allocations)
+        *live_allocations = rgba_debug_allocation_count;
+    if (registry_scans)
+        *registry_scans = rgba_debug_registry_scans;
+    if (registry_scan_steps)
+        *registry_scan_steps = rgba_debug_registry_scan_steps;
+#else
+    if (live_allocations)
+        *live_allocations = 0;
+    if (registry_scans)
+        *registry_scans = 0;
+    if (registry_scan_steps)
+        *registry_scan_steps = 0;
+#endif
+}
 
 static bool rgba_alloc_size(int stride, int h, unsigned align, size_t *size)
 {

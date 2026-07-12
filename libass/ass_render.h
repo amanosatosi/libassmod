@@ -726,6 +726,10 @@ bool ass_rgba_image_view_valid(ASS_ImageRGBA *img, const char *operation);
 void ass_rgba_images_set_owner(ASS_ImageRGBA *img, ASS_RGBAOwner owner,
                                const char *operation);
 bool ass_rgba_image_clip_to_frame(ASS_Renderer *priv, ASS_ImageRGBA *img);
+size_t ass_rgba_debug_live_allocation_count(void);
+void ass_rgba_debug_allocation_stats(size_t *live_allocations,
+                                     uint64_t *registry_scans,
+                                     uint64_t *registry_scan_steps);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out);
