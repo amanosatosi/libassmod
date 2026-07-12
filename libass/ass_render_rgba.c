@@ -19,6 +19,8 @@
 #include "config.h"
 #include "ass_compat.h"
 
+#include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "ass_render.h"
@@ -29,6 +31,153 @@
 #define _g(c)   (((c) >> 16) & 0xFF)
 #define _b(c)   (((c) >> 8) & 0xFF)
 #define _a(c)   ((c) & 0xFF)
+
+#ifndef NDEBUG
+
+#define ASS_RGBA_DEBUG_MAGIC UINT64_C(0x4153535f52474241)
+
+typedef struct rgba_debug_allocation {
+    uint8_t *base;
+    size_t size;
+    ASS_ImageRGBAPriv *image;
+    uint64_t id;
+    const char *creation_site;
+    const char *last_operation;
+    struct rgba_debug_allocation *next;
+} RgbaDebugAllocation;
+
+static RgbaDebugAllocation *rgba_debug_allocations;
+static uint64_t rgba_debug_next_id = 1;
+
+static const char *rgba_owner_name(ASS_RGBAOwner owner)
+{
+    switch (owner) {
+    case ASS_RGBA_OWNER_NEW:          return "new";
+    case ASS_RGBA_OWNER_EVENT:        return "event";
+    case ASS_RGBA_OWNER_FRAME_RESULT: return "frame result";
+    case ASS_RGBA_OWNER_CALLER:       return "caller";
+    case ASS_RGBA_OWNER_FREED:        return "freed";
+    }
+    return "unknown";
+}
+
+static void rgba_debug_fail(const char *operation, ASS_ImageRGBA *img,
+                            const RgbaDebugAllocation *allocation)
+{
+    fprintf(stderr,
+            "Invalid RGBA aligned free/ownership operation: pointer=%p "
+            "image=%p allocation_id=%" PRIu64 " creation_site=%s "
+            "last_owner=%s last_operation=%s operation=%s\n",
+            allocation ? (void *) allocation->base : NULL, (void *) img,
+            allocation ? allocation->id : 0,
+            allocation && allocation->creation_site ?
+                allocation->creation_site : "unknown",
+            allocation && allocation->image ?
+                rgba_owner_name(allocation->image->owner) : "unowned",
+            allocation && allocation->last_operation ?
+                allocation->last_operation : "unknown",
+            operation ? operation : "unknown");
+    abort();
+}
+
+static RgbaDebugAllocation *rgba_debug_find_buffer(uint8_t *buffer)
+{
+    for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next)
+        if (cur->base == buffer)
+            return cur;
+    return NULL;
+}
+
+static RgbaDebugAllocation *rgba_debug_find_image(ASS_ImageRGBA *img)
+{
+    for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next)
+        if ((ASS_ImageRGBA *) cur->image == img)
+            return cur;
+    return NULL;
+}
+
+static void rgba_debug_track_buffer(uint8_t *buffer, size_t size,
+                                    const char *creation_site)
+{
+    RgbaDebugAllocation *allocation = malloc(sizeof(*allocation));
+    if (!allocation) {
+        fprintf(stderr, "Could not allocate RGBA ownership registry entry\n");
+        abort();
+    }
+    *allocation = (RgbaDebugAllocation) {
+        .base = buffer,
+        .size = size,
+        .id = rgba_debug_next_id++,
+        .creation_site = creation_site,
+        .last_operation = "allocated",
+        .next = rgba_debug_allocations,
+    };
+    if (!allocation->id)
+        allocation->id = rgba_debug_next_id++;
+    rgba_debug_allocations = allocation;
+}
+
+static void rgba_debug_remove(RgbaDebugAllocation *allocation)
+{
+    RgbaDebugAllocation **link = &rgba_debug_allocations;
+    while (*link && *link != allocation)
+        link = &(*link)->next;
+    if (!*link)
+        rgba_debug_fail("remove allocation", NULL, allocation);
+    *link = allocation->next;
+    free(allocation);
+}
+
+static ASS_ImageRGBAPriv *rgba_debug_validate_image(ASS_ImageRGBA *img,
+                                                     const char *operation,
+                                                     RgbaDebugAllocation **out)
+{
+    RgbaDebugAllocation *allocation = rgba_debug_find_image(img);
+    if (!allocation)
+        rgba_debug_fail(operation, img, NULL);
+
+    ASS_ImageRGBAPriv *priv = allocation->image;
+    if (priv->magic != ASS_RGBA_DEBUG_MAGIC || !priv->alive ||
+        priv->allocation_id != allocation->id || priv->buffer != allocation->base ||
+        allocation->size != priv->alloc_size)
+        rgba_debug_fail(operation, img, allocation);
+    if (out)
+        *out = allocation;
+    return priv;
+}
+
+static void rgba_debug_claim_buffer(ASS_ImageRGBAPriv *image,
+                                    uint8_t *buffer, size_t size,
+                                    ASS_RGBAOwner owner,
+                                    const char *operation)
+{
+    RgbaDebugAllocation *allocation = rgba_debug_find_buffer(buffer);
+    if (!allocation || allocation->image || allocation->size != size)
+        rgba_debug_fail(operation, &image->result, allocation);
+
+    allocation->image = image;
+    allocation->last_operation = operation;
+    image->magic = ASS_RGBA_DEBUG_MAGIC;
+    image->allocation_id = allocation->id;
+    image->owner = owner;
+    image->alive = true;
+}
+
+static void rgba_debug_release_unowned_buffer(uint8_t *buffer,
+                                              const char *operation)
+{
+    RgbaDebugAllocation *allocation = rgba_debug_find_buffer(buffer);
+    if (!allocation || allocation->image)
+        rgba_debug_fail(operation, NULL, allocation);
+    rgba_debug_remove(allocation);
+}
+
+#else
+
+#define rgba_debug_track_buffer(buffer, size, creation_site) ((void) 0)
+#define rgba_debug_release_unowned_buffer(buffer, operation) ((void) 0)
+
+#endif
 
 static bool rgba_alloc_size(int stride, int h, unsigned align, size_t *size)
 {
@@ -83,7 +232,8 @@ static bool rgba_reserve(ASS_Renderer *priv, size_t replace_size,
 
 uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
                                       size_t replace_size,
-                                      size_t *alloc_size)
+                                      size_t *alloc_size,
+                                      const char *allocation_site)
 {
     if (!priv)
         return NULL;
@@ -102,6 +252,7 @@ uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
         priv->rgba_output_size = old_used;
         return NULL;
     }
+    rgba_debug_track_buffer(buffer, size, allocation_site);
 
     if (alloc_size)
         *alloc_size = size;
@@ -110,7 +261,8 @@ uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
 
 uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
                                size_t replace_size, int *stride,
-                               size_t *alloc_size)
+                               size_t *alloc_size,
+                               const char *allocation_site)
 {
     int rgba_stride;
     size_t size;
@@ -127,6 +279,7 @@ uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
         priv->rgba_output_size = old_used;
         return NULL;
     }
+    rgba_debug_track_buffer(buffer, size, allocation_site);
 
     if (stride)
         *stride = rgba_stride;
@@ -136,12 +289,15 @@ uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
 }
 
 ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
-                                    int dst_x, int dst_y, int type)
+                                    int dst_x, int dst_y, int type,
+                                    ASS_RGBAOwner owner,
+                                    const char *allocation_site)
 {
     int stride;
     size_t alloc_size;
     uint8_t *buffer =
-        ass_rgba_alloc_buffer(priv, w, h, 0, &stride, &alloc_size);
+        ass_rgba_alloc_buffer(priv, w, h, 0, &stride, &alloc_size,
+                              allocation_site);
     if (!buffer)
         return NULL;
 
@@ -149,6 +305,9 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
     if (!img) {
         if (priv && priv->rgba_output_size >= alloc_size)
             priv->rgba_output_size -= alloc_size;
+        else if (priv)
+            priv->rgba_output_size = 0;
+        rgba_debug_release_unowned_buffer(buffer, "image object allocation failure");
         ass_aligned_free(buffer);
         return NULL;
     }
@@ -163,6 +322,11 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
     img->result.next = NULL;
     img->buffer = buffer;
     img->alloc_size = alloc_size;
+#ifndef NDEBUG
+    rgba_debug_claim_buffer(img, buffer, alloc_size, owner, "image allocation");
+#else
+    (void) owner;
+#endif
     return &img->result;
 }
 
@@ -170,7 +334,27 @@ void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
                                    size_t alloc_size, int w, int h,
                                    int stride)
 {
-    ASS_ImageRGBAPriv *priv = (ASS_ImageRGBAPriv *) img;
+    if (!img || !buffer || !alloc_size || w <= 0 || h <= 0 || stride <= 0)
+        return;
+
+#ifndef NDEBUG
+    RgbaDebugAllocation *old_allocation;
+    ASS_ImageRGBAPriv *priv = rgba_debug_validate_image(
+        img, "replace buffer", &old_allocation);
+    RgbaDebugAllocation *new_allocation = rgba_debug_find_buffer(buffer);
+    if (!new_allocation || new_allocation->image ||
+        new_allocation->size != alloc_size)
+        rgba_debug_fail("replace buffer", img, new_allocation);
+
+    new_allocation->image = priv;
+    new_allocation->last_operation = "replace buffer";
+    priv->allocation_id = new_allocation->id;
+    rgba_debug_remove(old_allocation);
+#else
+    ASS_ImageRGBAPriv *priv = ass_rgba_image_private(img, "replace buffer");
+#endif
+    if (!priv)
+        return;
     ass_aligned_free(priv->buffer);
     priv->buffer = buffer;
     priv->alloc_size = alloc_size;
@@ -185,21 +369,98 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img)
     if (!img)
         return;
 
-    ASS_ImageRGBAPriv *rgba_priv = (ASS_ImageRGBAPriv *) img;
+#ifndef NDEBUG
+    RgbaDebugAllocation *allocation;
+    ASS_ImageRGBAPriv *rgba_priv = rgba_debug_validate_image(
+        img, "image destruction", &allocation);
+#else
+    ASS_ImageRGBAPriv *rgba_priv = ass_rgba_image_private(img,
+                                                            "image destruction");
+#endif
+    if (!rgba_priv)
+        return;
     if (priv) {
         if (priv->rgba_output_size >= rgba_priv->alloc_size)
             priv->rgba_output_size -= rgba_priv->alloc_size;
         else
             priv->rgba_output_size = 0;
     }
+#ifndef NDEBUG
+    rgba_priv->owner = ASS_RGBA_OWNER_FREED;
+    rgba_priv->alive = false;
+    allocation->last_operation = "image destruction";
+    rgba_debug_remove(allocation);
+#endif
     ass_aligned_free(rgba_priv->buffer);
     free(rgba_priv);
 }
 
-static bool clip_rgba_to_frame(ASS_Renderer *priv, ASS_ImageRGBA *img)
+ASS_ImageRGBAPriv *ass_rgba_image_private(ASS_ImageRGBA *img,
+                                           const char *operation)
 {
-    if (!priv || !img || !img->rgba || img->w <= 0 || img->h <= 0 ||
-        img->stride <= 0)
+    if (!img)
+        return NULL;
+#ifndef NDEBUG
+    return rgba_debug_validate_image(img, operation, NULL);
+#else
+    (void) operation;
+    return (ASS_ImageRGBAPriv *) img;
+#endif
+}
+
+bool ass_rgba_image_view_valid(ASS_ImageRGBA *img, const char *operation)
+{
+    ASS_ImageRGBAPriv *priv = ass_rgba_image_private(img, operation);
+    if (!priv || !img->rgba || img->w <= 0 || img->h <= 0 || img->stride <= 0)
+        return false;
+
+    size_t row_size = 0;
+    uintptr_t base = (uintptr_t) priv->buffer;
+    uintptr_t view = (uintptr_t) img->rgba;
+    bool valid = (size_t) img->w <= SIZE_MAX / 4;
+    if (valid)
+        row_size = (size_t) img->w * 4;
+    valid = valid && row_size <= (size_t) img->stride && view >= base;
+    size_t offset = valid ? (size_t) (view - base) : 0;
+    if (valid && (offset > priv->alloc_size || row_size > priv->alloc_size - offset))
+        valid = false;
+    if (valid && img->h > 1 &&
+        (size_t) img->stride > (priv->alloc_size - offset - row_size) /
+                              (size_t) (img->h - 1))
+        valid = false;
+
+#ifndef NDEBUG
+    if (!valid)
+        rgba_debug_fail(operation, img, rgba_debug_find_image(img));
+#endif
+    return valid;
+}
+
+void ass_rgba_images_set_owner(ASS_ImageRGBA *img, ASS_RGBAOwner owner,
+                               const char *operation)
+{
+    while (img) {
+#ifndef NDEBUG
+        RgbaDebugAllocation *allocation;
+        ASS_ImageRGBAPriv *rgba_priv = rgba_debug_validate_image(
+            img, operation, &allocation);
+        ASS_ImageRGBA *next = rgba_priv->result.next;
+        rgba_priv->owner = owner;
+        allocation->last_operation = operation;
+#else
+        ASS_ImageRGBA *next = img->next;
+        (void) owner;
+        (void) operation;
+#endif
+        img = next;
+    }
+}
+
+bool ass_rgba_image_clip_to_frame(ASS_Renderer *priv, ASS_ImageRGBA *img)
+{
+    if (!priv || !img)
+        return false;
+    if (!ass_rgba_image_view_valid(img, "clip to frame"))
         return false;
 
     int64_t x0 = img->dst_x;
@@ -228,6 +489,8 @@ static bool clip_rgba_to_frame(ASS_Renderer *priv, ASS_ImageRGBA *img)
 
     if (img->w <= 0 || img->h <= 0)
         return false;
+    if (!ass_rgba_image_view_valid(img, "clip result"))
+        return false;
     for (int y = 0; y < img->h; y++) {
         uint8_t *row = img->rgba + (size_t) y * img->stride;
         for (int x = 0; x < img->w; x++)
@@ -245,9 +508,9 @@ static ASS_ImageRGBA *convert_images_to_rgba(ASS_Renderer *priv, ASS_Image *imgs
     for (ASS_Image *cur = imgs; cur; cur = cur->next) {
         if (cur->w <= 0 || cur->h <= 0 || cur->stride <= 0 || !cur->bitmap)
             continue;
-        ASS_ImageRGBA *node = ass_rgba_image_alloc(priv, cur->w, cur->h,
-                                                   cur->dst_x, cur->dst_y,
-                                                   cur->type);
+        ASS_ImageRGBA *node = ass_rgba_image_alloc(
+            priv, cur->w, cur->h, cur->dst_x, cur->dst_y, cur->type,
+            ASS_RGBA_OWNER_FRAME_RESULT, "legacy image conversion");
         if (!node)
             continue;
         int stride = node->stride;
@@ -266,7 +529,7 @@ static ASS_ImageRGBA *convert_images_to_rgba(ASS_Renderer *priv, ASS_Image *imgs
                 dst[4 * x + 3] = A;
             }
         }
-        if (!clip_rgba_to_frame(priv, node)) {
+        if (!ass_rgba_image_clip_to_frame(priv, node)) {
             ass_rgba_image_free(priv, node);
             continue;
         }
@@ -292,11 +555,9 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
     for (int i = 0; i < track->n_events; i++) {
         ASS_Event *event = track->events + i;
         if ((event->Start <= now) && (now < (event->Start + event->Duration))) {
-            if (cnt >= priv->eimg_size) {
-                priv->eimg_size += 100;
-                priv->eimg = realloc(priv->eimg,
-                                     priv->eimg_size * sizeof(EventImages));
-            }
+            if (!ass_ensure_event_images(priv, cnt))
+                break;
+            memset(priv->eimg + cnt, 0, sizeof(*priv->eimg));
             if (ass_render_event(&priv->state, event, priv->eimg + cnt,
                                  &priv->eimg[cnt].imgs_rgba)) {
                 priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
@@ -326,10 +587,15 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
             cur = cur->next;
         }
         ASS_ImageRGBA *rcur = priv->eimg[i].imgs_rgba;
+        /* Transfer the entire event-local list before exposing any node in
+         * the frame result. This prevents two list heads owning one node. */
+        priv->eimg[i].imgs_rgba = NULL;
         while (rcur) {
             ASS_ImageRGBA *next = rcur->next;
             rcur->next = NULL;
-            if (clip_rgba_to_frame(priv, rcur)) {
+            if (ass_rgba_image_clip_to_frame(priv, rcur)) {
+                ass_rgba_images_set_owner(rcur, ASS_RGBA_OWNER_FRAME_RESULT,
+                                          "event-to-frame transfer");
                 *rgba_tail = rcur;
                 rgba_tail = &rcur->next;
             } else {
@@ -337,7 +603,6 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
             }
             rcur = next;
         }
-        priv->eimg[i].imgs_rgba = NULL;
     }
 
     ass_frame_ref(priv->images_root);
@@ -354,13 +619,21 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
     if (track->parser_priv->prune_delay >= 0)
         ass_prune_events(track, now - track->parser_priv->prune_delay);
 
+    ass_rgba_images_set_owner(rgba_root, ASS_RGBA_OWNER_CALLER,
+                              "frame result return");
     return rgba_root;
 }
 
 void ass_free_images_rgba(ASS_ImageRGBA *img)
 {
     while (img) {
+#ifndef NDEBUG
+        ASS_ImageRGBAPriv *rgba_priv = rgba_debug_validate_image(
+            img, "frame result cleanup", NULL);
+        ASS_ImageRGBA *next = rgba_priv->result.next;
+#else
         ASS_ImageRGBA *next = img->next;
+#endif
         ass_rgba_image_free(NULL, img);
         img = next;
     }

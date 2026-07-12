@@ -98,6 +98,20 @@ bs4_geometry_unit = executable(
     link_with: libass_for_tools,
 )
 
+# This test intentionally checks private allocation provenance. Run it only
+# where the test links against libass internals; shared Windows exports only
+# the public libass ABI.
+if get_option('default_library') != 'shared'
+    rgba_ownership_unit = executable(
+        'rgba_ownership_unit',
+        files('rgba_ownership_selftest.c'),
+        install: false,
+        include_directories: incs,
+        dependencies: deps,
+        link_with: libass_for_tools,
+    )
+endif
+
 test('distortion-warp', distort_unit)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit)
@@ -107,3 +121,6 @@ test('fad-color-fade', fad_unit)
 test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
+if get_option('default_library') != 'shared'
+    test('rgba-ownership-lifetime', rgba_ownership_unit)
+endif

@@ -567,7 +567,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
 {
     ASS_Renderer *render_priv = state->renderer;
     ASS_ImageRGBA *img =
-        ass_rgba_image_alloc(render_priv, w, h, dst_x, dst_y, type);
+        ass_rgba_image_alloc(render_priv, w, h, dst_x, dst_y, type,
+                             ASS_RGBA_OWNER_EVENT, "rendered glyph tile");
     if (!img)
         return NULL;
     int rgba_stride = img->stride;
@@ -794,20 +795,27 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
 }
 
 static unsigned char *copy_bitmap_region(const Bitmap *bm, int x0, int y0,
-                                         int w, int h, int align,
-                                         int *stride_out)
+                                          int w, int h, int align,
+                                          int *stride_out)
 {
-    if (w <= 0 || h <= 0)
+    if (!bm || !bm->buffer || !stride_out || w <= 0 || h <= 0 || align <= 0)
         return NULL;
 
-    int stride = ass_align(align, w);
-    unsigned char *buf = ass_aligned_alloc(align, stride * h + align, false);
+    size_t aligned_stride = ass_align((unsigned) align, (size_t) w);
+    if (aligned_stride < (size_t) w || aligned_stride > INT_MAX ||
+        aligned_stride > (SIZE_MAX - (unsigned) align) / (size_t) h ||
+        aligned_stride > (size_t) (INT_MAX - align) / (size_t) h)
+        return NULL;
+
+    int stride = (int) aligned_stride;
+    size_t size = aligned_stride * (size_t) h + (unsigned) align;
+    unsigned char *buf = ass_aligned_alloc((unsigned) align, size, false);
     if (!buf)
         return NULL;
 
     for (int y = 0; y < h; y++) {
-        unsigned char *dst = buf + y * stride;
-        unsigned char *src = bm->buffer + (y0 + y) * bm->stride + x0;
+        unsigned char *dst = buf + (size_t) y * stride;
+        unsigned char *src = bm->buffer + (ptrdiff_t) (y0 + y) * bm->stride + x0;
         memcpy(dst, src, w);
     }
 
@@ -1689,9 +1697,8 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
 
     // Iterate through bitmaps and blend/clip them
     for (ASS_Image *cur = head; cur; cur = cur->next) {
-        int left, top, right, bottom, w, h;
         int ax, ay, aw, ah, as;
-        int bx, by, bw, bh, bs;
+        int bw, bh, bs;
         int aleft, atop, bleft, btop;
         unsigned char *abuffer, *bbuffer, *nbuffer;
 
@@ -1702,63 +1709,66 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
         aw = cur->w;
         ah = cur->h;
         as = cur->stride;
-        bx = pos.x + clip_bm->left;
-        by = pos.y + clip_bm->top;
         bw = clip_bm->w;
         bh = clip_bm->h;
         bs = clip_bm->stride;
+        if (aw <= 0 || ah <= 0 || as <= 0 || bw <= 0 || bh <= 0 || bs <= 0)
+            continue;
 
-        // Calculate overlap coordinates
-        left = (ax > bx) ? ax : bx;
-        top = (ay > by) ? ay : by;
-        right = ((ax + aw) < (bx + bw)) ? (ax + aw) : (bx + bw);
-        bottom = ((ay + ah) < (by + bh)) ? (ay + ah) : (by + bh);
-        aleft = left - ax;
-        atop = top - ay;
-        w = right - left;
-        h = bottom - top;
-        bleft = left - bx;
-        btop = top - by;
+        int64_t ax0 = ax, ay0 = ay;
+        int64_t bx0 = (int64_t) pos.x + clip_bm->left;
+        int64_t by0 = (int64_t) pos.y + clip_bm->top;
+        int64_t left = FFMAX(ax0, bx0);
+        int64_t top = FFMAX(ay0, by0);
+        int64_t right = FFMIN(ax0 + aw, bx0 + bw);
+        int64_t bottom = FFMIN(ay0 + ah, by0 + bh);
+        if (left >= right || top >= bottom) {
+            if (!state->clip_drawing_mode)
+                cur->w = cur->h = cur->stride = 0;
+            continue;
+        }
+        aleft = (int) (left - ax0);
+        atop = (int) (top - ay0);
+        int w = (int) (right - left);
+        int h = (int) (bottom - top);
+        bleft = (int) (left - bx0);
+        btop = (int) (top - by0);
 
         unsigned align = 1 << render_priv->engine.align_order;
         if (state->clip_drawing_mode) {
-            // Inverse clip
-            if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
-                ay > by + bh || !h || !w) {
-                continue;
-            }
-
-            // Allocate new buffer and add to free list
-            nbuffer = ass_aligned_alloc(align, as * ah + align, false);
+            if ((size_t) as > (SIZE_MAX - align) / (size_t) ah)
+                break;
+            size_t alloc_size = (size_t) as * ah + align;
+            nbuffer = ass_aligned_alloc(align, alloc_size, false);
             if (!nbuffer)
                 break;
 
-            // Blend together
-            memcpy(nbuffer, abuffer, ((ah - 1) * as) + aw);
-            render_priv->engine.imul_bitmaps(nbuffer + atop * as + aleft, as,
-                                             bbuffer + btop * bs + bleft, bs,
+            memcpy(nbuffer, abuffer, (size_t) as * ah);
+            render_priv->engine.imul_bitmaps(
+                                             nbuffer + (size_t) atop * as + aleft, as,
+                                             bbuffer + (size_t) btop * bs + bleft, bs,
                                              w, h);
         } else {
-            // Regular clip
-            if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
-                ay > by + bh || !h || !w) {
+            if (left > INT_MAX || top > INT_MAX) {
                 cur->w = cur->h = cur->stride = 0;
                 continue;
             }
 
-            // Allocate new buffer and add to free list
-            unsigned ns = ass_align(align, w);
-            nbuffer = ass_aligned_alloc(align, ns * h + align, false);
+            size_t ns_size = ass_align(align, (size_t) w);
+            if (ns_size < (size_t) w || ns_size > INT_MAX ||
+                ns_size > (SIZE_MAX - align) / (size_t) h)
+                break;
+            unsigned ns = (unsigned) ns_size;
+            nbuffer = ass_aligned_alloc(align, ns_size * h + align, false);
             if (!nbuffer)
                 break;
 
-            // Blend together
             render_priv->engine.mul_bitmaps(nbuffer, ns,
-                                            abuffer + atop * as + aleft, as,
-                                            bbuffer + btop * bs + bleft, bs,
+                                            abuffer + (size_t) atop * as + aleft, as,
+                                            bbuffer + (size_t) btop * bs + bleft, bs,
                                             w, h);
-            cur->dst_x += aleft;
-            cur->dst_y += atop;
+            cur->dst_x = (int) left;
+            cur->dst_y = (int) top;
             cur->w = w;
             cur->h = h;
             cur->stride = ns;
@@ -1812,10 +1822,13 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
         return;
 
     for (ASS_ImageRGBA *cur = head; cur; cur = cur->next) {
-        int left, top, right, bottom, aw, ah, as;
-        int ax, ay, bx, by, bw, bh, bs;
+        int aw, ah, as;
+        int ax, ay, bw, bh, bs;
         int aleft, atop, bleft, btop;
-        ASS_ImageRGBAPriv *rgba_priv = (ASS_ImageRGBAPriv *) cur;
+        ASS_ImageRGBAPriv *rgba_priv = ass_rgba_image_private(
+            cur, "vector clip");
+        if (!rgba_priv || !ass_rgba_image_view_valid(cur, "vector clip source"))
+            break;
         uint8_t *abuffer = cur->rgba;
         uint8_t *bbuffer = clip_bm->buffer;
         ax = cur->dst_x;
@@ -1823,40 +1836,47 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
         aw = cur->w;
         ah = cur->h;
         as = cur->stride;
-        bx = pos.x + clip_bm->left;
-        by = pos.y + clip_bm->top;
         bw = clip_bm->w;
         bh = clip_bm->h;
         bs = clip_bm->stride;
+        if (aw <= 0 || ah <= 0 || as <= 0 || bw <= 0 || bh <= 0 || bs <= 0)
+            continue;
 
-        left = (ax > bx) ? ax : bx;
-        top = (ay > by) ? ay : by;
-        right = ((ax + aw) < (bx + bw)) ? (ax + aw) : (bx + bw);
-        bottom = ((ay + ah) < (by + bh)) ? (ay + ah) : (by + bh);
-        aleft = left - ax;
-        atop = top - ay;
-        int wclip = right - left;
-        int hclip = bottom - top;
-        bleft = left - bx;
-        btop = top - by;
+        int64_t ax0 = ax, ay0 = ay;
+        int64_t bx0 = (int64_t) pos.x + clip_bm->left;
+        int64_t by0 = (int64_t) pos.y + clip_bm->top;
+        int64_t left = FFMAX(ax0, bx0);
+        int64_t top = FFMAX(ay0, by0);
+        int64_t right = FFMIN(ax0 + aw, bx0 + bw);
+        int64_t bottom = FFMIN(ay0 + ah, by0 + bh);
+        if (left >= right || top >= bottom) {
+            if (!state->clip_drawing_mode)
+                cur->w = cur->h = 0;
+            continue;
+        }
+        aleft = (int) (left - ax0);
+        atop = (int) (top - ay0);
+        int wclip = (int) (right - left);
+        int hclip = (int) (bottom - top);
+        bleft = (int) (left - bx0);
+        btop = (int) (top - by0);
 
         if (state->clip_drawing_mode) {
-            if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
-                ay > by + bh || !hclip || !wclip) {
-                continue;
-            }
-
             size_t alloc_size;
             uint8_t *nbuffer =
                 ass_rgba_alloc_buffer_stride(render_priv, as, ah,
                                              rgba_priv->alloc_size,
-                                             &alloc_size);
+                                             &alloc_size,
+                                             "vector clip replacement");
             if (!nbuffer)
                 break;
-            memcpy(nbuffer, abuffer, as * ah);
+            for (int y = 0; y < ah; y++)
+                memcpy(nbuffer + (size_t) y * as,
+                       abuffer + (size_t) y * as, (size_t) aw * 4);
             for (int y = 0; y < hclip; y++) {
-                uint8_t *dst = nbuffer + (atop + y) * as + (aleft * 4);
-                uint8_t *src_mask = bbuffer + (btop + y) * bs + bleft;
+                uint8_t *dst = nbuffer + (size_t) (atop + y) * as +
+                    (size_t) aleft * 4;
+                uint8_t *src_mask = bbuffer + (size_t) (btop + y) * bs + bleft;
                 for (int x = 0; x < wclip; x++) {
                     uint8_t mval = 255 - src_mask[x];
                     for (int c = 0; c < 4; c++) {
@@ -1867,8 +1887,7 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
             }
             ass_rgba_image_replace_buffer(cur, nbuffer, alloc_size, aw, ah, as);
         } else {
-            if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
-                ay > by + bh || !hclip || !wclip) {
+            if (left > INT_MAX || top > INT_MAX) {
                 cur->w = cur->h = 0;
                 continue;
             }
@@ -1878,13 +1897,15 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
             uint8_t *nbuffer =
                 ass_rgba_alloc_buffer(render_priv, wclip, hclip,
                                       rgba_priv->alloc_size, &ns,
-                                      &alloc_size);
+                                      &alloc_size,
+                                      "vector clip replacement");
             if (!nbuffer)
                 break;
             for (int y = 0; y < hclip; y++) {
-                uint8_t *dst = nbuffer + y * ns;
-                uint8_t *src = abuffer + (atop + y) * as + aleft * 4;
-                uint8_t *src_mask = bbuffer + (btop + y) * bs + bleft;
+                uint8_t *dst = nbuffer + (size_t) y * ns;
+                uint8_t *src = abuffer + (size_t) (atop + y) * as +
+                    (size_t) aleft * 4;
+                uint8_t *src_mask = bbuffer + (size_t) (btop + y) * bs + bleft;
                 for (int x = 0; x < wclip; x++) {
                     uint8_t mval = src_mask[x];
                     for (int c = 0; c < 4; c++) {
@@ -1893,8 +1914,8 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
                     }
                 }
             }
-            cur->dst_x += aleft;
-            cur->dst_y += atop;
+            cur->dst_x = (int) left;
+            cur->dst_y = (int) top;
             ass_rgba_image_replace_buffer(cur, nbuffer, alloc_size,
                                           wclip, hclip, ns);
         }
@@ -8239,6 +8260,32 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     return true;
 }
 
+/* Keep the old array intact if growing it fails. Both legacy and RGBA frame
+ * paths use this storage, so allocation failure cannot become an invalid
+ * EventImages write through a lost realloc pointer. */
+bool ass_ensure_event_images(ASS_Renderer *render_priv, int count)
+{
+    if (count < render_priv->eimg_size)
+        return true;
+    if (render_priv->eimg_size > INT_MAX - 100) {
+        ass_msg(render_priv->library, MSGL_ERR,
+                "Too many active subtitle events");
+        return false;
+    }
+
+    int new_size = render_priv->eimg_size + 100;
+    EventImages *images = ass_realloc_array(render_priv->eimg, new_size,
+                                             sizeof(*images));
+    if (!images) {
+        ass_msg(render_priv->library, MSGL_ERR,
+                "Could not allocate active event list");
+        return false;
+    }
+    render_priv->eimg = images;
+    render_priv->eimg_size = new_size;
+    return true;
+}
+
 int ass_cmp_event_layer(const void *p1, const void *p2)
 {
     ASS_Event *e1 = ((EventImages *) p1)->event;
@@ -8556,12 +8603,9 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         ASS_Event *event = track->events + i;
         if ((event->Start <= now)
             && (now < (event->Start + event->Duration))) {
-            if (cnt >= priv->eimg_size) {
-                priv->eimg_size += 100;
-                priv->eimg =
-                    realloc(priv->eimg,
-                            priv->eimg_size * sizeof(EventImages));
-            }
+            if (!ass_ensure_event_images(priv, cnt))
+                break;
+            memset(priv->eimg + cnt, 0, sizeof(*priv->eimg));
             if (ass_render_event(&priv->state, event, priv->eimg + cnt, NULL)) {
                 priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
                 cnt++;

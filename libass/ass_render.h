@@ -65,10 +65,25 @@ typedef struct {
     size_t ref_count;
 } ASS_ImagePriv;
 
-typedef struct {
+typedef enum {
+    ASS_RGBA_OWNER_NEW = 0,
+    ASS_RGBA_OWNER_EVENT,
+    ASS_RGBA_OWNER_FRAME_RESULT,
+    ASS_RGBA_OWNER_CALLER,
+    ASS_RGBA_OWNER_FREED,
+} ASS_RGBAOwner;
+
+typedef struct ass_image_rgba_priv {
     ASS_ImageRGBA result;
+    /* Always the exact base returned by ass_aligned_alloc(), never a view. */
     uint8_t *buffer;
     size_t alloc_size;
+#ifndef NDEBUG
+    uint64_t magic;
+    uint64_t allocation_id;
+    ASS_RGBAOwner owner;
+    bool alive;
+#endif
 } ASS_ImageRGBAPriv;
 
 typedef struct {
@@ -686,21 +701,36 @@ void ass_column_update_default(RenderContext *state, unsigned fields);
 void ass_frame_ref(ASS_Image *img);
 void ass_frame_unref(ASS_Image *img);
 ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
-                                    int dst_x, int dst_y, int type);
+                                    int dst_x, int dst_y, int type,
+                                    ASS_RGBAOwner owner,
+                                    const char *allocation_site);
+/* The returned pointer is an owned aligned-allocation base. On failure NULL is
+ * returned and no caller-owned allocation is consumed. */
 uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
                                size_t replace_size, int *stride,
-                               size_t *alloc_size);
+                               size_t *alloc_size,
+                               const char *allocation_site);
 uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
                                       size_t replace_size,
-                                      size_t *alloc_size);
+                                      size_t *alloc_size,
+                                      const char *allocation_site);
+/* buffer must be an exact base returned by one of the allocation helpers.
+ * On success its ownership transfers to img; callers must not free it. */
 void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
                                    size_t alloc_size, int w, int h,
                                    int stride);
 void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img);
+ASS_ImageRGBAPriv *ass_rgba_image_private(ASS_ImageRGBA *img,
+                                           const char *operation);
+bool ass_rgba_image_view_valid(ASS_ImageRGBA *img, const char *operation);
+void ass_rgba_images_set_owner(ASS_ImageRGBA *img, ASS_RGBAOwner owner,
+                               const char *operation);
+bool ass_rgba_image_clip_to_frame(ASS_Renderer *priv, ASS_ImageRGBA *img);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out);
 bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now);
+bool ass_ensure_event_images(ASS_Renderer *render_priv, int count);
 int ass_cmp_event_layer(const void *p1, const void *p2);
 void ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
 int ass_detect_change(ASS_Renderer *priv);

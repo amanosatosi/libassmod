@@ -470,6 +470,8 @@ ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
         res.use_rgba = 1;
         res.imgs_rgba = rgba;
     } else {
+        ass_rgba_images_set_owner(rgba, ASS_RGBA_OWNER_FRAME_RESULT,
+                                  "auto legacy cleanup");
         ass_free_images_rgba(rgba);
     }
 
