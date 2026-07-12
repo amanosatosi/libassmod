@@ -412,7 +412,7 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
             priv->rgba_output_size = 0;
         rgba_debug_release_unowned_buffer(buffer, "image object allocation failure");
         ass_aligned_free_tagged(
-            buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, NULL);
+            buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, priv);
         return NULL;
     }
 

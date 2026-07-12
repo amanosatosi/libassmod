@@ -179,27 +179,42 @@ static void aligned_debug_fail(const char *reason, void *ptr,
                                const AlignedDebugAllocation *live,
                                const AlignedDebugFreed *freed)
 {
-    fprintf(stderr,
-            "Invalid aligned free: reason=%s pointer=%p "
-            "free_category=%s free_owner=%p free_site=%s:%d "
-            "allocation_id=%" PRIu64 " allocation_size=%zu "
-            "allocation_category=%s allocation_owner=%p "
-            "allocation_site=%s:%d last_operation=%s "
-            "previous_free_site=%s:%d\n",
-            reason ? reason : "unknown", ptr,
-            aligned_category_name(free_category), free_owner,
-            free_file ? free_file : "unknown", free_line,
-            live ? live->id : freed ? freed->id : 0,
-            live ? live->size : freed ? freed->size : 0,
-            aligned_category_name(live ? live->category :
-                                  freed ? freed->category : ASS_ALIGNED_ALLOC_OTHER),
-            live ? live->owner : freed ? freed->owner : NULL,
-            live && live->file ? live->file :
-                freed && freed->allocation_file ? freed->allocation_file : "unknown",
-            live ? live->line : freed ? freed->allocation_line : 0,
-            live && live->last_operation ? live->last_operation : "unknown",
-            freed && freed->free_file ? freed->free_file : "none",
-            freed ? freed->free_line : 0);
+    const char *allocation_file = live && live->file ? live->file :
+        freed && freed->allocation_file ? freed->allocation_file : "unknown";
+    const char *last_operation = live && live->last_operation ?
+        live->last_operation : "unknown";
+    const char *previous_free_file = freed && freed->free_file ?
+        freed->free_file : "none";
+    char diagnostic[2048];
+    int length = snprintf(
+        diagnostic, sizeof(diagnostic),
+        "Invalid aligned free: reason=%s pointer=%p "
+        "free_category=%s free_owner=%p free_site=%s:%d "
+        "allocation_id=%" PRIu64 " allocation_size=%zu "
+        "allocation_category=%s allocation_owner=%p "
+        "allocation_site=%s:%d last_operation=%s "
+        "previous_free_site=%s:%d\n",
+        reason ? reason : "unknown", ptr,
+        aligned_category_name(free_category), free_owner,
+        free_file ? free_file : "unknown", free_line,
+        live ? live->id : freed ? freed->id : 0,
+        live ? live->size : freed ? freed->size : 0,
+        aligned_category_name(live ? live->category :
+                              freed ? freed->category : ASS_ALIGNED_ALLOC_OTHER),
+        live ? live->owner : freed ? freed->owner : NULL,
+        allocation_file, live ? live->line : freed ? freed->allocation_line : 0,
+        last_operation, previous_free_file, freed ? freed->free_line : 0);
+    if (length < 0)
+        fputs("Invalid aligned free: diagnostic formatting failed\n", stderr);
+    else {
+        fputs(diagnostic, stderr);
+        fflush(stderr);
+#ifdef _WIN32
+        /* A GUI host often has no inherited stderr. Keep the complete
+         * allocation provenance visible to a debugger or DebugView. */
+        OutputDebugStringA(diagnostic);
+#endif
+    }
     abort();
 }
 
@@ -241,6 +256,15 @@ static void aligned_debug_track(void *ptr, void *raw, size_t size,
 }
 
 #endif
+
+int ass_aligned_alloc_debug_enabled(void)
+{
+#if CONFIG_ALIGNED_ALLOC_DEBUG
+    return 1;
+#else
+    return 0;
+#endif
+}
 
 void *ass_aligned_alloc_impl(size_t alignment, size_t size, bool zero,
                              ASS_AlignedAllocCategory category,
@@ -287,6 +311,9 @@ void ass_aligned_free_impl(void *ptr, ASS_AlignedAllocCategory category,
     void *metadata_raw = *((void **) ptr - 1);
     if (metadata_raw != entry->raw)
         aligned_debug_fail("aligned header corrupted", ptr, category, owner,
+                           file, line, entry, NULL);
+    if (entry->owner && owner && entry->owner != owner)
+        aligned_debug_fail("owner mismatch", ptr, category, owner,
                            file, line, entry, NULL);
 
     *link = entry->next;

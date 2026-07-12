@@ -92,8 +92,15 @@ static inline bool check_capacity(RasterizerData *rst, int index, size_t delta)
 
 void ass_rasterizer_done(RasterizerData *rst)
 {
-    free(rst->linebuf[0]);
-    free(rst->linebuf[1]);
+    void *linebuf0 = rst->linebuf[0];
+    void *linebuf1 = rst->linebuf[1];
+    rst->linebuf[0] = NULL;
+    rst->linebuf[1] = NULL;
+    rst->size[0] = rst->capacity[0] = 0;
+    rst->size[1] = rst->capacity[1] = 0;
+    rst->n_first = 0;
+    free(linebuf0);
+    free(linebuf1);
 
     void *tile = rst->tile;
     rst->tile = NULL;

@@ -222,6 +222,32 @@ static bool test_allocation_failures(ASS_Renderer *renderer)
     return ok;
 }
 
+static bool test_rasterizer_cleanup_idempotency(ASS_Renderer *renderer)
+{
+    RasterizerData rasterizer;
+    if (!ass_rasterizer_init(&renderer->engine, &rasterizer, 0))
+        return expect(false, "could not initialize rasterizer cleanup test");
+
+    rasterizer.linebuf[0] = malloc(sizeof(*rasterizer.linebuf[0]));
+    rasterizer.linebuf[1] = malloc(sizeof(*rasterizer.linebuf[1]));
+    if (!rasterizer.linebuf[0] || !rasterizer.linebuf[1]) {
+        ass_rasterizer_done(&rasterizer);
+        return expect(false, "could not allocate rasterizer cleanup buffers");
+    }
+    rasterizer.size[0] = rasterizer.capacity[0] = 1;
+    rasterizer.size[1] = rasterizer.capacity[1] = 1;
+    rasterizer.n_first = 1;
+
+    ass_rasterizer_done(&rasterizer);
+    bool ok = expect(!rasterizer.linebuf[0] && !rasterizer.linebuf[1] &&
+                     !rasterizer.tile && !rasterizer.size[0] &&
+                     !rasterizer.size[1] && !rasterizer.capacity[0] &&
+                     !rasterizer.capacity[1] && !rasterizer.n_first,
+                     "rasterizer cleanup left stale owned pointers or counters");
+    ass_rasterizer_done(&rasterizer);
+    return ok;
+}
+
 static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
                                 int stress_frames)
 {
@@ -386,6 +412,11 @@ int main(int argc, char *argv[])
         fprintf(stderr, "phase: allocation failure tests start\n");
         ok &= test_allocation_failures(renderer);
         report_phase("allocation failure tests", phase_start);
+
+        phase_start = clock();
+        fprintf(stderr, "phase: rasterizer cleanup tests start\n");
+        ok &= test_rasterizer_cleanup_idempotency(renderer);
+        report_phase("rasterizer cleanup tests", phase_start);
 
         phase_start = clock();
         fprintf(stderr, "phase: auto lifetime stress start\n");

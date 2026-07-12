@@ -97,6 +97,10 @@ typedef struct ass_image_rgba {
 #define LIBASSMOD_FEATURE_RGBA 1
 #define LIBASSMOD_FEATURE_TAG_IMAGE 1
 
+/* Returns non-zero when this libass build tracks aligned allocation ownership.
+ * This is intended for host-side diagnostic build verification. */
+int ass_aligned_alloc_debug_enabled(void);
+
 typedef enum {
     ASS_TAG_IMAGE_FORMAT_PNG = 1,
     ASS_TAG_IMAGE_FORMAT_JPEG = 2,
