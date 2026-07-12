@@ -123,8 +123,10 @@ test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
 if get_option('default_library') != 'shared'
     test('rgba-ownership-lifetime', rgba_ownership_unit, timeout: 120)
-    run_target(
-        'rgba-ownership-lifetime-extended',
-        command: [rgba_ownership_unit, '--extended'],
-    )
+    if get_option('rgba-ownership-extended-stress')
+        # The ASan/UBSan workload is intentionally long. It is enabled only
+        # by the scheduled/manual stress workflow, not regular PR CI.
+        test('rgba-ownership-lifetime-extended', rgba_ownership_unit,
+             args: ['--extended'], timeout: 3600, is_parallel: false)
+    endif
 endif

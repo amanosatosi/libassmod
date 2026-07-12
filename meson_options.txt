@@ -6,6 +6,8 @@ option('checkasm', type: 'feature', description: 'enable assembly unit test prog
 option('art-samples', type: 'string', description: 'Path to the root of regression testing sample repository. If set, it is used in meson test.')
 option('fuzz-link-args', type: 'string', description: 'Additional link flags for fuzz targets.')
 option('fuzz-link-language', type : 'combo', choices : ['c', 'cpp'], value : 'c', description: 'Linking language for fuzz targets.')
+option('rgba-ownership-extended-stress', type: 'boolean', value: false,
+       description: 'enable the long RGBA ownership lifetime stress test')
 
 option('fontconfig', type: 'feature', description: 'Fontconfig support')
 option('directwrite', type: 'feature', description: 'DirectWrite support (win32 only)')

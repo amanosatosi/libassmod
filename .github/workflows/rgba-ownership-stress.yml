@@ -1,0 +1,46 @@
+name: RGBA Ownership Extended Stress
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+jobs:
+  rgba-ownership-stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build meson build-essential pkg-config nasm \
+            libfreetype-dev libfontconfig-dev libharfbuzz-dev libfribidi-dev \
+            libpng-dev
+
+      - name: Configure ASan/UBSan stress build
+        run: |
+          meson setup build \
+            -Ddefault_library=static \
+            -Dtest=enabled -Dcompare=disabled -Dprofile=disabled -Dfuzz=disabled \
+            -Drgba-ownership-extended-stress=true \
+            -Db_sanitize=address,undefined -Dc_args=-fno-omit-frame-pointer
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Run extended RGBA ownership stress
+        env:
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1:print_summary=1
+          UBSAN_OPTIONS: halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1
+        run: meson test -C build --print-errorlogs rgba-ownership-lifetime-extended
+
+      - name: Upload Meson test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rgba-ownership-stress-log
+          path: build/meson-logs/testlog.txt
+          if-no-files-found: warn

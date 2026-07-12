@@ -18,10 +18,10 @@
 enum {
     WIDTH = 640,
     HEIGHT = 360,
-    NORMAL_STRESS_FRAMES = 1000,
-    NORMAL_RENDERER_CYCLES = 3,
-    EXTENDED_STRESS_FRAMES = 3000,
-    EXTENDED_RENDERER_CYCLES = 4,
+    FAST_STRESS_FRAMES = 150,
+    FAST_RENDERER_CYCLES = 1,
+    EXTENDED_STRESS_FRAMES = 1000,
+    EXTENDED_RENDERER_CYCLES = 3,
     AUTO_PROGRESS_INTERVAL = 25,
     AUTO_VERBOSE_FRAMES = 3,
 };
@@ -341,9 +341,9 @@ int main(int argc, char *argv[])
         return 2;
     }
 
-    int stress_frames = extended ? EXTENDED_STRESS_FRAMES : NORMAL_STRESS_FRAMES;
+    int stress_frames = extended ? EXTENDED_STRESS_FRAMES : FAST_STRESS_FRAMES;
     int renderer_cycles = extended ? EXTENDED_RENDERER_CYCLES :
-                                     NORMAL_RENDERER_CYCLES;
+                                     FAST_RENDERER_CYCLES;
     bool ok = true;
     fprintf(stderr, "rgba ownership stress seed=0x%08x\n", (unsigned) stress_seed);
     fprintf(stderr, "rgba ownership stress workload=%d frames x %d cycles\n",
