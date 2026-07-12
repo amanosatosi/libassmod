@@ -9,13 +9,19 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "ass.h"
 #include "ass_render.h"
 
-/* Three independent renderer lifecycles still exercise 3,000 total frames,
- * while staying inside Meson's default 30-second ASan test timeout. */
-enum { WIDTH = 640, HEIGHT = 360, STRESS_FRAMES = 1000, RENDERER_CYCLES = 3 };
+enum {
+    WIDTH = 640,
+    HEIGHT = 360,
+    NORMAL_STRESS_FRAMES = 1000,
+    NORMAL_RENDERER_CYCLES = 3,
+    EXTENDED_STRESS_FRAMES = 3000,
+    EXTENDED_RENDERER_CYCLES = 4,
+};
 static const uint32_t stress_seed = UINT32_C(0x4d616e67);
 
 static const char stress_script[] =
@@ -64,6 +70,20 @@ static uint32_t next_random(uint32_t *state)
     x ^= x >> 17;
     x ^= x << 5;
     return *state = x;
+}
+
+static double elapsed_seconds(clock_t start)
+{
+    clock_t now = clock();
+    if (now == (clock_t) -1 || start == (clock_t) -1)
+        return 0.0;
+    return (double) (now - start) / CLOCKS_PER_SEC;
+}
+
+static void report_phase(const char *phase, clock_t start)
+{
+    fprintf(stderr, "phase: %s complete, %.1fs\n", phase,
+            elapsed_seconds(start));
 }
 
 static void fill_opaque(ASS_ImageRGBAPriv *priv)
@@ -177,7 +197,8 @@ static bool test_allocation_failures(ASS_Renderer *renderer)
     return ok;
 }
 
-static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer)
+static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer,
+                                int stress_frames)
 {
     uint8_t texture[4 * 4 * 4];
     for (int i = 0; i < (int) sizeof(texture); i++)
@@ -195,7 +216,7 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer)
 
     bool ok = true;
     uint32_t random = stress_seed;
-    for (int frame = 0; frame < STRESS_FRAMES; frame++) {
+    for (int frame = 0; frame < stress_frames; frame++) {
         uint32_t value = next_random(&random);
         int width = value & 1 ? WIDTH : WIDTH / 2;
         int height = value & 2 ? HEIGHT : HEIGHT / 2;
@@ -235,11 +256,26 @@ static bool test_auto_lifetimes(ASS_Library *library, ASS_Renderer *renderer)
     return ok;
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
+    bool extended = false;
+    if (argc == 2 && !strcmp(argv[1], "--extended"))
+        extended = true;
+    else if (argc != 1) {
+        fprintf(stderr, "usage: %s [--extended]\n", argv[0]);
+        return 2;
+    }
+
+    int stress_frames = extended ? EXTENDED_STRESS_FRAMES : NORMAL_STRESS_FRAMES;
+    int renderer_cycles = extended ? EXTENDED_RENDERER_CYCLES :
+                                     NORMAL_RENDERER_CYCLES;
     bool ok = true;
     fprintf(stderr, "rgba ownership stress seed=0x%08x\n", (unsigned) stress_seed);
-    for (int cycle = 0; cycle < RENDERER_CYCLES; cycle++) {
+    fprintf(stderr, "rgba ownership stress workload=%d frames x %d cycles\n",
+            stress_frames, renderer_cycles);
+    for (int cycle = 0; cycle < renderer_cycles; cycle++) {
+        clock_t cycle_start = clock();
+        fprintf(stderr, "cycle %d/%d start\n", cycle + 1, renderer_cycles);
         ASS_Library *library = ass_library_init();
         if (!library)
             return 1;
@@ -255,12 +291,25 @@ int main(void)
         ass_set_fonts(renderer, NULL, "sans-serif", ASS_FONTPROVIDER_AUTODETECT,
                       NULL, 1);
 
+        clock_t phase_start = clock();
+        fprintf(stderr, "phase: direct ownership tests start\n");
         ok &= test_clipped_buffer_ownership(renderer);
+        report_phase("direct ownership tests", phase_start);
+
+        phase_start = clock();
+        fprintf(stderr, "phase: allocation failure tests start\n");
         ok &= test_allocation_failures(renderer);
-        ok &= test_auto_lifetimes(library, renderer);
+        report_phase("allocation failure tests", phase_start);
+
+        phase_start = clock();
+        fprintf(stderr, "phase: auto lifetime stress start\n");
+        ok &= test_auto_lifetimes(library, renderer, stress_frames);
+        report_phase("auto lifetime stress", phase_start);
 
         ass_renderer_done(renderer);
         ass_library_done(library);
+        fprintf(stderr, "cycle %d/%d complete, %.1fs\n", cycle + 1,
+                renderer_cycles, elapsed_seconds(cycle_start));
         if (!ok)
             break;
     }

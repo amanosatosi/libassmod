@@ -122,5 +122,9 @@ test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
 if get_option('default_library') != 'shared'
-    test('rgba-ownership-lifetime', rgba_ownership_unit)
+    test('rgba-ownership-lifetime', rgba_ownership_unit, timeout: 120)
+    run_target(
+        'rgba-ownership-lifetime-extended',
+        command: [rgba_ownership_unit, '--extended'],
+    )
 endif
