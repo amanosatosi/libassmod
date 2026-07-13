@@ -255,6 +255,13 @@ static bool same_sig(const RenderSig *a, const RenderSig *b)
            !memcmp(a->colors, b->colors, sizeof(a->colors));
 }
 
+static bool same_coverage_bounds(const RenderSig *a, const RenderSig *b)
+{
+    return a->coverage == b->coverage &&
+           a->min_x == b->min_x && a->min_y == b->min_y &&
+           a->max_x == b->max_x && a->max_y == b->max_y;
+}
+
 static bool same_rgba_sig(const RgbaSig *a, const RgbaSig *b)
 {
     return a->count == b->count &&
@@ -291,6 +298,7 @@ int main(void)
     RenderSig equal_size, small_outer, three_layers, anisotropic;
     RenderSig bs5, style_bs5, malformed;
     RenderSig box_base, box_border, box_multi, box_numbered, bs_ignore;
+    RenderSig box_reference, box_small_outer, box_large_outer, box_three_layers;
     RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
     bool ok = true;
 
@@ -538,12 +546,63 @@ int main(void)
     }
 
     ok &= render_case(lib, renderer,
-                      "{\\bs4\\boxp12\\1bbs3\\1bbc&H00FF00&\\1bba&H00&"
-                      "\\2bbs8\\2bbc&H0000FF&\\2bba&H00&}Box",
+                      "{\\bs4\\boxp12\\1bbs4\\1bbc&H00FF00&\\1bba&H00&"
+                      "\\2bbs3\\2bbc&H0000FF&\\2bba&H00&}Box",
                       &box_multi);
-    if (ok && (!has_color(&box_multi, 0x00FF0000u) ||
-               !has_color(&box_multi, 0xFF000000u))) {
-        fprintf(stderr, "two-layer box border did not expose both colors\n");
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\bbs7\\bba&H00&}Box",
+                      &box_reference);
+    if (ok && (box_multi.outline_count < 2 ||
+               !has_color(&box_multi, 0x00FF0000u) ||
+               !has_color(&box_multi, 0xFF000000u) ||
+               !same_coverage_bounds(&box_multi, &box_reference))) {
+        fprintf(stderr, "\\bbs4\\2bbs3 did not produce cumulative "
+                        "4 px + 3 px box borders\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\1bbs4\\1bbc&H00FF00&\\1bba&H00&"
+                      "\\2bbs1\\2bbc&H0000FF&\\2bba&H00&}Box",
+                      &box_small_outer);
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\bbs5\\bba&H00&}Box",
+                      &box_reference);
+    if (ok && (box_small_outer.outline_count < 2 ||
+               !has_color(&box_small_outer, 0xFF000000u) ||
+               !same_coverage_bounds(&box_small_outer, &box_reference))) {
+        fprintf(stderr, "\\bbs4\\2bbs1 did not render a 1 px outer "
+                        "box border\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\1bbs1\\1bbc&H00FF00&\\1bba&H00&"
+                      "\\2bbs4\\2bbc&H0000FF&\\2bba&H00&}Box",
+                      &box_large_outer);
+    if (ok && (box_large_outer.outline_count < 2 ||
+               !has_color(&box_large_outer, 0xFF000000u) ||
+               !same_coverage_bounds(&box_large_outer, &box_reference))) {
+        fprintf(stderr, "\\bbs1\\2bbs4 did not render a 4 px outer "
+                        "box border\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\1bbs4\\1bbc&H00FF00&\\1bba&H00&"
+                      "\\2bbs3\\2bbc&H0000FF&\\2bba&H00&"
+                      "\\3bbs2\\3bbc&HFF0000&\\3bba&H00&}Box",
+                      &box_three_layers);
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\bbs9\\bba&H00&}Box",
+                      &box_reference);
+    if (ok && (box_three_layers.outline_count < 3 ||
+               !has_color(&box_three_layers, 0x00FF0000u) ||
+               !has_color(&box_three_layers, 0xFF000000u) ||
+               !has_color(&box_three_layers, 0x0000FF00u) ||
+               !same_coverage_bounds(&box_three_layers, &box_reference))) {
+        fprintf(stderr, "three box-border thicknesses did not accumulate "
+                        "to 4 px + 3 px + 2 px\n");
         ok = false;
     }
 

@@ -7318,7 +7318,6 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
 typedef struct {
     int inner_x, inner_y;
     int outer_x, outer_y;
-    int order;
     uint32_t color;
 } BoxBorderRenderLayer;
 
@@ -7744,60 +7743,40 @@ static ASS_Image **append_bs4_bitmap(RenderContext *state, Bitmap *bitmap,
                         1000000, tail, type, NULL, 0, 0, rgba_tail);
 }
 
-static int cmp_box_border_render_layer(const void *p1, const void *p2)
-{
-    const BoxBorderRenderLayer *a = p1;
-    const BoxBorderRenderLayer *b = p2;
-    if (a->outer_x != b->outer_x)
-        return a->outer_x - b->outer_x;
-    if (a->outer_y != b->outer_y)
-        return a->outer_y - b->outer_y;
-    return a->order - b->order;
-}
-
 static int collect_box_border_render_layers(RenderContext *state,
-                                            BoxBorderRenderLayer *layers)
+                                             BoxBorderRenderLayer *layers)
 {
     int count = 0;
+    int outer_x = 0;
+    int outer_y = 0;
+    /* Match native multi-border semantics: each layer stores its own
+     * thickness, while its rendered rectangle starts at the cumulative
+     * extent of all earlier enabled layers. */
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
         BorderLayerState *layer = &state->box_border_layers[i];
         if (!border_layer_has_size(layer))
             continue;
 
-        int size_x = layer->size_x > 0 ?
+        int thickness_x = layer->size_x > 0 ?
             lround(layer->size_x * state->border_scale_x) : 0;
-        int size_y = layer->size_y > 0 ?
+        int thickness_y = layer->size_y > 0 ?
             lround(layer->size_y * state->border_scale_y) : 0;
-        if (size_x < 1 && size_y < 1)
+        if (thickness_x < 1 && thickness_y < 1)
             continue;
 
+        int inner_x = outer_x;
+        int inner_y = outer_y;
+        outer_x += thickness_x;
+        outer_y += thickness_y;
         layers[count++] = (BoxBorderRenderLayer) {
-            .inner_x = 0,
-            .inner_y = 0,
-            .outer_x = size_x,
-            .outer_y = size_y,
-            .order = i,
+            .inner_x = inner_x,
+            .inner_y = inner_y,
+            .outer_x = outer_x,
+            .outer_y = outer_y,
             .color = box_border_layer_color(state, layer),
         };
     }
-
-    qsort(layers, count, sizeof(*layers), cmp_box_border_render_layer);
-
-    int out = 0;
-    int prev_x = 0;
-    int prev_y = 0;
-    for (int i = 0; i < count; i++) {
-        if (layers[i].outer_x <= prev_x && layers[i].outer_y <= prev_y)
-            continue;
-
-        layers[out] = layers[i];
-        layers[out].inner_x = prev_x;
-        layers[out].inner_y = prev_y;
-        prev_x = layers[out].outer_x;
-        prev_y = layers[out].outer_y;
-        out++;
-    }
-    return out;
+    return count;
 }
 
 static void add_background(RenderContext *state, EventImages *event_images,

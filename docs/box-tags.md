@@ -142,9 +142,12 @@ Layer 1 has unnumbered aliases:
 Box borders are generated as outward rings around the local padded box
 rectangle, so they do not shrink the fill area or consume text padding. Each
 ring then uses the same event transform, projection, distortion, rasterization,
-and clipping as the fill. Multiple enabled layers remain non-overlapping
-outward rings, with larger layers behind smaller layers, even when the box is
-rotated, projected, or distorted.
+and clipping as the fill. Every `\Nbbs` size is the thickness of that individual
+layer, not an absolute outer extent. Geometry accumulates in layer order: for
+example, `\bbs4\2bbs3\3bbs2` produces 4 px, 3 px, and 2 px non-overlapping
+outward rings whose cumulative outer extent is 9 px. Later layers remain visible
+even when their thickness is smaller than an earlier layer. This ordering and
+sizing are preserved when the box is rotated, projected, or distorted.
 
 If a layer has no size or a zero size, it is not drawn. Negative sizes are
 clamped to zero. If a layer has no explicit `\Nbbc`, its RGB color falls back
@@ -155,6 +158,6 @@ Examples:
 
 ```ass
 {\bs4\boxp12\bbs4\bbc&H000000&}Text
-{\bs4\boxp12\1bbs3\1bbc&HFFFFFF&\2bbs8\2bbc&H000000&}Text
-{\an5\pos(640,360)\bs4\boxp12\bbs4\bbc&HFFFFFF&\2bbs8\2bbc&H000000&\frz30}Layered sign
+{\bs4\boxp12\1bbs4\1bbc&HFFFFFF&\2bbs3\2bbc&H000000&}Text
+{\an5\pos(640,360)\bs4\boxp12\bbs4\bbc&HFFFFFF&\2bbs3\2bbc&H000000&\frz30}Layered sign
 ```
