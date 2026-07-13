@@ -65,6 +65,7 @@ static ASS_Image *ass_free_image(ASS_Image *img);
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
+#define RGBA_PARALLEL_MIN_PIXELS (64 * 1024)
 #define MAX_BITMAPS_INITIAL 16
 #define MAX_SUB_BITMAPS_INITIAL 64
 #define SUBPIXEL_MASK 63
@@ -301,6 +302,17 @@ static void consume_render_jobs(RenderContext *state, ASS_Renderer *renderer,
     }
 }
 
+static void consume_task_jobs(ASS_Renderer *renderer, RenderTaskFunc task_func,
+                              void *opaque)
+{
+    size_t index;
+    size_t count = renderer->thread_pool.job_count;
+    while (claim_render_job(renderer, &index)) {
+        task_func(opaque, index, count);
+        finish_render_job(renderer);
+    }
+}
+
 static void *render_worker_main(void *opaque)
 {
     RenderWorker *worker = opaque;
@@ -318,8 +330,13 @@ static void *render_worker_main(void *opaque)
 
         worker->generation = pool->generation;
         bool rgba = pool->rgba;
+        RenderTaskFunc task_func = pool->task_func;
+        void *task_opaque = pool->task_opaque;
         pthread_mutex_unlock(&pool->mutex);
-        consume_render_jobs(&worker->state, renderer, rgba);
+        if (task_func)
+            consume_task_jobs(renderer, task_func, task_opaque);
+        else
+            consume_render_jobs(&worker->state, renderer, rgba);
         pthread_mutex_lock(&pool->mutex);
     }
     pthread_mutex_unlock(&pool->mutex);
@@ -462,8 +479,10 @@ void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
     }
 
     if (!workers || count < 2) {
+        pool->allow_subtasks = rgba && count && requested_workers;
         for (size_t i = 0; i < count; i++)
             render_event_job(&renderer->state, renderer, i, rgba);
+        pool->allow_subtasks = false;
         return;
     }
 
@@ -473,6 +492,8 @@ void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
     pthread_mutex_lock(&pool->mutex);
     pool->job_count = count;
     pool->rgba = rgba;
+    pool->task_func = NULL;
+    pool->task_opaque = NULL;
     pool->rgba_parallel = rgba;
     pool->rgba_retry = false;
     atomic_store_explicit(&pool->next_job, 0, memory_order_release);
@@ -508,6 +529,51 @@ void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
             render_event_job(&renderer->state, renderer, i, true);
     }
 }
+
+static void ass_parallel_for(ASS_Renderer *renderer, size_t count,
+                             RenderTaskFunc task_func, void *opaque)
+{
+    RenderThreadPool *pool = &renderer->thread_pool;
+    if (!task_func)
+        return;
+    if (!pool->initialized || !pool->allow_subtasks || count < 2) {
+        for (size_t i = 0; i < count; i++)
+            task_func(opaque, i, count);
+        return;
+    }
+
+    unsigned requested_workers = renderer->settings.threads - 1;
+    if (pool->n_workers < requested_workers)
+        ensure_render_workers(renderer, requested_workers);
+    if (!pool->n_workers) {
+        for (size_t i = 0; i < count; i++)
+            task_func(opaque, i, count);
+        return;
+    }
+
+    assert(count <= INTPTR_MAX);
+    pthread_mutex_lock(&pool->mutex);
+    assert(!pool->task_func);
+    pool->job_count = count;
+    pool->task_func = task_func;
+    pool->task_opaque = opaque;
+    atomic_store_explicit(&pool->next_job, 0, memory_order_release);
+    atomic_store_explicit(&pool->remaining_jobs, (AtomicInt) count,
+                          memory_order_release);
+    pool->generation++;
+    pthread_cond_broadcast(&pool->work_cond);
+    pthread_mutex_unlock(&pool->mutex);
+
+    consume_task_jobs(renderer, task_func, opaque);
+
+    pthread_mutex_lock(&pool->mutex);
+    while (atomic_load_explicit(&pool->remaining_jobs,
+                                memory_order_acquire))
+        pthread_cond_wait(&pool->done_cond, &pool->mutex);
+    pool->task_func = NULL;
+    pool->task_opaque = NULL;
+    pthread_mutex_unlock(&pool->mutex);
+}
 #else
 static void render_pool_init(ASS_Renderer *renderer)
 {
@@ -527,6 +593,16 @@ void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
         images->rendered = ass_render_event(&renderer->state, event,
                                             images, rgba_out);
     }
+}
+
+static void ass_parallel_for(ASS_Renderer *renderer, size_t count,
+                             RenderTaskFunc task_func, void *opaque)
+{
+    (void) renderer;
+    if (!task_func)
+        return;
+    for (size_t i = 0; i < count; i++)
+        task_func(opaque, i, count);
 }
 #endif
 
@@ -885,6 +961,144 @@ static inline void sample_tag_image(const ASS_TagImageEntry *img, int x, int y,
     *a = aa;
 }
 
+typedef struct {
+    const uint8_t *mask;
+    uint8_t *rgba;
+    const GradientValues *vals;
+    const MangetsuGradientLayer *mangetsu;
+    const MangetsuGradientLayer *mangetsu_alpha;
+    const ImageFillLayer *image_fill;
+    const ASS_TagImageEntry *tag_image;
+    int w, h, stride, rgba_stride;
+    int dst_x, dst_y, src_x, src_y, full_w, full_h;
+    int subpix_x, subpix_y;
+    int vis_h, clip_diff;
+    int tex_phase_bias_x, tex_phase_bias_y;
+    int cov_x0, cov_x1, cov_y0, cov_y1;
+    int64_t denom_w, denom_h;
+    uint32_t base_color;
+    FadeColorState fade_color;
+    uint8_t base_alpha, fade, style_opacity;
+    bool use_mangetsu, use_mangetsu_alpha;
+    bool use_tag_image, draw_img_compat;
+} RenderBitmapRGBAJob;
+
+static void render_bitmap_rgba_rows(void *opaque, size_t index, size_t count)
+{
+    RenderBitmapRGBAJob *job = opaque;
+    int y0 = (int) ((uint64_t) job->h * index / count);
+    int y1 = (int) ((uint64_t) job->h * (index + 1) / count);
+
+    for (int y = y0; y < y1; y++) {
+        int32_t vf = 0;
+        if (job->denom_h > 0) {
+            int64_t num_v = ((int64_t) (job->src_y + y)) << 16;
+            vf = (int32_t) (num_v / job->denom_h);
+        }
+        uint8_t *row = job->rgba + y * job->rgba_stride;
+        const uint8_t *src = job->mask + y * job->stride;
+        for (int x = 0; x < job->w; x++) {
+            int gx = job->src_x + x;
+            int gy = job->src_y + y;
+            if (gx >= job->full_w || gy >= job->full_h) {
+                row[4 * x + 0] = 0;
+                row[4 * x + 1] = 0;
+                row[4 * x + 2] = 0;
+                row[4 * x + 3] = 0;
+                continue;
+            }
+            // In drawing mode, clamp to actual covered span so guard/padding
+            // columns do not create wrapped texture seams.
+            if (job->draw_img_compat && job->src_x == 0 &&
+                (x < job->cov_x0 || x > job->cov_x1 ||
+                 y < job->cov_y0 || y > job->cov_y1)) {
+                row[4 * x + 0] = 0;
+                row[4 * x + 1] = 0;
+                row[4 * x + 2] = 0;
+                row[4 * x + 3] = 0;
+                continue;
+            }
+            uint8_t cov = src[x];
+            uint8_t cov64 = job->draw_img_compat ?
+                vsf_cov64_from_mask(cov) : 0;
+            if ((!job->draw_img_compat && !cov) ||
+                (job->draw_img_compat && !cov64)) {
+                row[4 * x + 0] = 0;
+                row[4 * x + 1] = 0;
+                row[4 * x + 2] = 0;
+                row[4 * x + 3] = 0;
+                continue;
+            }
+            if (job->use_tag_image) {
+                uint8_t sr, sg, sb, sa;
+                // VSFilterMod compatibility: use visible-height Y coordinates
+                // (top row starts from h-1) plus bottom clip compensation.
+                sample_tag_image(job->tag_image,
+                                 job->src_x + x + job->image_fill->xoffset -
+                                     job->tex_phase_bias_x,
+                                 job->vis_h - 1 - y +
+                                     job->image_fill->yoffset +
+                                     job->clip_diff + job->tex_phase_bias_y,
+                                 job->subpix_x, job->subpix_y,
+                                 &sr, &sg, &sb, &sa);
+                uint32_t image_color = ((uint32_t) sr << 24) |
+                    ((uint32_t) sg << 16) | ((uint32_t) sb << 8) | sa;
+                ass_apply_fade_color(&image_color, job->fade_color);
+                sr = _r(image_color);
+                sg = _g(image_color);
+                sb = _b(image_color);
+                uint8_t layer_opacity =
+                    (uint8_t) ((sa * job->style_opacity + 127) / 255);
+                uint8_t A = job->draw_img_compat ?
+                    (uint8_t) ((cov64 * layer_opacity) >> 6) :
+                    (uint8_t) ((cov * layer_opacity + 127) / 255);
+                row[4 * x + 0] = (uint8_t) ((sr * A + 127) / 255);
+                row[4 * x + 1] = (uint8_t) ((sg * A + 127) / 255);
+                row[4 * x + 2] = (uint8_t) ((sb * A + 127) / 255);
+                row[4 * x + 3] = A;
+                continue;
+            }
+            int32_t uf = 0;
+            if (job->denom_w > 0) {
+                int64_t num_u = ((int64_t) (job->src_x + x)) << 16;
+                uf = (int32_t) (num_u / job->denom_w);
+            }
+            uint32_t color;
+            if (job->use_mangetsu && job->mangetsu->coordinate_mode ==
+                    MANGETSU_GRADIENT_POSITIONED_RECT) {
+                /* Pixel centres are tested in final frame coordinates. */
+                if (!ass_mangetsu_positioned_gradient_sample_color(
+                        job->mangetsu, job->dst_x + x + 0.5,
+                        job->dst_y + y + 0.5, &color))
+                    color = job->base_color;
+            } else if (job->use_mangetsu) {
+                color = ass_mangetsu_gradient_sample_color(
+                    job->mangetsu, job->dst_x + x + 0.5,
+                    job->dst_y + y + 0.5);
+            } else {
+                color = job->vals->color_enabled ?
+                    ass_gradient_sample_color_fixed(job->vals, uf, vf) :
+                    job->base_color;
+            }
+            ass_apply_fade_color(&color, job->fade_color);
+            uint8_t alpha = job->use_mangetsu_alpha ?
+                ass_mangetsu_gradient_sample_alpha(job->mangetsu_alpha,
+                                                   job->dst_x + x + 0.5,
+                                                   job->dst_y + y + 0.5) :
+                (job->vals->alpha_enabled ?
+                    ass_gradient_sample_alpha_fixed(job->vals, uf, vf) :
+                    job->base_alpha);
+            if (job->fade > 0)
+                alpha = mult_alpha(alpha, job->fade);
+            uint8_t A = (uint8_t) ((cov * (255 - alpha)) / 255);
+            row[4 * x + 0] = (uint8_t) ((_r(color) * A) / 255);
+            row[4 * x + 1] = (uint8_t) ((_g(color) * A) / 255);
+            row[4 * x + 2] = (uint8_t) ((_b(color) * A) / 255);
+            row[4 * x + 3] = A;
+        }
+    }
+}
+
 static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          CombinedBitmapInfo *info,
                                          const uint8_t *mask, int w, int h,
@@ -1020,104 +1234,51 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         style_alpha = mult_alpha(style_alpha, fade);
     uint8_t style_opacity = 255 - style_alpha;
 
-    for (int y = 0; y < h; y++) {
-        int32_t vf = 0;
-        if (denom_h > 0) {
-            int64_t num_v = ((int64_t) (src_y + y)) << 16;
-            vf = (int32_t) (num_v / denom_h);
-        }
-        uint8_t *row = rgba + y * rgba_stride;
-        const uint8_t *src = mask + y * stride;
-        for (int x = 0; x < w; x++) {
-            int gx = src_x + x;
-            int gy = src_y + y;
-            if (gx >= full_w || gy >= full_h) {
-                row[4 * x + 0] = 0;
-                row[4 * x + 1] = 0;
-                row[4 * x + 2] = 0;
-                row[4 * x + 3] = 0;
-                continue;
-            }
-            // In drawing mode, clamp to actual covered span so guard/padding
-            // columns do not create wrapped texture seams.
-            if (draw_img_compat && src_x == 0 &&
-                (x < cov_x0 || x > cov_x1 || y < cov_y0 || y > cov_y1)) {
-                row[4 * x + 0] = 0;
-                row[4 * x + 1] = 0;
-                row[4 * x + 2] = 0;
-                row[4 * x + 3] = 0;
-                continue;
-            }
-            uint8_t cov = src[x];
-            uint8_t cov64 = draw_img_compat ? vsf_cov64_from_mask(cov) : 0;
-            if ((!draw_img_compat && !cov) || (draw_img_compat && !cov64)) {
-                row[4 * x + 0] = 0;
-                row[4 * x + 1] = 0;
-                row[4 * x + 2] = 0;
-                row[4 * x + 3] = 0;
-                continue;
-            }
-            if (use_tag_image) {
-                uint8_t sr, sg, sb, sa;
-                // VSFilterMod compatibility: use visible-height Y coordinates
-                // (top row starts from h-1) plus bottom clip compensation.
-                sample_tag_image(tag_image,
-                                 src_x + x + image_fill->xoffset - tex_phase_bias_x,
-                                 vis_h - 1 - y + image_fill->yoffset + clip_diff + tex_phase_bias_y,
-                                 subpix_x, subpix_y,
-                                 &sr, &sg, &sb, &sa);
-                uint32_t image_color = ((uint32_t) sr << 24) |
-                    ((uint32_t) sg << 16) | ((uint32_t) sb << 8) | sa;
-                ass_apply_fade_color(&image_color, info->fade_color);
-                sr = _r(image_color);
-                sg = _g(image_color);
-                sb = _b(image_color);
-                uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
-                uint8_t A = draw_img_compat ?
-                    (uint8_t) ((cov64 * layer_opacity) >> 6) :
-                    (uint8_t) ((cov * layer_opacity + 127) / 255);
-                row[4 * x + 0] = (uint8_t) ((sr * A + 127) / 255);
-                row[4 * x + 1] = (uint8_t) ((sg * A + 127) / 255);
-                row[4 * x + 2] = (uint8_t) ((sb * A + 127) / 255);
-                row[4 * x + 3] = A;
-                continue;
-            }
-            int32_t uf = 0;
-            if (denom_w > 0) {
-                int64_t num_u = ((int64_t) (src_x + x)) << 16;
-                uf = (int32_t) (num_u / denom_w);
-            }
-            uint32_t color;
-            if (use_mangetsu && mangetsu->coordinate_mode ==
-                    MANGETSU_GRADIENT_POSITIONED_RECT) {
-                /* Pixel centres are tested in final frame coordinates. */
-                if (!ass_mangetsu_positioned_gradient_sample_color(
-                        mangetsu, dst_x + x + 0.5, dst_y + y + 0.5, &color))
-                    color = base_color;
-            } else if (use_mangetsu) {
-                color = ass_mangetsu_gradient_sample_color(
-                    mangetsu, dst_x + x + 0.5, dst_y + y + 0.5);
-            } else {
-                color = vals->color_enabled ?
-                    ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
-            }
-            ass_apply_fade_color(&color, info->fade_color);
-            uint8_t alpha = use_mangetsu_alpha ?
-                ass_mangetsu_gradient_sample_alpha(mangetsu_alpha,
-                                                   dst_x + x + 0.5,
-                                                   dst_y + y + 0.5) :
-                (vals->alpha_enabled ?
-                    ass_gradient_sample_alpha_fixed(vals, uf, vf) :
-                    base_alpha);
-            if (fade > 0)
-                alpha = mult_alpha(alpha, fade);
-            uint8_t A = (uint8_t) ((cov * (255 - alpha)) / 255);
-            row[4 * x + 0] = (uint8_t) ((_r(color) * A) / 255);
-            row[4 * x + 1] = (uint8_t) ((_g(color) * A) / 255);
-            row[4 * x + 2] = (uint8_t) ((_b(color) * A) / 255);
-            row[4 * x + 3] = A;
-        }
-    }
+    RenderBitmapRGBAJob job = {
+        .mask = mask,
+        .rgba = rgba,
+        .vals = vals,
+        .mangetsu = mangetsu,
+        .mangetsu_alpha = mangetsu_alpha,
+        .image_fill = image_fill,
+        .tag_image = tag_image,
+        .w = w,
+        .h = h,
+        .stride = stride,
+        .rgba_stride = rgba_stride,
+        .dst_x = dst_x,
+        .dst_y = dst_y,
+        .src_x = src_x,
+        .src_y = src_y,
+        .full_w = full_w,
+        .full_h = full_h,
+        .subpix_x = subpix_x,
+        .subpix_y = subpix_y,
+        .vis_h = vis_h,
+        .clip_diff = clip_diff,
+        .tex_phase_bias_x = tex_phase_bias_x,
+        .tex_phase_bias_y = tex_phase_bias_y,
+        .cov_x0 = cov_x0,
+        .cov_x1 = cov_x1,
+        .cov_y0 = cov_y0,
+        .cov_y1 = cov_y1,
+        .denom_w = denom_w,
+        .denom_h = denom_h,
+        .base_color = base_color,
+        .fade_color = info->fade_color,
+        .base_alpha = base_alpha,
+        .fade = fade,
+        .style_opacity = style_opacity,
+        .use_mangetsu = use_mangetsu,
+        .use_mangetsu_alpha = use_mangetsu_alpha,
+        .use_tag_image = use_tag_image,
+        .draw_img_compat = draw_img_compat,
+    };
+    size_t task_count = 1;
+    if ((size_t) w * h >= RGBA_PARALLEL_MIN_PIXELS &&
+        render_priv->settings.threads > 1)
+        task_count = FFMIN((size_t) h, render_priv->settings.threads);
+    ass_parallel_for(render_priv, task_count, render_bitmap_rgba_rows, &job);
 
     return img;
 }

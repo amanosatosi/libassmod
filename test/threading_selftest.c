@@ -62,6 +62,22 @@ static const char rgba_limit_script[] =
     "Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\an7\\pos(0,0)\\p1\\1grd(0,&HFF0000&,&H0000FF&)}m 0 0 l 640 0 640 360 0 360\n"
     "Dialogue: 2,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\an7\\pos(0,0)\\p1\\1grd(0,&H00FF00&,&HFF00FF&)}m 0 0 l 640 0 640 360 0 360\n";
 
+static const char rgba_single_script[] =
+    "[Script Info]\n"
+    "ScriptType: v4.00+\n"
+    "PlayResX: 640\n"
+    "PlayResY: 360\n"
+    "\n"
+    "[V4+ Styles]\n"
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+    "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+    "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+    "Style: Default,sans-serif,20,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
+    "\n"
+    "[Events]\n"
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\an7\\pos(0,0)\\p1\\1grd(0,&H000000&,&HFFFFFF&)}m 0 0 l 640 0 640 360 0 360\n";
+
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
 {
     (void) level;
@@ -201,6 +217,31 @@ static bool verify_rgba_limit_fallback(ASS_Renderer *renderer,
     return false;
 }
 
+static bool verify_single_event_rgba(ASS_Renderer *renderer, ASS_Track *track)
+{
+    RenderSignature serial, threaded;
+    unsigned threads = ass_set_threads(renderer, 2);
+    if (threads < 2)
+        return true;
+
+    ass_set_threads(renderer, 1);
+    ass_set_cache_limits(renderer, 10000, 0);
+    if (!capture_rgba(renderer, track, &serial) || !serial.needs_rgba)
+        return false;
+
+    ass_set_threads(renderer, threads);
+    if (!capture_rgba(renderer, track, &threaded))
+        return false;
+    if (same_signature(&serial, &threaded))
+        return true;
+
+    fprintf(stderr, "single-event RGBA output differs with %u threads\n",
+            threads);
+    print_signature("single RGBA serial", &serial);
+    print_signature("single RGBA threaded", &threaded);
+    return false;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -214,10 +255,14 @@ int main(void)
     ASS_Track *limit_track = ass_read_memory(lib, (char *) rgba_limit_script,
                                              sizeof(rgba_limit_script) - 1,
                                              NULL);
-    if (!renderer || !track || !limit_track) {
+    ASS_Track *single_track = ass_read_memory(lib, (char *) rgba_single_script,
+                                              sizeof(rgba_single_script) - 1,
+                                              NULL);
+    if (!renderer || !track || !limit_track || !single_track) {
         ass_renderer_done(renderer);
         ass_free_track(track);
         ass_free_track(limit_track);
+        ass_free_track(single_track);
         ass_library_done(lib);
         return 1;
     }
@@ -231,6 +276,7 @@ int main(void)
         ass_renderer_done(renderer);
         ass_free_track(track);
         ass_free_track(limit_track);
+        ass_free_track(single_track);
         ass_library_done(lib);
         return 77;
     }
@@ -269,11 +315,14 @@ int main(void)
     }
 
     if (ok)
+        ok = verify_single_event_rgba(renderer, single_track);
+    if (ok)
         ok = verify_rgba_limit_fallback(renderer, limit_track);
 
     ass_renderer_done(renderer);
     ass_free_track(track);
     ass_free_track(limit_track);
+    ass_free_track(single_track);
     ass_library_done(lib);
     return ok ? 0 : 1;
 }

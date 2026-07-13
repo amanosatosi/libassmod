@@ -619,6 +619,8 @@ struct render_context {
 
 typedef struct render_context RenderContext;
 typedef struct render_worker RenderWorker;
+// A bounded, non-nesting task dispatched through the persistent render pool.
+typedef void (*RenderTaskFunc)(void *opaque, size_t index, size_t count);
 
 typedef struct {
     Cache *font_cache;
@@ -642,14 +644,18 @@ typedef struct {
     unsigned n_workers;
     uintptr_t generation;
     size_t job_count;
+    RenderTaskFunc task_func;
+    void *task_opaque;
     _Atomic AtomicInt next_job;
     _Atomic AtomicInt remaining_jobs;
     bool initialized;
     bool shutdown;
     bool rgba;
-    // Protect the shared RGBA frame budget and request a serial limit retry.
+    // Coordinate the shared RGBA frame budget and deterministic limit retry.
     bool rgba_parallel;
     bool rgba_retry;
+    // The main render context may temporarily dispatch independent subtasks.
+    bool allow_subtasks;
     bool warned_start_failure;
 #else
     char unused;
