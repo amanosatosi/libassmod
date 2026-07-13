@@ -19,6 +19,7 @@
 #include "config.h"
 #include "ass_compat.h"
 
+#include <assert.h>
 #include <stdlib.h>
 
 #include "ass_render.h"
@@ -60,24 +61,84 @@ static bool rgba_stride_size(ASS_Renderer *priv, int w, int h,
     return true;
 }
 
+static void rgba_output_lock(ASS_Renderer *priv)
+{
+#if ENABLE_THREADS
+    if (priv->thread_pool.initialized)
+        pthread_mutex_lock(&priv->thread_pool.mutex);
+#else
+    (void) priv;
+#endif
+}
+
+static void rgba_output_unlock(ASS_Renderer *priv)
+{
+#if ENABLE_THREADS
+    if (priv->thread_pool.initialized)
+        pthread_mutex_unlock(&priv->thread_pool.mutex);
+#else
+    (void) priv;
+#endif
+}
+
+static void rgba_release(ASS_Renderer *priv, size_t size)
+{
+    if (!priv)
+        return;
+
+    rgba_output_lock(priv);
+    if (priv->rgba_output_size >= size)
+        priv->rgba_output_size -= size;
+    else
+        priv->rgba_output_size = 0;
+    rgba_output_unlock(priv);
+}
+
+static void rgba_rollback_reserve(ASS_Renderer *priv, size_t replace_size,
+                                  size_t alloc_size)
+{
+    rgba_output_lock(priv);
+    if (priv->rgba_output_size >= alloc_size)
+        priv->rgba_output_size -= alloc_size;
+    else
+        priv->rgba_output_size = 0;
+    assert(replace_size <= SIZE_MAX - priv->rgba_output_size);
+    priv->rgba_output_size += replace_size;
+    rgba_output_unlock(priv);
+}
+
 static bool rgba_reserve(ASS_Renderer *priv, size_t replace_size,
                          size_t alloc_size)
 {
+    bool warn = false;
+    rgba_output_lock(priv);
     size_t used = priv->rgba_output_size;
     size_t kept = used > replace_size ? used - replace_size : 0;
     size_t max_size = priv->rgba_output_max_size;
 
     if (alloc_size > SIZE_MAX - kept ||
         (max_size && (kept > max_size || alloc_size > max_size - kept))) {
+#if ENABLE_THREADS
+        if (priv->thread_pool.initialized &&
+            priv->thread_pool.rgba_parallel) {
+            priv->thread_pool.rgba_retry = true;
+            rgba_output_unlock(priv);
+            return false;
+        }
+#endif
         if (!priv->rgba_output_limit_hit) {
+            priv->rgba_output_limit_hit = true;
+            warn = true;
+        }
+        rgba_output_unlock(priv);
+        if (warn)
             ass_msg(priv->library, MSGL_WARN,
                     "RGBA output memory limit exceeded; dropping RGBA tiles");
-            priv->rgba_output_limit_hit = true;
-        }
         return false;
     }
 
     priv->rgba_output_size = kept + alloc_size;
+    rgba_output_unlock(priv);
     return true;
 }
 
@@ -93,13 +154,12 @@ uint8_t *ass_rgba_alloc_buffer_stride(ASS_Renderer *priv, int stride, int h,
     if (!rgba_alloc_size(stride, h, align, &size))
         return NULL;
 
-    size_t old_used = priv->rgba_output_size;
     if (!rgba_reserve(priv, replace_size, size))
         return NULL;
 
     uint8_t *buffer = ass_aligned_alloc(align, size, false);
     if (!buffer) {
-        priv->rgba_output_size = old_used;
+        rgba_rollback_reserve(priv, replace_size, size);
         return NULL;
     }
 
@@ -117,14 +177,13 @@ uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
     if (!rgba_stride_size(priv, w, h, &rgba_stride, &size))
         return NULL;
 
-    size_t old_used = priv->rgba_output_size;
     if (!rgba_reserve(priv, replace_size, size))
         return NULL;
 
     unsigned align = 1U << priv->engine.align_order;
     uint8_t *buffer = ass_aligned_alloc(align, size, false);
     if (!buffer) {
-        priv->rgba_output_size = old_used;
+        rgba_rollback_reserve(priv, replace_size, size);
         return NULL;
     }
 
@@ -147,8 +206,7 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
 
     ASS_ImageRGBAPriv *img = malloc(sizeof(*img));
     if (!img) {
-        if (priv && priv->rgba_output_size >= alloc_size)
-            priv->rgba_output_size -= alloc_size;
+        rgba_release(priv, alloc_size);
         ass_aligned_free(buffer);
         return NULL;
     }
@@ -186,12 +244,7 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img)
         return;
 
     ASS_ImageRGBAPriv *rgba_priv = (ASS_ImageRGBAPriv *) img;
-    if (priv) {
-        if (priv->rgba_output_size >= rgba_priv->alloc_size)
-            priv->rgba_output_size -= rgba_priv->alloc_size;
-        else
-            priv->rgba_output_size = 0;
-    }
+    rgba_release(priv, rgba_priv->alloc_size);
     ass_aligned_free(rgba_priv->buffer);
     free(rgba_priv);
 }

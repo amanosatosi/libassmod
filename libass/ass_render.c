@@ -61,6 +61,7 @@ static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer);
 static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer);
 static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv);
+static ASS_Image *ass_free_image(ASS_Image *img);
 
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
@@ -232,34 +233,6 @@ struct render_worker {
     RenderContext state;
 };
 
-static void wait_rgba_turn(ASS_Renderer *renderer, size_t index)
-{
-    RenderThreadPool *pool = &renderer->thread_pool;
-    if (!pool->initialized)
-        return;
-
-    pthread_mutex_lock(&pool->mutex);
-    while (pool->serialize_rgba && pool->rgba_turn != index)
-        pthread_cond_wait(&pool->rgba_cond, &pool->mutex);
-    pthread_mutex_unlock(&pool->mutex);
-}
-
-static void finish_rgba_turn(ASS_Renderer *renderer, size_t index)
-{
-    RenderThreadPool *pool = &renderer->thread_pool;
-    if (!pool->initialized)
-        return;
-
-    pthread_mutex_lock(&pool->mutex);
-    if (pool->serialize_rgba) {
-        while (pool->rgba_turn != index)
-            pthread_cond_wait(&pool->rgba_cond, &pool->mutex);
-        pool->rgba_turn++;
-        pthread_cond_broadcast(&pool->rgba_cond);
-    }
-    pthread_mutex_unlock(&pool->mutex);
-}
-
 static void render_event_job(RenderContext *state, ASS_Renderer *renderer,
                              size_t index, bool rgba)
 {
@@ -268,8 +241,29 @@ static void render_event_job(RenderContext *state, ASS_Renderer *renderer,
     images->render_order = index;
     ASS_ImageRGBA **rgba_out = rgba ? &images->imgs_rgba : NULL;
     images->rendered = ass_render_event(state, event, images, rgba_out);
-    if (rgba)
-        finish_rgba_turn(renderer, index);
+}
+
+static void discard_rendered_events(ASS_Renderer *renderer, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        EventImages *images = &renderer->eimg[i];
+        ASS_Event *event = images->event;
+        ASS_Image *img = images->imgs;
+        while (img)
+            img = ass_free_image(img);
+
+        ASS_ImageRGBA *rgba = images->imgs_rgba;
+        while (rgba) {
+            ASS_ImageRGBA *next = rgba->next;
+            ass_rgba_image_free(renderer, rgba);
+            rgba = next;
+        }
+
+        free(images->gradient_debug);
+        memset(images, 0, sizeof(*images));
+        images->event = event;
+        images->render_order = i;
+    }
 }
 
 static bool claim_render_job(ASS_Renderer *renderer, size_t *index)
@@ -346,13 +340,6 @@ static void render_pool_init(ASS_Renderer *renderer)
         pthread_mutex_destroy(&pool->mutex);
         goto fail;
     }
-    if (pthread_cond_init(&pool->rgba_cond, NULL) != 0) {
-        pthread_cond_destroy(&pool->done_cond);
-        pthread_cond_destroy(&pool->work_cond);
-        pthread_mutex_destroy(&pool->mutex);
-        goto fail;
-    }
-
     atomic_init(&pool->next_job, 0);
     atomic_init(&pool->remaining_jobs, 0);
     pool->initialized = true;
@@ -400,7 +387,6 @@ static void render_pool_done(ASS_Renderer *renderer)
         return;
 
     render_pool_stop(renderer, true);
-    pthread_cond_destroy(&pool->rgba_cond);
     pthread_cond_destroy(&pool->done_cond);
     pthread_cond_destroy(&pool->work_cond);
     pthread_mutex_destroy(&pool->mutex);
@@ -487,8 +473,8 @@ void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
     pthread_mutex_lock(&pool->mutex);
     pool->job_count = count;
     pool->rgba = rgba;
-    pool->serialize_rgba = rgba;
-    pool->rgba_turn = 0;
+    pool->rgba_parallel = rgba;
+    pool->rgba_retry = false;
     atomic_store_explicit(&pool->next_job, 0, memory_order_release);
     atomic_store_explicit(&pool->remaining_jobs, (AtomicInt) count,
                           memory_order_release);
@@ -502,11 +488,25 @@ void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
     while (atomic_load_explicit(&pool->remaining_jobs,
                                 memory_order_acquire))
         pthread_cond_wait(&pool->done_cond, &pool->mutex);
-    pool->serialize_rgba = false;
+    bool rgba_retry = pool->rgba_retry;
+    pool->rgba_parallel = false;
     pool->rgba = false;
     pthread_mutex_unlock(&pool->mutex);
 
     ass_cache_client_set_concurrent(renderer->cache.cache_clients, false);
+
+    /*
+     * Concurrent RGBA allocation is deterministic while the whole frame fits
+     * its output budget.  If the speculative pass reached the limit, discard
+     * it and repeat in source order so the same tiles are retained as in the
+     * one-thread renderer, without allowing temporary memory overcommit.
+     */
+    if (rgba_retry) {
+        discard_rendered_events(renderer, count);
+        assert(!renderer->rgba_output_size);
+        for (size_t i = 0; i < count; i++)
+            render_event_job(&renderer->state, renderer, i, true);
+    }
 }
 #else
 static void render_pool_init(ASS_Renderer *renderer)
@@ -515,12 +515,6 @@ static void render_pool_init(ASS_Renderer *renderer)
 
 static void render_pool_done(ASS_Renderer *renderer)
 {
-}
-
-static void wait_rgba_turn(ASS_Renderer *renderer, size_t index)
-{
-    (void) renderer;
-    (void) index;
 }
 
 void ass_render_events(ASS_Renderer *renderer, size_t count, bool rgba)
@@ -8510,10 +8504,6 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         collect_mangetsu_gradient_debug(state);
     state->needs_rgba = text_needs_rgba(text_info);
     size_t render_order = event_images->render_order;
-
-    // RGBA allocations share a frame budget and must match serial event order.
-    if (rgba_out)
-        wait_rgba_turn(render_priv, render_order);
 
     memset(event_images, 0, sizeof(*event_images));
     event_images->gradient_debug = gradient_debug;

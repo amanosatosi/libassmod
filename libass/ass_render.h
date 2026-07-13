@@ -638,18 +638,18 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t work_cond;
     pthread_cond_t done_cond;
-    pthread_cond_t rgba_cond;
     RenderWorker **workers;
     unsigned n_workers;
     uintptr_t generation;
     size_t job_count;
-    size_t rgba_turn;
     _Atomic AtomicInt next_job;
     _Atomic AtomicInt remaining_jobs;
     bool initialized;
     bool shutdown;
     bool rgba;
-    bool serialize_rgba;
+    // Protect the shared RGBA frame budget and request a serial limit retry.
+    bool rgba_parallel;
+    bool rgba_retry;
     bool warned_start_failure;
 #else
     char unused;
