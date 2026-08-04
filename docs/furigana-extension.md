@@ -43,8 +43,10 @@ y moves furigana upward; negative y moves it downward. The default is
 
 `\furistyle<N>` controls horizontal group layout. The default is
 `\furistyle0`. `\furistyle0` and `\furistyle1` both use Aegisub-style group
-spacing: the group advance is the larger of the base width and furi width, and
-both base and furi are centered in that group. `\furistyle2` uses manga-style
+spacing: the group advance is the larger of the shaped base width and furi
+width, and both base and furi are centered in that group. After shaping,
+overlapping adjacent ruby groups add space before the right-hand base group,
+then use normal line alignment. `\furistyle2` uses manga-style
 X-fit: furi wider than its base is horizontally shrunk to the base width, while
 shorter furi keeps its normal width. The base advance is kept unchanged.
 
@@ -65,4 +67,5 @@ After visual lines are resolved, furigana overhang above or below its base text
 is included in that line's vertical metrics. Multiple furigana groups on the
 same line use the maximum above and below extent, not the sum. Furigana may
 overhang its base text horizontally and is included in rendered event bounds,
-but it does not increase the base advance width.
+while Aegisub-style groups can increase the line advance to fit their shaped
+ruby or to prevent adjacent ruby from overlapping.

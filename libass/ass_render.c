@@ -5465,6 +5465,128 @@ static void position_furi_groups(RenderContext *state)
         position_furi_group(state, &text_info->furi_groups[i]);
 }
 
+typedef struct {
+    int group;
+    int line;
+    double left;
+    double right;
+} FuriPlacement;
+
+static int compare_furi_placement(const void *a, const void *b)
+{
+    const FuriPlacement *pa = a;
+    const FuriPlacement *pb = b;
+    if (pa->line != pb->line)
+        return pa->line < pb->line ? -1 : 1;
+    if (pa->left != pb->left)
+        return pa->left < pb->left ? -1 : 1;
+    return pa->group - pb->group;
+}
+
+static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
+                                       double *right)
+{
+    bool have = false;
+    *left = DBL_MAX;
+    *right = -DBL_MAX;
+
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        if (root->skip)
+            continue;
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double x = d6_to_double(info->pos.x);
+            *left = FFMIN(*left, x + d6_to_double(info->bbox.x_min));
+            *right = FFMAX(*right, x + d6_to_double(info->bbox.x_max));
+            have = true;
+        }
+    }
+
+    return have && *left < *right;
+}
+
+static bool add_furi_spacing_before_group(RenderContext *state,
+                                          FuriGroup *group, int line,
+                                          int32_t spacing)
+{
+    TextInfo *text_info = &state->text_info;
+    for (int i = group->base_start - 1; i >= 0; i--) {
+        GlyphInfo *root = &text_info->glyphs[i];
+        if (root->skip || root->line != line)
+            continue;
+        root->cluster_advance.x += spacing;
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Aegisub-style groups reserve their shaped advance individually. Font
+ * bearings and outlines can still make adjacent ruby ink overlap, though.
+ * Add space before the right-hand base group and redo the ordinary line
+ * layout, so existing font spacing is preserved and line alignment remains
+ * correct. \\furistyle2 deliberately opts into compact manga-style layout.
+ */
+static void resolve_furi_group_collisions(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    int count = text_info->n_furi_groups;
+    if (count < 2)
+        return;
+
+    FuriPlacement *placements = calloc(count, sizeof(*placements));
+    if (!placements)
+        return;
+
+    int attempts = count * count;
+    while (attempts-- > 0) {
+        position_furi_groups(state);
+
+        int n = 0;
+        for (int i = 0; i < count; i++) {
+            FuriGroup *group = &text_info->furi_groups[i];
+            double base_left, base_right, base_top;
+            int line;
+            if (!furi_base_metrics(state, group, &base_left, &base_right,
+                                   &base_top, &line) ||
+                    !furi_group_visual_x_bounds(group, &placements[n].left,
+                                                 &placements[n].right))
+                continue;
+            placements[n].group = i;
+            placements[n].line = line;
+            n++;
+        }
+
+        qsort(placements, n, sizeof(*placements), compare_furi_placement);
+        bool resolved = false;
+        for (int i = 1; i < n; i++) {
+            FuriPlacement *left = &placements[i - 1];
+            FuriPlacement *right = &placements[i];
+            if (left->line != right->line || left->right <= right->left)
+                continue;
+
+            FuriGroup *group = &text_info->furi_groups[right->group];
+            if (group->style == 2)
+                continue;
+            int32_t spacing = double_to_d6(left->right - right->left);
+            if (spacing <= 0)
+                spacing = 1;
+            if (!add_furi_spacing_before_group(state, group, right->line,
+                                               spacing))
+                continue;
+
+            reorder_text(state);
+            resolved = true;
+            break;
+        }
+        if (!resolved)
+            break;
+    }
+
+    position_furi_groups(state);
+    free(placements);
+}
+
 static void update_glyph_jitter_offsets(RenderContext *state)
 {
 #if DEBUG_LEVEL >= 2
@@ -8001,6 +8123,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     ass_process_karaoke_effects(state);
 
     reorder_text(state);
+    if (text_info->n_furi_groups)
+        resolve_furi_group_collisions(state);
 
     align_lines(state, max_text_width);
     apply_column_layout(state);
