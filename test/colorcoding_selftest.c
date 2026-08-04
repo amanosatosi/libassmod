@@ -1005,6 +1005,7 @@ int main(void)
             int change = 0;
             ASS_RenderResult result =
                 ass_render_frame_auto(renderer, track, 500, &change);
+            (void) change;
             if (result.use_rgba || !result.imgs) {
                 fprintf(stderr,
                         "automatic renderer did not use the legacy fallback for nested \\t\n");
@@ -1044,6 +1045,30 @@ int main(void)
                !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
         fprintf(stderr, "actor \\vc did not match explicit \\1vc\n");
         ok = false;
+    }
+
+    {
+        const char *metadata =
+            "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,"
+            "mangetsu-colorcoding,{\\vc(&H0000FF&,&H00FF00&,"
+            "&HFF0000&,&HFFFFFF&)}\n";
+        ASS_Track *track = read_case_track(lib, metadata, "VectorAuto");
+        if (!track) {
+            fprintf(stderr, "could not create actor vector-gradient track\n");
+            ok = false;
+        } else {
+            int change = 0;
+            ASS_RenderResult result =
+                ass_render_frame_auto(renderer, track, 0, &change);
+            (void) change;
+            if (!result.use_rgba || !result.imgs_rgba) {
+                fprintf(stderr,
+                        "automatic renderer did not select RGBA for actor \\vc\n");
+                ok = false;
+            }
+            ass_render_result_free(&result);
+            ass_free_track(track);
+        }
     }
 
     static const char *const vc_tags[] = { "1vc", "2vc", "3vc", "4vc" };
@@ -1111,6 +1136,36 @@ int main(void)
                    !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
             fprintf(stderr, "actor \\%s did not match its explicit tag\n",
                     va_tags[i]);
+            ok = false;
+        }
+    }
+
+    for (int layer = 1; layer <= ASS_BORDER_LAYERS_MAX; layer++) {
+        char metadata[768];
+        char dialogue[768];
+        char actor_dialogue[64];
+        snprintf(metadata, sizeof(metadata),
+                 "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,"
+                 "mangetsu-colorcoding,{\\%dbs6\\%dbvc(&H0000FF&,"
+                 "&H00FF00&,&HFF0000&,&HFFFFFF&)\\%dbva(&H00&,&H40&,"
+                 "&H80&,&HC0&)}\n",
+                 layer, layer, layer);
+        snprintf(dialogue, sizeof(dialogue),
+                 "{\\%dbs6\\%dbvc(&H0000FF&,&H00FF00&,&HFF0000&,"
+                 "&HFFFFFF&)\\%dbva(&H00&,&H40&,&H80&,&HC0&)}"
+                 "BorderVector%d",
+                 layer, layer, layer, layer);
+        snprintf(actor_dialogue, sizeof(actor_dialogue),
+                 "BorderVector%d", layer);
+
+        ok &= render_rgba_case(lib, renderer, metadata,
+                               actor_dialogue, &rgba_actor);
+        ok &= render_rgba_case(lib, renderer, "", dialogue, &rgba_explicit);
+        if (ok && (!rgba_actor.needs_rgba ||
+                   !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+            fprintf(stderr,
+                    "actor vector border gradients did not match layer %d\n",
+                    layer);
             ok = false;
         }
     }
