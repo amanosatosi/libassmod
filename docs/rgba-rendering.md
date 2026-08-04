@@ -4,8 +4,8 @@ title: RGBA Rendering Guide
 
 # RGBA Rendering Guide
 
-Vector gradients (`\1vc`..`\4vc` for four corner colors,
-`\1va`..`\4va` for corner alpha) and Mangetsu true gradients
+Vector gradients (`\vc` / `\1vc`..`\4vc` for four corner colors,
+`\va` / `\1va`..`\4va` for corner alpha) and Mangetsu true gradients
 (`\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`,
 `\1bga`..`\10bga`) and fixed-frame primary gradients (`\pgrd` / `\1pgrd`)
 rely on per-pixel color or alpha. They cannot be

@@ -262,16 +262,16 @@ static bool render_events(ASS_Library *lib, ASS_Renderer *renderer,
     return render_events_at(lib, renderer, events, 0, sig);
 }
 
-static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
-                             const char *metadata, const char *dialogue,
-                             RgbaSig *sig)
+static bool render_rgba_case_at(ASS_Library *lib, ASS_Renderer *renderer,
+                                const char *metadata, const char *dialogue,
+                                long long now, RgbaSig *sig)
 {
     ASS_Track *track = read_case_track(lib, metadata, dialogue);
     if (!track)
         return false;
 
     int change = 0;
-    ASS_ImageRGBA *img = ass_render_frame_rgba(renderer, track, 0, &change);
+    ASS_ImageRGBA *img = ass_render_frame_rgba(renderer, track, now, &change);
     (void) change;
 
     memset(sig, 0, sizeof(*sig));
@@ -300,6 +300,13 @@ static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
     ass_free_images_rgba(img);
     ass_free_track(track);
     return sig->count > 0 && sig->alpha_coverage > 0;
+}
+
+static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
+                             const char *metadata, const char *dialogue,
+                             RgbaSig *sig)
+{
+    return render_rgba_case_at(lib, renderer, metadata, dialogue, 0, sig);
 }
 
 static bool render_rgba_events_color_stats(ASS_Library *lib,
@@ -971,6 +978,43 @@ int main(void)
         "{\\1c&H0000FF&}Forbidden",
         "forbidden colorcoding tag was not ignored");
 
+    {
+        const char *nested_transition =
+            "{\\t(0,1000,\\t(0,500,\\1vc(&H0000FF&,&H00FF00&,"
+            "&HFF0000&,&HFFFFFF&))\\bord8)}NestedTransition";
+        const char *outer_transition =
+            "{\\t(0,1000,\\bord8)}NestedTransition";
+        RgbaSig nested_rgba, outer_rgba;
+        bool rendered =
+            render_rgba_case_at(lib, renderer, "", nested_transition,
+                                500, &nested_rgba) &&
+            render_rgba_case_at(lib, renderer, "", outer_transition,
+                                500, &outer_rgba);
+        if (!rendered || nested_rgba.needs_rgba ||
+                !same_rgba_sig(&nested_rgba, &outer_rgba)) {
+            fprintf(stderr,
+                    "non-terminal nested \\t did not fall back to the enclosing transform\n");
+            ok = false;
+        }
+
+        ASS_Track *track = read_case_track(lib, "", nested_transition);
+        if (!track) {
+            fprintf(stderr, "could not create nested transition fallback track\n");
+            ok = false;
+        } else {
+            int change = 0;
+            ASS_RenderResult result =
+                ass_render_frame_auto(renderer, track, 500, &change);
+            if (result.use_rgba || !result.imgs) {
+                fprintf(stderr,
+                        "automatic renderer did not use the legacy fallback for nested \\t\n");
+                ok = false;
+            }
+            ass_render_result_free(&result);
+            ass_free_track(track);
+        }
+    }
+
     RgbaSig rgba_actor, rgba_explicit;
     ok &= render_rgba_case(
         lib, renderer,
@@ -986,6 +1030,89 @@ int main(void)
                !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
         fprintf(stderr, "actor border gradient did not match explicit gradient\n");
         ok = false;
+    }
+
+    ok &= render_rgba_case(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\vc(&H0000FF&,&H00FF00&,&HFF0000&,&HFFFFFF&)}\n",
+        "VectorAlias", &rgba_actor);
+    ok &= render_rgba_case(
+        lib, renderer, "",
+        "{\\1vc(&H0000FF&,&H00FF00&,&HFF0000&,&HFFFFFF&)}VectorAlias",
+        &rgba_explicit);
+    if (ok && (!rgba_actor.needs_rgba ||
+               !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+        fprintf(stderr, "actor \\vc did not match explicit \\1vc\n");
+        ok = false;
+    }
+
+    static const char *const vc_tags[] = { "1vc", "2vc", "3vc", "4vc" };
+    for (int i = 0; i < 4; i++) {
+        char metadata[512];
+        char dialogue[512];
+        snprintf(metadata, sizeof(metadata),
+                 "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,"
+                 "mangetsu-colorcoding,{\\%s(&H0000FF&,&H00FF00&,"
+                 "&HFF0000&,&HFFFFFF&)}\n",
+                 vc_tags[i]);
+        snprintf(dialogue, sizeof(dialogue),
+                 "{\\shad4\\kf100\\%s(&H0000FF&,&H00FF00&,"
+                 "&HFF0000&,&HFFFFFF&)}Vector%d",
+                 vc_tags[i], i + 1);
+        char actor_dialogue[64];
+        snprintf(actor_dialogue, sizeof(actor_dialogue),
+                 "{\\shad4\\kf100}Vector%d", i + 1);
+
+        ok &= render_rgba_case(lib, renderer, metadata,
+                               actor_dialogue, &rgba_actor);
+        ok &= render_rgba_case(lib, renderer, "", dialogue, &rgba_explicit);
+        if (ok && (!rgba_actor.needs_rgba ||
+                   !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+            fprintf(stderr, "actor \\%s did not match its explicit tag\n",
+                    vc_tags[i]);
+            ok = false;
+        }
+    }
+
+    ok &= render_rgba_case(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\va(&H00&,&H40&,&H80&,&HC0&)}\n",
+        "VectorAlphaAlias", &rgba_actor);
+    ok &= render_rgba_case(
+        lib, renderer, "",
+        "{\\1va(&H00&,&H40&,&H80&,&HC0&)}VectorAlphaAlias",
+        &rgba_explicit);
+    if (ok && (!rgba_actor.needs_rgba ||
+               !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+        fprintf(stderr, "actor \\va did not match explicit \\1va\n");
+        ok = false;
+    }
+
+    static const char *const va_tags[] = { "1va", "2va", "3va", "4va" };
+    for (int i = 0; i < 4; i++) {
+        char metadata[512];
+        char dialogue[512];
+        snprintf(metadata, sizeof(metadata),
+                 "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,"
+                 "mangetsu-colorcoding,{\\%s(&H00&,&H40&,&H80&,&HC0&)}\n",
+                 va_tags[i]);
+        snprintf(dialogue, sizeof(dialogue),
+                 "{\\shad4\\kf100\\%s(&H00&,&H40&,&H80&,&HC0&)}"
+                 "VectorAlpha%d",
+                 va_tags[i], i + 1);
+        char actor_dialogue[64];
+        snprintf(actor_dialogue, sizeof(actor_dialogue),
+                 "{\\shad4\\kf100}VectorAlpha%d", i + 1);
+
+        ok &= render_rgba_case(lib, renderer, metadata,
+                               actor_dialogue, &rgba_actor);
+        ok &= render_rgba_case(lib, renderer, "", dialogue, &rgba_explicit);
+        if (ok && (!rgba_actor.needs_rgba ||
+                   !same_rgba_sig(&rgba_actor, &rgba_explicit))) {
+            fprintf(stderr, "actor \\%s did not match its explicit tag\n",
+                    va_tags[i]);
+            ok = false;
+        }
     }
 
     MangetsuGradientDebugState mangetsu_debug;

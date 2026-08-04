@@ -76,6 +76,8 @@ These appearance tags are supported in colorcoding metadata:
 \alpha \1a \2a \3a \4a \5a
 \1grd(...)..\5grd(...)
 \1gra(...)..\5gra(...)
+\vc(...) \1vc(...)..\4vc(...)
+\va(...) \1va(...)..\4va(...)
 \1bs..\10bs \1bsx..\10bsx \1bsy..\10bsy
 \1bc..\10bc \1ba..\10ba
 \1bgrd(..)..\10bgrd(..)
@@ -83,6 +85,11 @@ These appearance tags are supported in colorcoding metadata:
 \1bvc(..)..\10bvc(..)
 \1bva(..)..\10bva(..)
 ```
+
+`\vc(...)` is the unnumbered alias for the primary-fill `\1vc(...)` vector
+color gradient. Likewise, `\va(...)` aliases the primary-fill `\1va(...)`
+vector alpha gradient. The numbered forms target primary, secondary, outline,
+and shadow/box paint layers 1 through 4 respectively.
 
 The `\1bs` through `\10bs` tags above are native border-layer size tags. They
 are distinct from the line-level `\bs<N>` BorderStyle override.

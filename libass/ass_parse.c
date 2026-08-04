@@ -956,6 +956,8 @@ static bool colorcode_tag_allowed(char *p, char *name_end)
         "1c", "2c", "3c", "4c", "5c", "c",
         "1grd", "2grd", "3grd", "4grd", "5grd",
         "1gra", "2gra", "3gra", "4gra", "5gra",
+        "vc", "1vc", "2vc", "3vc", "4vc",
+        "va", "1va", "2va", "3va", "4va",
         "pgrd", "1pgrd",
         "b", "i", "u", "s",
     };
@@ -3066,6 +3068,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             int cnt = nargs - 1;
             int32_t t1, t2, t, delta_t;
             double k;
+            if (cnt < 0 || cnt > 3)
+                continue;
+            // A non-terminal nested transform cannot recurse without
+            // discarding the outer transform's interpolation factor. Upstream
+            // only supports a terminal nested transform through tail-call
+            // elimination, so treat other nested transforms as unsupported
+            // tags and continue applying the enclosing transform.
+            if (nested && args[cnt].end < end)
+                continue;
             // VSFilter compatibility (because we can): parse the
             // timestamps differently depending on argument count.
             if (cnt == 3) {
@@ -3100,15 +3111,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             if (nested)
                 pwr = k;
-            if (cnt < 0 || cnt > 3)
-                continue;
             // If there's no backslash in the arguments, there are no
             // override tags, so it's pointless to try to parse them.
             if (!has_backslash_arg)
                 continue;
             p = args[cnt].start;
             if (args[cnt].end < end) {
-                assert(!nested);
                 p = ass_parse_tags(state, p, args[cnt].end, k, true);
             } else {
                 assert(q == end);
@@ -3138,7 +3146,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                         mangetsu_fill_layer, name_end, q,
                                         args, nargs, mangetsu_fill_arg, pwr,
                                         nested);
-        } else if (tag("1vc")) {
+        } else if (tag("vc") || tag("1vc")) {
             if (nargs) {
                 uint32_t vals[4];
                 int cnt = FFMIN(nargs, 4);
@@ -3208,7 +3216,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     disable_mangetsu_gradient_layer(state, 3);
                 ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
             }
-        } else if (tag("1va")) {
+        } else if (tag("va") || tag("1va")) {
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
