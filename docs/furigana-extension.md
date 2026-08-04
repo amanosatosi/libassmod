@@ -44,9 +44,12 @@ y moves furigana upward; negative y moves it downward. The default is
 `\furistyle<N>` controls horizontal group layout. The default is
 `\furistyle0`. `\furistyle0` and `\furistyle1` both use Aegisub-style group
 spacing: the group advance is the larger of the shaped base width and furi
-width, and both base and furi are centered in that group. After shaping,
-overlapping adjacent ruby groups add space before the right-hand base group,
-then use normal line alignment. `\furistyle2` uses manga-style
+width (including visible furi overhang), and both base and furi are centered
+by their rendered glyph bounds inside that reservation. This retains the
+font's shaped advances, side bearings, and inter-glyph spacing while keeping a
+short base such as `一` visually under the middle of a longer ruby. After
+shaping, overlapping adjacent ruby groups add space before the right-hand base
+group, then use normal line alignment. `\furistyle2` uses manga-style
 X-fit: furi wider than its base is horizontally shrunk to the base width, while
 shorter furi keeps its normal width. The base advance is kept unchanged.
 

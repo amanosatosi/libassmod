@@ -5290,6 +5290,20 @@ static int32_t furi_text_advance_width(FuriGroup *group)
     return clamp_i64_to_i32(FFMAX(0, width));
 }
 
+static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
+                                       double *right);
+
+static int32_t furi_text_reserved_width(FuriGroup *group)
+{
+    int32_t advance_width = furi_text_advance_width(group);
+    double left, right;
+    if (!furi_group_visual_x_bounds(group, &left, &right))
+        return advance_width;
+
+    int32_t visual_width = double_to_d6(right - left);
+    return FFMAX(advance_width, visual_width);
+}
+
 static void scale_furi_group_x(FuriGroup *group, double scale)
 {
     for (int i = 0; i < group->length; i++) {
@@ -5328,7 +5342,9 @@ static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
 {
     TextInfo *text_info = &state->text_info;
     int32_t base_width = furi_base_advance_width(state, group);
-    int32_t furi_width = furi_text_advance_width(group);
+    // Preserve the shaped advance (and its font-provided spacing), while
+    // also reserving enough room for ink that overhangs its advance box.
+    int32_t furi_width = furi_text_reserved_width(group);
     group->layout_width = base_width;
     group->base_shift = 0;
 
@@ -5429,15 +5445,68 @@ static bool furi_text_metrics(FuriGroup *group, double *left,
     return have && *left < *right;
 }
 
+/*
+ * Advances define the space a run occupies, but are not necessarily centred
+ * on its visible ink.  This is particularly noticeable with narrow CJK
+ * glyphs whose font bearings can be asymmetric.  Keep the advance-based
+ * reservation above, then use these bounds for the final visual alignment.
+ */
+static bool furi_base_visual_x_bounds(RenderContext *state, FuriGroup *group,
+                                      double *left, double *right)
+{
+    TextInfo *text_info = &state->text_info;
+    bool have = false;
+    *left = DBL_MAX;
+    *right = -DBL_MAX;
+
+    for (int i = 0; i < group->base_len; i++) {
+        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
+        if (root->skip)
+            continue;
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double x = d6_to_double(info->pos.x);
+            *left = FFMIN(*left, x + d6_to_double(info->bbox.x_min));
+            *right = FFMAX(*right, x + d6_to_double(info->bbox.x_max));
+            have = true;
+        }
+    }
+
+    return have && *left < *right;
+}
+
+static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
+                                       double *right)
+{
+    bool have = false;
+    *left = DBL_MAX;
+    *right = -DBL_MAX;
+
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        if (root->skip)
+            continue;
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double x = d6_to_double(info->pos.x);
+            *left = FFMIN(*left, x + d6_to_double(info->bbox.x_min));
+            *right = FFMAX(*right, x + d6_to_double(info->bbox.x_max));
+            have = true;
+        }
+    }
+
+    return have && *left < *right;
+}
+
 static void position_furi_group(RenderContext *state, FuriGroup *group)
 {
-    double base_left, base_right, base_top;
-    double furi_left, furi_right, furi_bottom;
+    double base_left, base_right, base_top, furi_left, furi_right, furi_bottom;
     int line;
     if (!furi_base_metrics(state, group, &base_left, &base_right,
                            &base_top, &line))
         return;
-    if (!furi_text_metrics(group, &furi_left, &furi_right, &furi_bottom))
+    if (!furi_text_metrics(group, &furi_left, &furi_right, &furi_bottom) ||
+            !furi_base_visual_x_bounds(state, group, &base_left,
+                                       &base_right) ||
+            !furi_group_visual_x_bounds(group, &furi_left, &furi_right))
         return;
 
     double base_width = base_right - base_left;
@@ -5481,28 +5550,6 @@ static int compare_furi_placement(const void *a, const void *b)
     if (pa->left != pb->left)
         return pa->left < pb->left ? -1 : 1;
     return pa->group - pb->group;
-}
-
-static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
-                                       double *right)
-{
-    bool have = false;
-    *left = DBL_MAX;
-    *right = -DBL_MAX;
-
-    for (int i = 0; i < group->length; i++) {
-        GlyphInfo *root = &group->glyphs[i];
-        if (root->skip)
-            continue;
-        for (GlyphInfo *info = root; info; info = info->next) {
-            double x = d6_to_double(info->pos.x);
-            *left = FFMIN(*left, x + d6_to_double(info->bbox.x_min));
-            *right = FFMAX(*right, x + d6_to_double(info->bbox.x_max));
-            have = true;
-        }
-    }
-
-    return have && *left < *right;
 }
 
 static bool add_furi_spacing_before_group(RenderContext *state,
@@ -5624,6 +5671,9 @@ static bool prepare_furi_groups(RenderContext *state)
             return false;
 
         retrieve_glyphs_from_list(state, group->glyphs, group->length);
+        // Position once before measuring visual overhangs for reservation.
+        if (!reorder_furi_group(state, group))
+            return false;
         apply_furi_group_layout(state, group);
         if (!reorder_furi_group(state, group))
             return false;
