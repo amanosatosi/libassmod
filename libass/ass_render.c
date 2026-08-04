@@ -5406,7 +5406,15 @@ static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
             *line = root->line;
 
         for (GlyphInfo *info = root; info; info = info->next) {
-            double y0 = d6_to_double(info->pos.y + info->bbox.y_min);
+            /*
+             * Ruby belongs above the base run's typographic line box, not
+             * above the topmost ink of an individual glyph.  A glyph such
+             * as a horizontal bar can have its ink near the middle of the
+             * em box, whereas a Latin ascender or a CJK ideograph reaches
+             * much higher.  Using the font ascent keeps adjacent groups at
+             * one ruby height for every writing system.
+             */
+            double y0 = d6_to_double(info->pos.y - info->asc);
             *top = FFMIN(*top, y0);
         }
         have = true;

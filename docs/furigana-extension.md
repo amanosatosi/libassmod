@@ -47,7 +47,7 @@ spacing: the group advance is the larger of the shaped base width and furi
 width (including visible furi overhang), and both base and furi are centered
 by their rendered glyph bounds inside that reservation. This retains the
 font's shaped advances, side bearings, and inter-glyph spacing while keeping a
-short base such as `一` visually under the middle of a longer ruby. After
+short base glyph visually under the middle of a longer ruby. After
 shaping, overlapping adjacent ruby groups add space before the right-hand base
 group, then use normal line alignment. `\furistyle2` uses manga-style
 X-fit: furi wider than its base is horizontally shrunk to the base width, while
@@ -66,6 +66,9 @@ shorter furi keeps its normal width. The base advance is kept unchanged.
 
 Furigana is shaped and rendered as sidecar glyphs tied to the base glyph range.
 The base text remains the primary text for horizontal line layout and wrapping.
+Ruby is placed against the base run's typographic ascent rather than the
+visible top of a particular glyph, so short, descender-only, and tall glyphs
+all keep the same ruby height.
 After visual lines are resolved, furigana overhang above or below its base text
 is included in that line's vertical metrics. Multiple furigana groups on the
 same line use the maximum above and below extent, not the sum. Furigana may
