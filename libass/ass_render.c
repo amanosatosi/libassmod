@@ -73,6 +73,7 @@ static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 #define SUBPIXEL_ORDER 3  // ~ log2(64 / POSITION_PRECISION)
 #define BLUR_PRECISION (1.0 / 256)  // blur error as fraction of full input range
 #define NBSP 0xa0   // unicode non-breaking space character
+#define FURI_AUTO_GAP_FACTOR 0.04
 
 // Temporary scale for debugging / visual calibration of rnd* magnitude.
 #ifndef ASS_RND_SCALE
@@ -2552,6 +2553,8 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->furi_style = 0;
     state->furi_offset_x = 0.0;
     state->furi_offset_y = 0.0;
+    state->furi_auto_placement = true;
+    state->furi_position_explicit = false;
     state->be = 0;
     state->blur_x = style->Blur;
     state->blur_y = style->Blur;
@@ -4850,6 +4853,11 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
     group->hspacing = state->furi_hspacing;
     group->offset_x = state->furi_offset_x;
     group->offset_y = state->furi_offset_y;
+    // Match the base glyph's screen-scaled \fs before hinting normalization.
+    group->auto_gap = fabs(state->font_size * state->screen_scale_y) *
+        FURI_AUTO_GAP_FACTOR;
+    group->auto_placement = state->furi_auto_placement;
+    group->position_explicit = state->furi_position_explicit;
 
     if (!append_text_segment(state, candidate->base_start, candidate->base_end,
                              &text_info->glyphs, &text_info->event_text,
@@ -5522,7 +5530,11 @@ static void position_furi_group(RenderContext *state, FuriGroup *group)
     double target_left = base_left + (base_width - furi_width) / 2.0;
 
     double dx = target_left - furi_left + x2scr_offset(state, group->offset_x);
-    double dy = base_top - furi_bottom - y2scr_offset(state, group->offset_y);
+    double gap = 0.0;
+    if (!group->position_explicit && group->auto_placement)
+        gap = group->auto_gap;
+    double dy = base_top - furi_bottom - gap -
+        y2scr_offset(state, group->offset_y);
     int32_t shift_x = double_to_d6(dx);
     int32_t shift_y = double_to_d6(dy);
 

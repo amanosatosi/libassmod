@@ -2634,11 +2634,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nargs) {
                 state->furi_offset_x = 0.0;
                 state->furi_offset_y = 0.0;
+                state->furi_position_explicit = false;
             } else if (nargs == 2) {
                 state->furi_offset_x =
                     state->furi_offset_x * (1 - pwr) + argtod(args[0]) * pwr;
                 state->furi_offset_y =
                     state->furi_offset_y * (1 - pwr) + argtod(args[1]) * pwr;
+                state->furi_position_explicit = true;
             }
         } else if (tag("furifsp")) {
             double val = nargs ? argtod(*args) : 0.0;
@@ -2662,6 +2664,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             double y = state->furi_scale_y * (1 - pwr) + val * pwr;
             state->furi_scale_x = x < 0 ? 0 : x;
             state->furi_scale_y = y < 0 ? 0 : y;
+        } else if (tag("furiap")) {
+            int32_t val = nargs ? argtoi32(*args) : 1;
+            state->furi_auto_placement = val != 0;
         } else if (tag("furi")) {
             int32_t val = nargs ? argtoi32(*args) : 1;
             state->furi_enabled = val != 0;

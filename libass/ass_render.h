@@ -345,6 +345,9 @@ typedef struct {
     double hspacing;
     double offset_x;
     double offset_y;
+    double auto_gap;
+    bool auto_placement;
+    bool position_explicit;
 } FuriGroup;
 
 typedef struct {
@@ -537,6 +540,8 @@ struct render_context {
     int furi_style;
     double furi_offset_x;
     double furi_offset_y;
+    bool furi_auto_placement;
+    bool furi_position_explicit;
     double border_x;            // outline width
     double border_y;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];

@@ -24,6 +24,8 @@ group instead.
 \furisy<N>
 \furifsp<N>
 \furipos(x,y)
+\furiap1
+\furiap0
 \furistyle<N>
 ```
 
@@ -37,9 +39,19 @@ axes independently. The defaults are `\furis50`, `\furisx50`, and `\furisy50`.
 `\furifsp<N>` mirrors ASS `\fsp`, but applies only to furigana text. The default
 is 0.
 
-`\furipos(<x>,<y>)` controls furigana offset from centered placement. Positive
-y moves furigana upward; negative y moves it downward. The default is
-`\furipos(0,0)`.
+Automatic vertical placement is enabled by default. `\furiap1` enables it and
+`\furiap0` disables it. Automatic placement adds a small gap proportional to
+the base text size (currently 4% of the base font size) between the base run's
+typographic ascent and the visible bottom of its furigana. Disabling it uses
+the previous zero-added-gap placement.
+
+`\furipos(<x>,<y>)` selects manual placement and controls the furigana offset
+from centered placement. Positive y moves furigana upward; negative y moves it
+downward. An explicit `\furipos` has higher priority than `\furiap`, so the
+automatic gap is not added when `\furipos` applies. This priority is independent
+of tag order: `\furiap1\furipos(0,3)` and `\furipos(0,3)\furiap1` produce the
+same manual placement. A parameterless `\furipos` clears the manual offset and
+returns subsequent groups to the active automatic-placement setting.
 
 `\furistyle<N>` controls horizontal group layout. The default is
 `\furistyle0`. `\furistyle0` and `\furistyle1` both use Aegisub-style group
@@ -68,7 +80,9 @@ Furigana is shaped and rendered as sidecar glyphs tied to the base glyph range.
 The base text remains the primary text for horizontal line layout and wrapping.
 Ruby is placed against the base run's typographic ascent rather than the
 visible top of a particular glyph, so short, descender-only, and tall glyphs
-all keep the same ruby height.
+all keep the same ruby height. The automatic gap adds separation above that
+typographic-ascent attachment point; it does not replace the font's own
+ascent-to-visible-glyph whitespace.
 After visual lines are resolved, furigana overhang above or below its base text
 is included in that line's vertical metrics. Multiple furigana groups on the
 same line use the maximum above and below extent, not the sum. Furigana may

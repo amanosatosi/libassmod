@@ -279,6 +279,45 @@ static int expect_same_height(const char *a, const char *b)
     return ok ? 0 : 1;
 }
 
+static int expect_partition_tops_aligned(const char *text, int parts)
+{
+    Mask mask = {0};
+    int err = render_mask(text, &mask);
+    if (err) {
+        free_mask(&mask);
+        return 1;
+    }
+
+    bool ok = !mask.empty && parts > 1;
+    int expected_top = -1;
+    for (int part = 0; ok && part < parts; part++) {
+        int x0 = mask.x0 + (mask.x1 - mask.x0) * part / parts;
+        int x1 = mask.x0 + (mask.x1 - mask.x0) * (part + 1) / parts;
+        int top = FRAME_H;
+        for (int y = 0; y < FRAME_H; y++) {
+            for (int x = x0; x < x1; x++) {
+                if (mask.alpha[y * FRAME_W + x]) {
+                    top = y;
+                    break;
+                }
+            }
+            if (top != FRAME_H)
+                break;
+        }
+        if (top == FRAME_H)
+            ok = false;
+        else if (expected_top < 0)
+            expected_top = top;
+        else if (abs(top - expected_top) > 1)
+            ok = false;
+    }
+
+    if (!ok)
+        fprintf(stderr, "expected aligned furigana tops: `%s`\n", text);
+    free_mask(&mask);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int fail = 0;
@@ -304,9 +343,37 @@ int main(void)
                              "{\\furisy80}<A|B>");
     fail |= expect_same("<A|B>", "{\\furifsp10}<A|B>");
     fail |= expect_different("<A|BBBB>", "{\\furifsp10}<A|BBBB>");
+    // The test canvas and script resolution are 1:1, so 4% of \fs48 is 1.92.
+    fail |= expect_same("<A|B>", "{\\furiap1}<A|B>");
+    fail |= expect_same("<A|B>", "{\\furipos(0,1.92)}<A|B>");
+    fail |= expect_same("{\\fs96}<A|B>",
+                        "{\\fs96\\furipos(0,3.84)}<A|B>");
+    fail |= expect_same("{\\furis80}<A|B>",
+                        "{\\furis80\\furipos(0,1.92)}<A|B>");
+    fail |= expect_different("<A|B>", "{\\furiap0}<A|B>");
+    fail |= expect_same("{\\furiap0}<A|B>",
+                        "{\\furipos(0,0)}<A|B>");
     fail |= expect_different("<A|B>", "{\\furipos(8,0)}<A|B>");
     fail |= expect_y_order("{\\furipos(0,8)}<A|B>",
                            "{\\furipos(0,-8)}<A|B>");
+    fail |= expect_same("{\\furipos(0,3)}<A|B>",
+                        "{\\furiap1\\furipos(0,3)}<A|B>");
+    fail |= expect_same("{\\furipos(0,3)}<A|B>",
+                        "{\\furipos(0,3)\\furiap1}<A|B>");
+    fail |= expect_same("{\\furipos(0,3)}<A|B>",
+                        "{\\furiap0\\furipos(0,3)}<A|B>");
+    fail |= expect_same("{\\furipos(0,3)}<A|B>",
+                        "{\\furipos(0,3)\\furiap0}<A|B>");
+    fail |= expect_same("{\\furipos(2,3)}<A|B>",
+                        "{\\furiap0\\furipos(2,3)}<A|B>");
+    fail |= expect_same("{\\furiap0}<A|B><C|D>",
+                        "{\\furiap0}<A|B>{\\furiap0}<C|D>");
+    fail |= expect_same("{\\furiap0}<A|B>{\\r}<C|D>",
+                        "{\\furiap0}<A|B>{\\r\\furiap1}<C|D>");
+    fail |= expect_same("{\\furipos(0,3)}<A|B>{\\furiap1}<C|D>",
+                        "{\\furipos(0,3)}<A|B><C|D>");
+    fail |= expect_same("{\\furipos(0,3)}<A|B>{\\furipos}<C|D>",
+                        "{\\furipos(0,3)}<A|B>{\\furipos\\furiap1}<C|D>");
     fail |= expect_same("<A|BBBB>", "{\\furistyle0}<A|BBBB>");
     fail |= expect_same("{\\furistyle0}<A|BBBB>",
                         "{\\furistyle1}<A|BBBB>");
@@ -350,6 +417,12 @@ int main(void)
         "{\\an5}TOP\\N<A|BBBB>", "{\\an5}TOP\\NA");
     fail |= expect_same_height(
         "<A|BBBB>", "<A|BBBB><A|BBBB>");
+    fail |= expect_partition_tops_aligned(
+        "<A|BBBB>    <_|BBBB>", 2);
+    fail |= expect_partition_tops_aligned(
+        "<A|BBBB>    <_|BBBB>    <g|BBBB>", 3);
+    fail |= expect_bottom_anchor_with_taller_block(
+        "{\\an2}<A|BBBB>", "{\\an2\\furiap0}<A|BBBB>");
 
     return fail ? 1 : 0;
 }
