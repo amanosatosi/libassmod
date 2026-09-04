@@ -352,6 +352,11 @@ int main(void)
         0, "Unicode numbered-border layer did not match ASCII");
 
     ok &= expect_same_render(lib, renderer,
+        "{\\pos(320,180)\\" MY1 "grd(0,&H000000&,&HFFFFFF&)}Gradient",
+        "{\\pos(320,180)\\1grd(0,&H000000&,&HFFFFFF&)}Gradient",
+        0, "Unicode gradient layer did not match ASCII");
+
+    ok &= expect_same_render(lib, renderer,
         "{\\pos(320,180)\\rnd" TH2 "}Random",
         "{\\pos(320,180)\\rnd2}Random",
         0, "Unicode inline \\rnd value did not match ASCII");

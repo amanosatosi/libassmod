@@ -1310,19 +1310,20 @@ static bool parse_mangetsu_fill_gradient_tag(char *p, char *name_end,
                                              MangetsuGradientTarget *target,
                                              struct arg *inline_arg)
 {
-    if (name_end - p < 4 || !is_digit_char(p[0]) ||
-            p[1] != 'g' || p[2] != 'r' ||
-            (p[3] != 'd' && p[3] != 'a'))
+    char *q = p;
+    int raw_layer = read_decimal_digit(&q, name_end);
+    if (raw_layer < 0 || name_end - q < 3 ||
+            q[0] != 'g' || q[1] != 'r' ||
+            (q[2] != 'd' && q[2] != 'a'))
         return false;
 
-    int raw_layer = p[0] - '0';
     if (raw_layer < 1 || raw_layer > MANGETSU_GRADIENT_LAYERS)
         return false;
 
     *layer = raw_layer - 1;
-    *target = p[3] == 'a' ?
+    *target = q[2] == 'a' ?
         MANGETSU_GRADIENT_TARGET_ALPHA : MANGETSU_GRADIENT_TARGET_COLOR;
-    inline_arg->start = p + 4;
+    inline_arg->start = q + 3;
     inline_arg->end = name_end;
     rskip_spaces(&inline_arg->end, inline_arg->start);
     return true;
