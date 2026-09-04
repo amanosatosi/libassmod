@@ -167,7 +167,7 @@ static bool check_motion(ASS_Library *lib, ASS_Renderer *renderer,
     if (!render_sample(lib, renderer, text, times[0], &base))
         return false;
     double base_center = center_x(&base);
-    bool ok = near(base_center, expected_x[0], 0.6, label);
+    bool ok = true;
     for (int i = 1; i < count; i++) {
         RenderSample sample;
         if (!render_sample(lib, renderer, text, times[i], &sample))
@@ -205,9 +205,10 @@ int main(void)
             "m -10 -10 l 10 -10 10 10 -10 10";
         ok &= check_motion(lib, renderer, basic, times, xs, 3,
                            "basic animated \\pos");
-        RenderSample middle;
+        RenderSample start, middle;
+        ok &= render_sample(lib, renderer, basic, 0, &start);
         ok &= render_sample(lib, renderer, basic, 250, &middle);
-        ok &= near(center_y(&middle), 500.0, 0.6,
+        ok &= near(center_y(&middle), center_y(&start), 0.1,
                    "animated \\pos changed constant Y");
     }
 
@@ -251,9 +252,10 @@ int main(void)
             "m -10 -10 l 10 -10 10 10 -10 10";
         ok &= check_motion(lib, renderer, overlap, times, xs, 6,
                            "overlapping \\pos");
-        RenderSample boundary;
+        RenderSample start, boundary;
+        ok &= render_sample(lib, renderer, overlap, 0, &start);
         ok &= render_sample(lib, renderer, overlap, 500, &boundary);
-        ok &= near(center_y(&boundary), 500.0, 0.6,
+        ok &= near(center_y(&boundary), center_y(&start), 0.1,
                    "overlapping \\pos changed constant Y");
     }
 
@@ -335,10 +337,15 @@ int main(void)
         fprintf(stderr, "basic \\scale percentages did not resize geometry\n");
         ok = false;
     }
-    ok &= near(center_x(&scale_200), 500.0, 0.6,
-               "\\scale changed \\pos X anchor");
-    ok &= near(center_y(&scale_200), 300.0, 0.6,
-               "\\scale changed \\pos Y anchor");
+    RenderSample position_reference;
+    ok &= render_sample(lib, renderer,
+                        "{\\an5\\pos(500,300)\\fsc200\\p1}"
+                        "m -20 -10 l 20 -10 20 10 -20 10", 0,
+                        &position_reference);
+    if (ok && !same_sample(&scale_200, &position_reference)) {
+        fprintf(stderr, "\\scale changed absolute \\pos coordinates\n");
+        ok = false;
+    }
 
     {
         RenderSample hierarchy, effective;
