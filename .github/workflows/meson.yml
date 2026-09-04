@@ -82,6 +82,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: libass/libass-tests
+          # Advance only intentionally with upstream libass compatibility/sync work.
+          ref: 3087d2b2ffda76602a17f9b09d25cb8addc8d313
           path: ${{ env.ART_SAMPLES }}
 
       - name: Setup MSYS2

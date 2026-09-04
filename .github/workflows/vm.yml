@@ -10,10 +10,6 @@ on:
         description: 'An instance of a libass-tests git repo'
         required: false
         default: 'https://github.com/libass/libass-tests.git'
-      test_ref:
-        description: 'Git ref of libass-tests repo to run tests on; defaults to newest commit on default branch'
-        required: false
-        default: ''
 
 jobs:
   ART-VM:
@@ -105,7 +101,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: ${{ github.event.inputs.test_repo || 'libass/libass-tests'}}
-          ref: ${{ github.event.inputs.test_ref }}
+          # Advance only intentionally with upstream libass compatibility/sync work.
+          ref: 3087d2b2ffda76602a17f9b09d25cb8addc8d313
           path: './libass-tests'
 
       - name: Install Packages
