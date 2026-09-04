@@ -4926,9 +4926,11 @@ static int parse_column_tag_value(char *start, char *end)
 {
     skip_spaces(&start);
     rskip_spaces(&end, start);
-    if (end - start != 1 || (*start != '0' && *start != '1'))
+    char *next = start;
+    int value = ass_unicode_decimal_value(ass_utf8_get_char(&next));
+    if (next != end || (value != 0 && value != 1))
         return -1;
-    return *start - '0';
+    return value;
 }
 
 static void scan_column_override_block(char *p, char *end, bool *active,

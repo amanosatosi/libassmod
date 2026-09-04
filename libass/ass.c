@@ -39,7 +39,12 @@
 #include "ass_shaper.h"
 #include "ass_string.h"
 
-#define ass_atof(STR) (ass_strtod((STR),NULL))
+static double ass_atof(char *str)
+{
+    double value = 0;
+    ass_strtod_decimal(&str, &value);
+    return value;
+}
 
 static const char *const ass_style_format =
         "Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
@@ -367,17 +372,18 @@ static void set_default_style(ASS_Style *style)
 static long long string2timecode(ASS_Library *library, char *p)
 {
     int32_t h, m, s, ms;
-    long long tm;
-    int res = sscanf(p, "%" SCNd32 ":%" SCNd32 ":%" SCNd32 ".%" SCNd32, &h, &m, &s, &ms);
-    if (res < 4) {
+    char *q = p;
+    if (!ass_strtoi32_decimal(&q, &h) || *q++ != ':' ||
+            !ass_strtoi32_decimal(&q, &m) || *q++ != ':' ||
+            !ass_strtoi32_decimal(&q, &s) || *q++ != '.' ||
+            !ass_strtoi32_decimal(&q, &ms)) {
         ass_msg(library, MSGL_WARN, "Bad timestamp");
         return 0;
     }
-    tm = ((h * 60LL + m) * 60 + s) * 1000 + ms * 10LL;
-    return tm;
+    return ((h * 60LL + m) * 60 + s) * 1000 + ms * 10LL;
 }
 
-static int read_digits(char **str, unsigned base, uint32_t *res)
+static int read_ascii_digits(char **str, unsigned base, uint32_t *res)
 {
     char *p = *str;
     char *start = p;
@@ -416,6 +422,9 @@ static int mystrtou32_modulo(char **p, unsigned base, uint32_t *res)
 
     // Unlike scanf and like strtoul, produce 0 for invalid inputs.
 
+    if (base == 10)
+        return ass_strtou32_modulo_decimal(p, res);
+
     char *start = *p;
     int sign = 1;
 
@@ -429,7 +438,7 @@ static int mystrtou32_modulo(char **p, unsigned base, uint32_t *res)
     if (base == 16 && !ass_strncasecmp(*p, "0x", 2))
         *p += 2;
 
-    if (read_digits(p, base, res)) {
+    if (read_ascii_digits(p, base, res)) {
         *res *= sign;
         return 1;
     } else {
@@ -463,7 +472,9 @@ static uint32_t parse_color_header(char *str)
 static char parse_bool(char *str)
 {
     skip_spaces(&str);
-    return !ass_strncasecmp(str, "yes", 3) || strtol(str, NULL, 10) > 0;
+    int32_t value = 0;
+    ass_strtoi32_decimal(&str, &value);
+    return !ass_strncasecmp(str, "yes", 3) || value > 0;
 }
 
 static int parse_ycbcr_matrix(char *str)
@@ -1562,7 +1573,9 @@ void ass_process_chunk(ASS_Track *track, const char *data, int size,
 
     do {
         NEXTVAL(p, token);
-        event->ReadOrder = atoi(token);
+        int32_t read_order = 0;
+        ass_strtoi32_decimal(&token, &read_order);
+        event->ReadOrder = read_order;
         if (check_readorder && check_duplicate_event(track, event->ReadOrder))
             break;
 

@@ -154,6 +154,8 @@ double ass_strtod(const char *string, char **endPtr);
 /* defined in ass_utils.c */
 int ass_strtod_decimal(char **p, double *res);
 int ass_strtoi32_decimal(char **p, int32_t *res);
+int ass_strtou32_modulo_decimal(char **p, uint32_t *res);
+int ass_unicode_decimal_value(unsigned c);
 
 static inline void skip_spaces(char **str)
 {

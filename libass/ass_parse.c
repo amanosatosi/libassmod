@@ -81,9 +81,12 @@ static inline int mystrcmp(char **p, const char *sample)
     return 0;
 }
 
-static inline bool rnd_numeric_start(char c)
+static inline bool rnd_numeric_start(const char *p)
 {
-    return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+    if (*p == '+' || *p == '-' || *p == '.')
+        return true;
+    char *next = (char *) p;
+    return ass_unicode_decimal_value(ass_utf8_get_char(&next)) >= 0;
 }
 
 /**
@@ -894,9 +897,16 @@ typedef enum {
     BORDER_TAG_BOX_ALPHA,
 } NumberedBorderTag;
 
-static bool is_digit_char(char c)
+static int read_decimal_digit(char **p, char *end)
 {
-    return c >= '0' && c <= '9';
+    if (*p >= end)
+        return -1;
+    char *next = *p;
+    int digit = ass_unicode_decimal_value(ass_utf8_get_char(&next));
+    if (digit < 0 || next > end)
+        return -1;
+    *p = next;
+    return digit;
 }
 
 static bool match_border_suffix(char *p, char *end, const char *suffix,
@@ -917,15 +927,15 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
                                                    int *layer,
                                                    struct arg *inline_arg)
 {
-    if (p >= name_end || !is_digit_char(*p))
+    char *q = p;
+    int digit = read_decimal_digit(&q, name_end);
+    if (digit < 0)
         return BORDER_TAG_NONE;
 
-    int raw_layer = 0;
-    char *q = p;
-    while (q < name_end && is_digit_char(*q)) {
+    int raw_layer = digit;
+    while ((digit = read_decimal_digit(&q, name_end)) >= 0) {
         if (raw_layer <= 100)
-            raw_layer = raw_layer * 10 + (*q - '0');
-        q++;
+            raw_layer = raw_layer * 10 + digit;
     }
 
     if (q >= name_end || *q != 'b')
@@ -2488,7 +2498,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = fabs(argtod(*args));
             } else {
                 char *tmp = p;
-                if (rnd_numeric_start(*tmp))
+                if (rnd_numeric_start(tmp))
                     mystrtod(&tmp, &val);
                 val = fabs(val);
                 p = tmp;
@@ -2502,7 +2512,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = fabs(argtod(*args));
             } else {
                 char *tmp = p;
-                if (rnd_numeric_start(*tmp))
+                if (rnd_numeric_start(tmp))
                     mystrtod(&tmp, &val);
                 val = fabs(val);
                 p = tmp;
@@ -2516,7 +2526,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = fabs(argtod(*args));
             } else {
                 char *tmp = p;
-                if (rnd_numeric_start(*tmp))
+                if (rnd_numeric_start(tmp))
                     mystrtod(&tmp, &val);
                 val = fabs(val);
                 p = tmp;
@@ -2525,8 +2535,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = ASS_RND_MAX_PX;
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
         } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
-            char next = (name_len > 3) ? p[3] : '\0';
-            if (!rnd_numeric_start(next))
+            if (name_len <= 3 || !rnd_numeric_start(p + 3))
                 continue;
             if (!mystrcmp(&p, "rnd"))
                 continue;
@@ -2537,7 +2546,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = fabs(argtod(*args));
             } else {
                 char *tmp = p;
-                if (rnd_numeric_start(*tmp))
+                if (rnd_numeric_start(tmp))
                     mystrtod(&tmp, &val);
                 val = fabs(val);
                 p = tmp;
@@ -3655,7 +3664,10 @@ void ass_apply_transition_effects(RenderContext *state)
 
     cnt = 0;
     while (cnt < 4 && (p = strchr(p, ';'))) {
-        v[cnt++] = atoi(++p);
+        p++;
+        int32_t value = 0;
+        ass_strtoi32_decimal(&p, &value);
+        v[cnt++] = value;
     }
 
     ASS_Vector layout_res = ass_layout_res(render_priv);

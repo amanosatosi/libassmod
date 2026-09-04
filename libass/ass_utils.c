@@ -540,8 +540,11 @@ unsigned ass_utf8_put_char(char *dest, uint32_t ch)
     return dest - orig_dest;
 }
 
-static int unicode_decimal_value(unsigned c)
+int ass_unicode_decimal_value(unsigned c)
 {
+    // Unicode 17.0, General_Category=Decimal_Number. Decimal digit sets are
+    // contiguous, ordered zero through nine; a few adjacent sets are folded
+    // into a single range and therefore use modulo 10 below.
     static const struct {
         unsigned first;
         unsigned last;
@@ -549,6 +552,7 @@ static int unicode_decimal_value(unsigned c)
         { 0x0030, 0x0039 },
         { 0x0660, 0x0669 },
         { 0x06F0, 0x06F9 },
+        { 0x07C0, 0x07C9 },
         { 0x0966, 0x096F },
         { 0x09E6, 0x09EF },
         { 0x0A66, 0x0A6F },
@@ -558,18 +562,81 @@ static int unicode_decimal_value(unsigned c)
         { 0x0C66, 0x0C6F },
         { 0x0CE6, 0x0CEF },
         { 0x0D66, 0x0D6F },
+        { 0x0DE6, 0x0DEF },
         { 0x0E50, 0x0E59 },
         { 0x0ED0, 0x0ED9 },
         { 0x0F20, 0x0F29 },
         { 0x1040, 0x1049 },
+        { 0x1090, 0x1099 },
         { 0x17E0, 0x17E9 },
         { 0x1810, 0x1819 },
+        { 0x1946, 0x194F },
+        { 0x19D0, 0x19D9 },
+        { 0x1A80, 0x1A89 },
+        { 0x1A90, 0x1A99 },
+        { 0x1B50, 0x1B59 },
+        { 0x1BB0, 0x1BB9 },
+        { 0x1C40, 0x1C49 },
+        { 0x1C50, 0x1C59 },
+        { 0xA620, 0xA629 },
+        { 0xA8D0, 0xA8D9 },
+        { 0xA900, 0xA909 },
+        { 0xA9D0, 0xA9D9 },
+        { 0xA9F0, 0xA9F9 },
+        { 0xAA50, 0xAA59 },
+        { 0xABF0, 0xABF9 },
         { 0xFF10, 0xFF19 },
+        { 0x104A0, 0x104A9 },
+        { 0x10D30, 0x10D39 },
+        { 0x10D40, 0x10D49 },
+        { 0x11066, 0x1106F },
+        { 0x110F0, 0x110F9 },
+        { 0x11136, 0x1113F },
+        { 0x111D0, 0x111D9 },
+        { 0x112F0, 0x112F9 },
+        { 0x11450, 0x11459 },
+        { 0x114D0, 0x114D9 },
+        { 0x11650, 0x11659 },
+        { 0x116C0, 0x116C9 },
+        { 0x116D0, 0x116E3 },
+        { 0x11730, 0x11739 },
+        { 0x118E0, 0x118E9 },
+        { 0x11950, 0x11959 },
+        { 0x11BF0, 0x11BF9 },
+        { 0x11C50, 0x11C59 },
+        { 0x11D50, 0x11D59 },
+        { 0x11DA0, 0x11DA9 },
+        { 0x11DE0, 0x11DE9 },
+        { 0x11F50, 0x11F59 },
+        { 0x16130, 0x16139 },
+        { 0x16A60, 0x16A69 },
+        { 0x16AC0, 0x16AC9 },
+        { 0x16B50, 0x16B59 },
+        { 0x16D70, 0x16D79 },
+        { 0x1CCF0, 0x1CCF9 },
+        { 0x1D7CE, 0x1D7FF },
+        { 0x1E140, 0x1E149 },
+        { 0x1E2F0, 0x1E2F9 },
+        { 0x1E4F0, 0x1E4F9 },
+        { 0x1E5F1, 0x1E5FA },
+        { 0x1E950, 0x1E959 },
+        { 0x1FBF0, 0x1FBF9 },
     };
 
-    for (int i = 0; i < (int) (sizeof(ranges) / sizeof(ranges[0])); i++)
-        if (c >= ranges[i].first && c <= ranges[i].last)
-            return c - ranges[i].first;
+    if (c >= '0' && c <= '9')
+        return (int) (c - '0');
+
+    int lo = 1;
+    int hi = (int) (sizeof(ranges) / sizeof(ranges[0]));
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (c < ranges[mid].first)
+            hi = mid;
+        else if (c > ranges[mid].last)
+            lo = mid + 1;
+        else
+            return (int) ((c - ranges[mid].first) % 10);
+    }
     return -1;
 }
 
@@ -602,7 +669,7 @@ static bool normalize_decimal_number(char *start, syntax_char_func syntax_char,
     while (*p) {
         char *next = p;
         unsigned c = ass_utf8_get_char(&next);
-        int digit = unicode_decimal_value(c);
+        int digit = ass_unicode_decimal_value(c);
         char out;
 
         if (digit >= 0)
@@ -714,6 +781,41 @@ int ass_strtoi32_decimal(char **p, int32_t *res)
     if (ends != stack_ends)
         free(ends);
     return *p != start;
+}
+
+int ass_strtou32_modulo_decimal(char **p, uint32_t *res)
+{
+    char *start = *p;
+    char *q = start;
+    int sign = 1;
+    uint32_t value = 0;
+    bool have_digit = false;
+
+    skip_spaces(&q);
+    if (*q == '+')
+        q++;
+    else if (*q == '-')
+        sign = -1, q++;
+
+    while (*q) {
+        char *next = q;
+        int digit = ass_unicode_decimal_value(ass_utf8_get_char(&next));
+        if (digit < 0)
+            break;
+        value = value * 10 + (unsigned) digit;
+        q = next;
+        have_digit = true;
+    }
+
+    if (!have_digit) {
+        *p = start;
+        *res = 0;
+        return 0;
+    }
+
+    *p = q;
+    *res = sign < 0 ? 0u - value : value;
+    return 1;
 }
 
 /**

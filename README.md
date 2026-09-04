@@ -101,6 +101,12 @@ For `\ortho` semantics and examples, see:
   See `docs/motion-scale.md` for overlap, easing, coordinate, and compatibility
   semantics.
 
+- Unicode decimal digits
+  Unicode `Nd` digits are accepted consistently in decimal override arguments,
+  event fields and timestamps, styles, and numeric Script Info properties.
+  See [Unicode decimal digits in ASS numbers](docs/unicode-decimal-digits.md)
+  for scope and examples.
+
 - `\distort(u1,v1,u2,v2,u3,v3)`  
   Corner-pin distortion
 
