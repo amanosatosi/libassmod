@@ -213,13 +213,13 @@ static int expect_bottom_anchor_with_taller_block(const char *with_furi,
     return ok ? 0 : 1;
 }
 
-static int expect_top_anchor_with_taller_block(const char *with_furi,
-                                               const char *without_furi)
+static int expect_top_anchor_with_taller_block(const char *taller,
+                                               const char *shorter)
 {
     Mask mf = {0}, mn = {0};
-    int err = render_mask(with_furi, &mf);
+    int err = render_mask(taller, &mf);
     if (!err)
-        err = render_mask(without_furi, &mn);
+        err = render_mask(shorter, &mn);
     if (err) {
         free_mask(&mf);
         free_mask(&mn);
@@ -229,7 +229,7 @@ static int expect_top_anchor_with_taller_block(const char *with_furi,
         mf.y1 > mn.y1;
     if (!ok)
         fprintf(stderr, "expected top anchor and taller block: `%s` vs `%s`\n",
-                with_furi, without_furi);
+                taller, shorter);
     free_mask(&mf);
     free_mask(&mn);
     return ok ? 0 : 1;
@@ -412,7 +412,8 @@ int main(void)
     fail |= expect_bottom_anchor_with_taller_block(
         "{\\an2}TOP\\N<A|BBBB>", "{\\an2}TOP\\NA");
     fail |= expect_top_anchor_with_taller_block(
-        "{\\an8}<A|BBBB>\\NBOTTOM", "{\\an8}A\\NBOTTOM");
+        "{\\an8\\furisy100}<A|B>\\NBOTTOM",
+        "{\\an8\\furisy50}<A|B>\\NBOTTOM");
     fail |= expect_center_anchor_with_taller_block(
         "{\\an5}TOP\\N<A|BBBB>", "{\\an5}TOP\\NA");
     fail |= expect_same_height(
