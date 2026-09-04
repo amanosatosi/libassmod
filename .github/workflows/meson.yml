@@ -83,7 +83,7 @@ jobs:
         with:
           repository: libass/libass-tests
           # Advance only intentionally with upstream libass compatibility/sync work.
-          ref: 3087d2b2ffda76602a17f9b09d25cb8addc8d313
+          ref: 9498737388cbd78cbab6b703821adc213a335995
           path: ${{ env.ART_SAMPLES }}
 
       - name: Setup MSYS2
