@@ -38,6 +38,7 @@ struct arg {
 };
 
 static bool parse_int32_arg_strict(struct arg arg, int32_t *out);
+static bool parse_double_arg_strict(struct arg arg, double *out);
 
 static inline int32_t argtoi32(struct arg arg)
 {
@@ -226,6 +227,40 @@ static void normalize_motion_timing(MotionState *motion)
         motion->t2 = motion->t1;
         motion->t1 = tmp;
     }
+}
+
+static bool append_pos_transform(RenderContext *state, double x, double y)
+{
+    if (!state->pos_transform_context)
+        return false;
+
+    int32_t t1 = state->pos_transform_t1;
+    int32_t t2 = state->pos_transform_t2;
+    double accel = state->pos_transform_accel;
+    if (t2 <= t1)
+        return false;
+    if (!isfinite(x) || !isfinite(y) || !isfinite(accel) || accel <= 0.0)
+        return false;
+
+    if (state->n_pos_transforms >= state->max_pos_transforms) {
+        int old_max = state->max_pos_transforms;
+        if (old_max > INT_MAX / 2)
+            return false;
+        int new_max = old_max ? 2 * old_max : 8;
+        if (new_max <= old_max ||
+                !ASS_REALLOC_ARRAY(state->pos_transforms, new_max))
+            return false;
+        state->max_pos_transforms = new_max;
+    }
+
+    state->pos_transforms[state->n_pos_transforms++] = (PosTransformState) {
+        .x = x,
+        .y = y,
+        .accel = accel,
+        .t1 = t1,
+        .t2 = t2,
+    };
+    return true;
 }
 /**
  * \brief Calculate a weighted average of two colors
@@ -2601,6 +2636,17 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = 0.0;
             state->blur_y = val;
             // ASS standard tags
+        } else if (tag("scale")) {
+            double target = 1.0;
+            if (nargs) {
+                if (!parse_double_arg_strict(*args, &target))
+                    continue;
+                target /= 100.0;
+                if (!isfinite(target))
+                    continue;
+                target = FFMAX(target, 0.0);
+            }
+            state->object_scale = calc_anim(target, state->object_scale, pwr);
         } else if (tag("fscx")) {
             double val;
             if (nargs) {
@@ -2955,7 +3001,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 v2 = argtod(args[1]);
             } else
                 continue;
-            if (state->evt_type & EVENT_POSITIONED) {
+            if (state->pos_transform_context) {
+                append_pos_transform(state, v1, v2);
+            } else if (state->evt_type & EVENT_POSITIONED) {
                 ass_msg(render_priv->library, MSGL_V, "Subtitle has a new \\pos "
                        "after \\move or \\pos, ignoring");
             } else {
@@ -3120,19 +3168,19 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             // override tags, so it's pointless to try to parse them.
             if (!has_backslash_arg)
                 continue;
-            p = args[cnt].start;
-            if (args[cnt].end < end) {
-                p = ass_parse_tags(state, p, args[cnt].end, k, true);
-            } else {
-                assert(q == end);
-                // No other tags can possibly follow this \t tag,
-                // so we don't need to restore pwr after parsing \t.
-                // The recursive call is now essentially a tail call,
-                // so optimize it away.
-                pwr = k;
-                nested = true;
-                q = p;
-            }
+            bool saved_context = state->pos_transform_context;
+            int32_t saved_t1 = state->pos_transform_t1;
+            int32_t saved_t2 = state->pos_transform_t2;
+            double saved_accel = state->pos_transform_accel;
+            state->pos_transform_context = true;
+            state->pos_transform_t1 = t1;
+            state->pos_transform_t2 = t2;
+            state->pos_transform_accel = accel;
+            ass_parse_tags(state, args[cnt].start, args[cnt].end, k, true);
+            state->pos_transform_context = saved_context;
+            state->pos_transform_t1 = saved_t1;
+            state->pos_transform_t2 = saved_t2;
+            state->pos_transform_accel = saved_accel;
         } else if (complex_tag("clip")) {
             apply_clip_tag(state, "clip", false, name_end, q, end, pwr);
         } else if (tag("img") || tag("1img")) {

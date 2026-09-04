@@ -1439,12 +1439,12 @@ static void motion_timing(const MotionState *motion, RenderContext *state,
     }
 }
 
-static double motion_progress(RenderContext *state, const MotionState *motion)
+static double motion_progress_at(RenderContext *state,
+                                 const MotionState *motion, int64_t t)
 {
     int32_t t1, t2;
     motion_timing(motion, state, &t1, &t2);
 
-    int t = state->renderer->time - state->event->Start;
     if (t <= t1)
         return 0.;
     if (t >= t2)
@@ -1457,20 +1457,20 @@ static double motion_progress(RenderContext *state, const MotionState *motion)
     return ((double) (int32_t) ((uint32_t) t - t1)) / delta_t;
 }
 
-static ASS_DVector evaluate_motion(RenderContext *state)
+static ASS_DVector evaluate_motion_at(RenderContext *state, int64_t time)
 {
     MotionState *m = &state->motion;
     switch (m->type) {
     case MOTION_POS:
         return (ASS_DVector) {m->x1, m->y1};
     case MOTION_MOVE: {
-        double k = motion_progress(state, m);
+        double k = motion_progress_at(state, m, time);
         double x = m->x1 + (m->x2 - m->x1) * k;
         double y = m->y1 + (m->y2 - m->y1) * k;
         return (ASS_DVector) {x, y};
     }
     case MOTION_MOVER: {
-        double k = motion_progress(state, m);
+        double k = motion_progress_at(state, m, time);
         double x = m->x1 + (m->x2 - m->x1) * k;
         double y = m->y1 + (m->y2 - m->y1) * k;
         double angle = m->angle1 + (m->angle2 - m->angle1) * k;
@@ -1482,14 +1482,14 @@ static ASS_DVector evaluate_motion(RenderContext *state)
         return (ASS_DVector) {x, y};
     }
     case MOTION_MOVES3: {
-        double k = motion_progress(state, m);
+        double k = motion_progress_at(state, m, time);
         double inv = 1 - k;
         double x = inv * inv * m->x1 + 2 * inv * k * m->x2 + k * k * m->x3;
         double y = inv * inv * m->y1 + 2 * inv * k * m->y2 + k * k * m->y3;
         return (ASS_DVector) {x, y};
     }
     case MOTION_MOVES4: {
-        double k = motion_progress(state, m);
+        double k = motion_progress_at(state, m, time);
         double inv = 1 - k;
         double inv2 = inv * inv;
         double k2 = k * k;
@@ -2543,6 +2543,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     }
     state->scale_x = style->ScaleX;
     state->scale_y = style->ScaleY;
+    state->object_scale = 1.0;
     state->hspacing = style->Spacing;
     state->fsvp = 0;
     state->fshp = 0;
@@ -2621,6 +2622,13 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->movevc = (MoveVCState) {0};
     state->motion = (MotionState) {0};
     state->motion.type = MOTION_NONE;
+    state->pos_transforms = NULL;
+    state->n_pos_transforms = 0;
+    state->max_pos_transforms = 0;
+    state->pos_transform_context = false;
+    state->pos_transform_t1 = 0;
+    state->pos_transform_t2 = 0;
+    state->pos_transform_accel = 1.0;
     state->jitter = ass_jitter_default_state();
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
@@ -3092,6 +3100,10 @@ static void free_render_context(RenderContext *state)
     state->column_row = 0;
     state->column_index = 0;
     state->column_base_style = (ColumnStyleState) {0};
+    free(state->pos_transforms);
+    state->pos_transforms = NULL;
+    state->n_pos_transforms = 0;
+    state->max_pos_transforms = 0;
 }
 
 /**
@@ -3851,7 +3863,7 @@ static inline double line_spacing(RenderContext *state)
 {
     ASS_Renderer *render_priv = state->renderer;
     return render_priv->settings.line_spacing +
-           state->fshp * state->screen_scale_y;
+           state->fshp * state->object_scale * state->screen_scale_y;
 }
 
 static void measure_text_on_eol(RenderContext *state, double scale, int cur_line,
@@ -4492,14 +4504,15 @@ static bool append_glyph_to_target(RenderContext *state,
     GlyphInfo *info = &(*glyphs)[*length];
     memset(info, 0, sizeof(GlyphInfo));
 
+    double object_scale = state->object_scale;
     if (drawing_text.str) {
         info->drawing_text = drawing_text;
         info->drawing_scale = state->drawing_scale;
-        info->drawing_pbo = state->pbo;
+        info->drawing_pbo = lround(state->pbo * object_scale);
     }
 
-    double scale_x = state->scale_x;
-    double scale_y = state->scale_y;
+    double scale_x = state->scale_x * object_scale;
+    double scale_y = state->scale_y * object_scale;
     double hspacing = state->hspacing;
     if (is_furi) {
         scale_x *= state->furi_scale_x / 100.0;
@@ -4529,16 +4542,20 @@ static bool append_glyph_to_target(RenderContext *state,
     }
     info->font_size = fabs(state->font_size * state->screen_scale_y);
     info->be = state->be;
-    info->blur_x = state->blur_x;
-    info->blur_y = state->blur_y;
-    info->shadow_x = state->shadow_x;
-    info->shadow_y = state->shadow_y;
+    info->blur_x = state->blur_x * object_scale;
+    info->blur_y = state->blur_y * object_scale;
+    info->shadow_x = state->shadow_x * object_scale;
+    info->shadow_y = state->shadow_y * object_scale;
     info->scale_x = scale_x;
     info->scale_y = scale_y;
     info->border_style = state->border_style;
-    info->border_x = state->border_x;
-    info->border_y = state->border_y;
+    info->border_x = state->border_x * object_scale;
+    info->border_y = state->border_y * object_scale;
     memcpy(info->border_layers, state->border_layers, sizeof(info->border_layers));
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
+        info->border_layers[i].size_x *= object_scale;
+        info->border_layers[i].size_y *= object_scale;
+    }
     sync_glyph_layer1_border(info);
     info->hspacing = hspacing;
     info->bold = state->bold;
@@ -4574,19 +4591,24 @@ static bool append_glyph_to_target(RenderContext *state,
     info->fax = state->fax;
     info->fay = state->fay;
     info->fade = state->fade;
-    info->vshift = -double_to_d6(state->fsvp * state->screen_scale_y);
+    info->vshift = -double_to_d6(state->fsvp * object_scale *
+                                 state->screen_scale_y);
     if (state->jitter.enabled) {
         info->has_jitter = true;
         info->jitter = state->jitter;
+        info->jitter.left *= object_scale;
+        info->jitter.right *= object_scale;
+        info->jitter.up *= object_scale;
+        info->jitter.down *= object_scale;
     }
     info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
     uint64_t glyph_index = (uint64_t) *length;
     if (is_furi)
         glyph_index ^= (uint64_t) (furi_group + 1) << 48;
     info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
-    info->rnd_x = x2scr_offset(state, state->rnd_x);
-    info->rnd_y = y2scr_offset(state, state->rnd_y);
-    info->rnd_z = y2scr_offset(state, state->rnd_z);
+    info->rnd_x = x2scr_offset(state, state->rnd_x * object_scale);
+    info->rnd_y = y2scr_offset(state, state->rnd_y * object_scale);
+    info->rnd_z = y2scr_offset(state, state->rnd_z * object_scale);
 #ifdef ASS_RND_DEBUG
     if (info->has_rnd) {
         ass_msg(render_priv->library, MSGL_WARN,
@@ -4851,11 +4873,11 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
     group->scale_x = state->furi_scale_x;
     group->scale_y = state->furi_scale_y;
     group->hspacing = state->furi_hspacing;
-    group->offset_x = state->furi_offset_x;
-    group->offset_y = state->furi_offset_y;
+    group->offset_x = state->furi_offset_x * state->object_scale;
+    group->offset_y = state->furi_offset_y * state->object_scale;
     // Match the base glyph's screen-scaled \fs before hinting normalization.
     group->auto_gap = fabs(state->font_size * state->screen_scale_y) *
-        FURI_AUTO_GAP_FACTOR;
+        state->object_scale * FURI_AUTO_GAP_FACTOR;
     group->auto_placement = state->furi_auto_placement;
     group->position_explicit = state->furi_position_explicit;
 
@@ -5296,6 +5318,70 @@ static int32_t furi_text_advance_width(FuriGroup *group)
     if (have)
         width -= trailing_spacing;
     return clamp_i64_to_i32(FFMAX(0, width));
+}
+
+static ASS_DVector evaluate_pos_segment(const RenderContext *state,
+                                        ASS_DVector anchor,
+                                        int64_t segment_start,
+                                        int64_t time)
+{
+    ASS_DVector pos = anchor;
+    for (int i = 0; i < state->n_pos_transforms; i++) {
+        const PosTransformState *tr = &state->pos_transforms[i];
+        if (tr->t1 > segment_start || tr->t2 <= segment_start)
+            continue;
+
+        double duration = (double) ((int64_t) tr->t2 - segment_start);
+        double elapsed = (double) (time - segment_start);
+        double progress = duration > 0.0 ? elapsed / duration : 1.0;
+        progress = FFMINMAX(progress, 0.0, 1.0);
+        double eased = pow(progress, tr->accel);
+        pos.x += (tr->x - anchor.x) * eased;
+        pos.y += (tr->y - anchor.y) * eased;
+    }
+    return pos;
+}
+
+/*
+ * Evaluate all animated \pos transforms without accumulating per-frame state.
+ * Every start/end boundary resolves the previous segment at that exact time,
+ * then all transforms active on the new segment are rebased on the resolved
+ * position.  Consequently rendering frames out of order gives the same result.
+ */
+static ASS_DVector evaluate_animated_position(RenderContext *state)
+{
+    int64_t now = state->renderer->time - state->event->Start;
+    if (!state->n_pos_transforms)
+        return evaluate_motion_at(state, now);
+
+    int64_t first = INT64_MAX;
+    for (int i = 0; i < state->n_pos_transforms; i++)
+        first = FFMIN(first, (int64_t) state->pos_transforms[i].t1);
+
+    if (now <= first)
+        return evaluate_motion_at(state, now);
+
+    ASS_DVector anchor = evaluate_motion_at(state, first);
+    int64_t segment_start = first;
+    for (;;) {
+        int64_t next = INT64_MAX;
+        for (int i = 0; i < state->n_pos_transforms; i++) {
+            const PosTransformState *tr = &state->pos_transforms[i];
+            if (tr->t1 > segment_start)
+                next = FFMIN(next, (int64_t) tr->t1);
+            if (tr->t2 > segment_start)
+                next = FFMIN(next, (int64_t) tr->t2);
+        }
+
+        int64_t sample = FFMIN(now, next);
+        ASS_DVector pos = evaluate_pos_segment(state, anchor,
+                                               segment_start, sample);
+        if (now <= next || next == INT64_MAX)
+            return pos;
+
+        anchor = pos;
+        segment_start = next;
+    }
 }
 
 static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
@@ -8141,10 +8227,14 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
     }
 
-    if (state->motion.type != MOTION_NONE) {
-        ASS_DVector pos = evaluate_motion(state);
+    if (state->motion.type != MOTION_NONE || state->n_pos_transforms) {
+        ASS_DVector pos = evaluate_animated_position(state);
         state->pos_x = pos.x;
         state->pos_y = pos.y;
+        if (state->n_pos_transforms) {
+            state->evt_type |= EVENT_POSITIONED;
+            state->detect_collisions = 0;
+        }
     }
 
     split_style_runs(state);

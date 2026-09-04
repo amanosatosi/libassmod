@@ -90,6 +90,17 @@ For `\ortho` semantics and examples, see:
 
 ### Transform & movement
 
+- `\pos(x,y)` inside `\t(...)`
+  Deterministic animated positioning. Overlapping transformed positions are
+  simultaneous competing motion intents rather than last-transform-wins.
+
+- `\scale<percent>`
+  Uniform top-level object scale above `\fsc`/`\fscx`/`\fscy`; it also scales
+  borders, shadows, local spacing, multi-borders, and box geometry.
+
+  See `docs/motion-scale.md` for overlap, easing, coordinate, and compatibility
+  semantics.
+
 - `\distort(u1,v1,u2,v2,u3,v3)`  
   Corner-pin distortion
 

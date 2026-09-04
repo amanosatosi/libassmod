@@ -498,6 +498,17 @@ typedef struct {
     int32_t t1, t2;
 } MotionState;
 
+/*
+ * Mangetsu animated \pos targets are kept separate from the legacy single
+ * motion state.  They are evaluated together at active-set boundaries so
+ * overlapping transforms compose as simultaneous motion intents.
+ */
+typedef struct {
+    double x, y;
+    double accel;
+    int32_t t1, t2;
+} PosTransformState;
+
 #include "ass_shaper.h"
 
 // Renderer state.
@@ -530,6 +541,7 @@ struct render_context {
     double pos_x, pos_y;        // position
     double org_x, org_y;        // origin
     double scale_x, scale_y;
+    double object_scale;        // Mangetsu top-level local geometry scale
     double hspacing;            // distance between letters, in pixels
     double fsvp;                // per-glyph vertical shift, script pixels
     double fshp;                // extra vertical spacing between lines, script pixels
@@ -579,6 +591,13 @@ struct render_context {
     ASS_StringView clip_drawing_text;
     MoveVCState movevc;
     MotionState motion;
+    PosTransformState *pos_transforms;
+    int n_pos_transforms;
+    int max_pos_transforms;
+    bool pos_transform_context;
+    int32_t pos_transform_t1;
+    int32_t pos_transform_t2;
+    double pos_transform_accel;
     JitterState jitter;
     double z;                   // 3D translation along camera Z
     bool ortho;                 // orthographic projection toggle

@@ -1,4 +1,7 @@
 libass (0.17.4)
+ * allow Mangetsu \pos targets inside \t, including deterministic competing
+   motion composition for overlapping positional transforms
+ * add animatable Mangetsu \scale for top-level object-local geometry scaling
  * add BorderStyle=5 / \bs5 Mangetsu geometric border mode
    with line-level \bs<N> override parsing
    and a conservative miter limit to avoid glyph spike artifacts

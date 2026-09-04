@@ -107,6 +107,15 @@ bs4_geometry_unit = executable(
     link_with: libass_for_tools,
 )
 
+mangetsu_motion_scale_unit = executable(
+    'mangetsu_motion_scale_unit',
+    files('mangetsu_motion_scale_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 # This test intentionally checks private allocation provenance. Run it only
 # where the test links against libass internals; shared Windows exports only
 # the public libass ABI.
@@ -140,6 +149,7 @@ test('rnd-custom-decoration-lifetime', decoration_rnd_unit)
 test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
+test('mangetsu-motion-scale', mangetsu_motion_scale_unit)
 if get_option('default_library') != 'shared'
     test('rgba-ownership-lifetime', rgba_ownership_unit, timeout: 120)
     test('shaper-chain-cleanup', shaper_chain_cleanup_unit)
