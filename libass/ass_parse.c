@@ -33,6 +33,56 @@
 #define MAX_BE 127
 #define NBSP 0xa0   // unicode non-breaking space character
 
+bool ass_prepare_override_block(char **start, char **end, ASS_OverrideText **storage)
+{
+    *storage = NULL;
+    char *first = *start;
+    while (first < *end && *first != '[' &&
+            !(*first == '\\' && first + 1 < *end && first[1] == 'N'))
+        first++;
+    if (first == *end)
+        return true;
+
+    // Numeric parsers and stored string views require contiguous characters.
+    // Allocate only for annotated blocks, without modifying the ASS source.
+    size_t length = *end - *start;
+    if (length > SIZE_MAX - sizeof(ASS_OverrideText) - 2)
+        return false;
+    ASS_OverrideText *buffer = malloc(sizeof(*buffer) + length + 2);
+    if (!buffer)
+        return false;
+    buffer->next = NULL;
+    size_t prefix = first - *start;
+    memcpy(buffer->text, *start, prefix);
+    char *out = buffer->text + prefix;
+    for (char *p = first; p < *end;) {
+        if (*p == '[') {
+            char *close = memchr(p + 1, ']', *end - (p + 1));
+            p = close ? close + 1 : *end;
+        } else if (*p == '\\' && p + 1 < *end && p[1] == 'N') {
+            p += 2;
+        } else {
+            *out++ = *p++;
+        }
+    }
+    // Preserve the parser's end sentinel as well as a terminating NUL.
+    out[0] = **end;
+    out[1] = '\0';
+    *start = buffer->text;
+    *end = out;
+    *storage = buffer;
+    return true;
+}
+
+void ass_free_override_buffers(RenderContext *state)
+{
+    while (state->override_buffers) {
+        ASS_OverrideText *buffer = state->override_buffers;
+        state->override_buffers = buffer->next;
+        free(buffer);
+    }
+}
+
 struct arg {
     char *start, *end;
 };
@@ -3798,6 +3848,24 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
     return p;
 }
 
+char *ass_parse_override_block(RenderContext *state, char *start, char *end)
+{
+    char *source_end = end;
+    ASS_OverrideText *buffer;
+    if (!ass_prepare_override_block(&start, &end, &buffer)) {
+        ass_msg(state->renderer->library, MSGL_WARN,
+                "Cannot allocate override annotation buffer");
+        return source_end;
+    }
+    if (buffer) {
+        // Font names, image paths and vector clips can borrow these bytes.
+        buffer->next = state->override_buffers;
+        state->override_buffers = buffer;
+    }
+    ass_parse_tags(state, start, end, 1.0, false);
+    return source_end;
+}
+
 void ass_apply_transition_effects(RenderContext *state)
 {
     ASS_Renderer *render_priv = state->renderer;
@@ -4050,9 +4118,17 @@ int ass_event_has_hard_overrides(char *str)
             str += 2;
         } else if (str[0] == '{') {
             str++;
-            while (*str && *str != '}') {
-                if (*str == '\\') {
-                    char *p = str + 1;
+            char *end = strchr(str, '}');
+            char *limit = end ? end : str + strlen(str);
+            char *scan = str;
+            ASS_OverrideText *buffer = NULL;
+            // An unmatched opening brace keeps its existing scan behavior.
+            if (end && !ass_prepare_override_block(&scan, &limit, &buffer))
+                return 0;
+            bool found = false;
+            while (scan < limit) {
+                if (*scan == '\\') {
+                    char *p = scan + 1;
                     if (mystrcmp(&p, "pos") || mystrcmp(&p, "move") ||
                         mystrcmp(&p, "mover") || mystrcmp(&p, "moves3") ||
                         mystrcmp(&p, "moves4") || mystrcmp(&p, "jitter") ||
@@ -4060,10 +4136,16 @@ int ass_event_has_hard_overrides(char *str)
                         mystrcmp(&p, "clip") || mystrcmp(&p, "iclip") ||
                         mystrcmp(&p, "org") || mystrcmp(&p, "pbo") ||
                         mystrcmp(&p, "p"))
-                        return 1;
+                        found = true;
                 }
-                str++;
+                if (found)
+                    break;
+                scan++;
             }
+            free(buffer);
+            if (found)
+                return 1;
+            str = end ? end + 1 : limit;
         } else {
             str++;
         }

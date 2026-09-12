@@ -214,6 +214,7 @@ static void render_context_done(RenderContext *state)
         ass_shaper_free(state->furi_shaper);
 
     text_info_done(&state->text_info);
+    ass_free_override_buffers(state);
 }
 
 ASS_Renderer *ass_renderer_init(ASS_Library *library)
@@ -2301,7 +2302,7 @@ static void apply_colorcode_text(RenderContext *state, char *text)
             char *end = strchr(p, '}');
             if (!end)
                 break;
-            ass_parse_tags(state, p + 1, end, 1.0, false);
+            ass_parse_override_block(state, p + 1, end);
             p = end + 1;
         } else if (*p == '\\') {
             char *end = strchr(p, '{');
@@ -2470,7 +2471,13 @@ static void scan_line_border_style_override(RenderContext *state, char *text)
             char *end = strchr(p, '}');
             if (!end)
                 break;
-            if (scan_border_style_override_block(state, p + 1, end))
+            char *start = p + 1, *limit = end;
+            ASS_OverrideText *buffer;
+            if (!ass_prepare_override_block(&start, &limit, &buffer))
+                return;
+            bool found = scan_border_style_override_block(state, start, limit);
+            free(buffer);
+            if (found)
                 return;
             p = end + 1;
         } else {
@@ -3118,6 +3125,7 @@ static void free_render_context(RenderContext *state)
     state->pos_transforms = NULL;
     state->n_pos_transforms = 0;
     state->max_pos_transforms = 0;
+    ass_free_override_buffers(state);
 }
 
 /**
@@ -4990,7 +4998,12 @@ static bool event_has_active_column(char *text)
             char *end = strchr(p, '}');
             if (!end)
                 break;
-            scan_column_override_block(p + 1, end, &active, &seen_active);
+            char *start = p + 1, *limit = end;
+            ASS_OverrideText *buffer;
+            if (!ass_prepare_override_block(&start, &limit, &buffer))
+                return seen_active;
+            scan_column_override_block(start, limit, &active, &seen_active);
+            free(buffer);
             p = end + 1;
         } else {
             p++;
@@ -5020,7 +5033,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         unsigned code = 0;
         while (*p) {
             if ((*p == '{') && (q = strchr(p, '}'))) {
-                p = ass_parse_tags(state, p, q, 1., false);
+                p = ass_parse_override_block(state, p + 1, q);
                 assert(*p == '}');
                 p++;
             } else if (state->drawing_scale) {

@@ -524,6 +524,7 @@ struct render_context {
     RasterizerData rasterizer;
 
     ASS_Event *event;
+    struct ass_override_text *override_buffers; // borrowed tag strings live through rendering
     ASS_Style *style;
 
     ASS_Font *font;

@@ -36,6 +36,16 @@ static inline uint32_t mult_alpha(uint32_t a, uint32_t b)
 void ass_update_font(RenderContext *state);
 void ass_apply_transition_effects(RenderContext *state);
 void ass_process_karaoke_effects(RenderContext *state);
+typedef struct ass_override_text {
+    struct ass_override_text *next;
+    char text[];
+} ASS_OverrideText;
+
+// A non-destructive lexical view of one bounded override block. The caller
+// owns *storage, or it is NULL when the original source can be used directly.
+bool ass_prepare_override_block(char **start, char **end, ASS_OverrideText **storage);
+char *ass_parse_override_block(RenderContext *state, char *start, char *end);
+void ass_free_override_buffers(RenderContext *state);
 unsigned ass_get_next_char(RenderContext *state, char **str);
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested);
