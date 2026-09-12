@@ -2574,12 +2574,9 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->rnd_z = 0.0;
     state->needs_rgba = false;
     state->distort_enabled = false;
-    state->distort_u1 = 1.0;
-    state->distort_v1 = 0.0;
-    state->distort_u2 = 1.0;
-    state->distort_v2 = 1.0;
-    state->distort_u3 = 0.0;
-    state->distort_v3 = 1.0;
+    state->distort = (ASS_DistortParams) {
+        .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
+    };
 
     capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
@@ -2645,12 +2642,9 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->reset_effect = false;
     state->fade_color = (FadeColorState) {0};
     state->distort_enabled = false;
-    state->distort_u1 = 1.0;
-    state->distort_v1 = 0.0;
-    state->distort_u2 = 1.0;
-    state->distort_v2 = 1.0;
-    state->distort_u3 = 0.0;
-    state->distort_v3 = 1.0;
+    state->distort = (ASS_DistortParams) {
+        .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
+    };
     state->line_border_style_set = false;
     state->line_border_style = 0;
 
@@ -4617,12 +4611,7 @@ static bool append_glyph_to_target(RenderContext *state,
     }
 #endif
     info->distort_enabled = state->distort_enabled;
-    info->distort_u1 = state->distort_u1;
-    info->distort_v1 = state->distort_v1;
-    info->distort_u2 = state->distort_u2;
-    info->distort_v2 = state->distort_v2;
-    info->distort_u3 = state->distort_u3;
-    info->distort_v3 = state->distort_v3;
+    info->distort = state->distort;
     info->distorted_outline = NULL;
     info->has_distort_bitmap = false;
     info->has_distort_outline = false;
@@ -5104,12 +5093,7 @@ static void retrieve_glyphs_from_list(RenderContext *state,
         GlyphInfo *root = info;
         do {
             info->distort_enabled = root->distort_enabled;
-            info->distort_u1 = root->distort_u1;
-            info->distort_v1 = root->distort_v1;
-            info->distort_u2 = root->distort_u2;
-            info->distort_v2 = root->distort_v2;
-            info->distort_u3 = root->distort_u3;
-            info->distort_v3 = root->distort_v3;
+            info->distort = root->distort;
             get_outline_glyph(state, info);
             if (info->has_rnd) {
                 // Pad metrics so bbox/collision/clipping include rnd jitter plus stroke/shadow
@@ -5930,9 +5914,10 @@ static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
 {
     if (!a->distort_enabled || !b->distort_enabled)
         return false;
-    return a->distort_u1 == b->distort_u1 && a->distort_v1 == b->distort_v1 &&
-           a->distort_u2 == b->distort_u2 && a->distort_v2 == b->distort_v2 &&
-           a->distort_u3 == b->distort_u3 && a->distort_v3 == b->distort_v3;
+    return a->distort.u1 == b->distort.u1 && a->distort.v1 == b->distort.v1 &&
+           a->distort.u2 == b->distort.u2 && a->distort.v2 == b->distort.v2 &&
+           a->distort.u3 == b->distort.u3 && a->distort.v3 == b->distort.v3 &&
+           a->distort.u0 == b->distort.u0 && a->distort.v0 == b->distort.v0;
 }
 
 static bool clone_outline(ASS_Outline *dst, const ASS_Outline *src)
@@ -5984,12 +5969,6 @@ static bool distort_warp_glyph(GlyphInfo *info,
     distorted->desc = base->desc;
     distorted->valid = true;
 
-    // Corner pins: P0 fixed at (0,0); P1=(u1,v1) top-right; P2=(u2,v2) bottom-right; P3=(u3,v3) bottom-left.
-    ASS_DistortParams params = {
-        .u1 = info->distort_u1, .v1 = info->distort_v1,
-        .u2 = info->distort_u2, .v2 = info->distort_v2,
-        .u3 = info->distort_u3, .v3 = info->distort_v3,
-    };
     double pos_x = info->pos.x;
     double pos_y = info->pos.y;
     double scale_x = info->transform.scale.x;
@@ -6003,7 +5982,7 @@ static bool distort_warp_glyph(GlyphInfo *info,
             double x = ol->points[pi].x * scale_x + off_x + pos_x;
             double y = ol->points[pi].y * scale_y + off_y + pos_y;
 
-            ASS_DVector mapped = ass_distort_map_point(&params, min_x, min_y,
+            ASS_DVector mapped = ass_distort_map_point(&info->distort, min_x, min_y,
                                                        max_x, max_y, x, y);
 
             double local_x = mapped.x - pos_x - off_x;
@@ -7863,20 +7842,12 @@ static bool bs4_box_matrix(RenderContext *state, const BS4BoxGeometry *box,
         { left * 64.0,  bottom * 64.0 },
     };
     if (box->geometry.distort_enabled) {
-        ASS_DistortParams params = {
-            .u1 = box->geometry.distort_u1,
-            .v1 = box->geometry.distort_v1,
-            .u2 = box->geometry.distort_u2,
-            .v2 = box->geometry.distort_v2,
-            .u3 = box->geometry.distort_u3,
-            .v3 = box->geometry.distort_v3,
-        };
         const double x0 = domain_left * 64.0;
         const double y0 = domain_top * 64.0;
         const double x1 = domain_right * 64.0;
         const double y1 = domain_bottom * 64.0;
         for (int i = 0; i < 4; i++)
-            points[i] = ass_distort_map_point(&params, x0, y0, x1, y1,
+            points[i] = ass_distort_map_point(&box->geometry.distort, x0, y0, x1, y1,
                                               points[i].x, points[i].y);
     }
 

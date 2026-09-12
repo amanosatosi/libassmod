@@ -107,8 +107,9 @@ For `\ortho` semantics and examples, see:
   See [Unicode decimal digits in ASS numbers](docs/unicode-decimal-digits.md)
   for scope and examples.
 
-- `\distort(u1,v1,u2,v2,u3,v3)`  
-  Corner-pin distortion
+- `\distort(u1,v1,u2,v2,u3,v3)` or `\distort(u1,v1,u2,v2,u3,v3,u0,v0)`
+  Corner-pin distortion; optional P0 (top-left) comes last for compatibility.
+  See [syntax and animation](docs/distort-tag.md).
 
 - `\rnd<value>`  
 - `\rndx<value>`  

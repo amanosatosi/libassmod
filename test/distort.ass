@@ -12,3 +12,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\distort(1,0,1,1,0,1)}Pinned box identity
 Dialogue: 0,0:00:05.00,0:00:10.00,Default,,0,0,0,,{\distort(1,0,1.6,1,0,1)}two  words same warp
 Dialogue: 0,0:00:10.00,0:00:15.00,Default,,0,0,0,,{\t(0,1000,\distort(1,0,2,1,0,1))}Animated warp
+Dialogue: 0,0:00:15.00,0:00:20.00,Default,,0,0,0,,{\distort(1,0,1,1,0,1,0.2,0.1)}Move top-left only
+Dialogue: 0,0:00:20.00,0:00:25.00,Default,,0,0,0,,{\t(0,1000,\distort(1,0,1,1,0,1,-0.25,0.125))}Animate top-left
+Dialogue: 0,0:00:25.00,0:00:30.00,Default,,0,0,0,,{\distort(1,0,1,1,0,1,0.2,0.1)\t(0,1000,\distort(1,0,1,1,0,1))}Return to legacy pins

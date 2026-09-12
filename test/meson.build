@@ -18,6 +18,15 @@ distort_unit = executable(
     link_with: libass_for_tools,
 )
 
+distort_render_unit = executable(
+    'distort_render_unit',
+    files('distort_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 clip_unit = executable(
     'clip_unit',
     files('clip_selftest.c'),
@@ -140,6 +149,7 @@ if get_option('default_library') != 'shared'
 endif
 
 test('distortion-warp', distort_unit)
+test('distortion-render', distort_render_unit)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit)
 test('multi-border-extension', multiborder_unit)

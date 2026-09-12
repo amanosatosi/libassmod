@@ -37,6 +37,7 @@
 #include "ass_fontselect.h"
 #include "ass_library.h"
 #include "ass_drawing.h"
+#include "ass_distort.h"
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
 #include "gradient.h"
@@ -287,9 +288,7 @@ typedef struct glyph_info {
     double hspacing;
     int hspacing_scaled;        // 26.6
     bool distort_enabled;
-    double distort_u1, distort_v1;
-    double distort_u2, distort_v2;
-    double distort_u3, distort_v3;
+    ASS_DistortParams distort;
     OutlineHashValue *distorted_outline;
     Bitmap distort_bitmap, distort_bitmap_o;
     Bitmap distort_bitmap_border[ASS_BORDER_LAYERS_MAX - 1];
@@ -623,9 +622,7 @@ struct render_context {
     int32_t effect_skip_timing;
     bool reset_effect;
     bool distort_enabled;
-    double distort_u1, distort_v1;
-    double distort_u2, distort_v2;
-    double distort_u3, distort_v3;
+    ASS_DistortParams distort;
 
     enum {
         SCROLL_LR,              // left-to-right

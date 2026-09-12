@@ -2561,12 +2561,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (*name_end != '(' || has_backslash_arg)
                 continue;
 
-            double current[6] = {
-                state->distort_u1, state->distort_v1,
-                state->distort_u2, state->distort_v2,
-                state->distort_u3, state->distort_v3,
+            // ASS keeps its historical P1, P2, P3 order; P0 is appended.
+            double current[8] = {
+                state->distort.u1, state->distort.v1,
+                state->distort.u2, state->distort.v2,
+                state->distort.u3, state->distort.v3,
+                state->distort.u0, state->distort.v0,
             };
-            double target[6];
+            double target[8] = {0};
             char *raw_start = name_end + 1;
             char *raw_end = q;
             if (raw_start >= raw_end)
@@ -2574,13 +2576,20 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (raw_end[-1] == ')')
                 raw_end--;
 
+            // Count raw slots: push_arg drops empty coordinates. Only the
+            // new eight-slot form changes parsing; all other counts retain
+            // the legacy six-slot parser (including its trailing comma).
+            int slots = 1;
+            for (char *scan = raw_start; scan < raw_end; scan++)
+                slots += *scan == ',';
+            int count = slots == 8 ? 8 : 6;
             char *ptr = raw_start;
             bool ok = true;
-            for (int i = 0; i < 6; i++) {
+            for (int i = 0; i < count; i++) {
                 if (ptr < raw_end)
                     skip_spaces(&ptr);
                 char *next = memchr(ptr, ',', raw_end - ptr);
-                if (i < 5 && !next) {
+                if (i < count - 1 && !next) {
                     ok = false;
                     break;
                 }
@@ -2602,12 +2611,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 continue;
 
             state->distort_enabled = true;
-            state->distort_u1 = calc_anim(target[0], state->distort_u1, pwr);
-            state->distort_v1 = calc_anim(target[1], state->distort_v1, pwr);
-            state->distort_u2 = calc_anim(target[2], state->distort_u2, pwr);
-            state->distort_v2 = calc_anim(target[3], state->distort_v2, pwr);
-            state->distort_u3 = calc_anim(target[4], state->distort_u3, pwr);
-            state->distort_v3 = calc_anim(target[5], state->distort_v3, pwr);
+            state->distort.u1 = calc_anim(target[0], state->distort.u1, pwr);
+            state->distort.v1 = calc_anim(target[1], state->distort.v1, pwr);
+            state->distort.u2 = calc_anim(target[2], state->distort.u2, pwr);
+            state->distort.v2 = calc_anim(target[3], state->distort.v2, pwr);
+            state->distort.u3 = calc_anim(target[4], state->distort.u3, pwr);
+            state->distort.v3 = calc_anim(target[5], state->distort.v3, pwr);
+            // A six-slot target resets P0, or animates it toward (0,0).
+            state->distort.u0 = calc_anim(target[6], state->distort.u0, pwr);
+            state->distort.v0 = calc_anim(target[7], state->distort.v0, pwr);
         } else if (complex_tag("iclip")) {
             apply_clip_tag(state, "iclip", true, name_end, q, end, pwr);
         } else if (tag("blur")) {
