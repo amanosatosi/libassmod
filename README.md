@@ -107,6 +107,13 @@ For `\ortho` semantics and examples, see:
   See [Unicode decimal digits in ASS numbers](docs/unicode-decimal-digits.md)
   for scope and examples.
 
+- Relative numeric values
+  Eligible amounts accept `+N` / `-N`; signed coordinates and angles require
+  `~+N` / `~-N`. Explicit `~` works for both classes, in ordinary overrides and
+  existing transforms. Percentages use additive percentage points, and `\fsc`
+  is an independent soft glyph multiplier. See [syntax, supported parameters,
+  and compatibility](docs/relative-numbers.md).
+
 - `\distort(u1,v1,u2,v2,u3,v3)` or `\distort(u1,v1,u2,v2,u3,v3,u0,v0)`
   Corner-pin distortion; optional P0 (top-left) comes last for compatibility.
   See [syntax and animation](docs/distort-tag.md).

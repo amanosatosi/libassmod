@@ -1457,12 +1457,15 @@ static double motion_progress_at(RenderContext *state,
     return ((double) (int32_t) ((uint32_t) t - t1)) / delta_t;
 }
 
-static ASS_DVector evaluate_motion_at(RenderContext *state, int64_t time)
+static ASS_DVector evaluate_base_motion_at(RenderContext *state, int64_t time)
 {
     MotionState *m = &state->motion;
     switch (m->type) {
     case MOTION_POS:
-        return (ASS_DVector) {m->x1, m->y1};
+        return (ASS_DVector) {
+            m->relative_x ? state->pos_x + m->x1 : m->x1,
+            m->relative_y ? state->pos_y + m->y1 : m->y1,
+        };
     case MOTION_MOVE: {
         double k = motion_progress_at(state, m, time);
         double x = m->x1 + (m->x2 - m->x1) * k;
@@ -1502,6 +1505,20 @@ static ASS_DVector evaluate_motion_at(RenderContext *state, int64_t time)
     default:
         return (ASS_DVector) {state->pos_x, state->pos_y};
     }
+}
+
+static ASS_DVector evaluate_motion_at(RenderContext *state, int64_t time)
+{
+    ASS_DVector pos = evaluate_base_motion_at(state, time);
+    if (state->pos_override_x)
+        pos.x = state->pos_offset.x;
+    else if (state->pos_offset.x != 0.0)
+        pos.x += state->pos_offset.x;
+    if (state->pos_override_y)
+        pos.y = state->pos_offset.y;
+    else if (state->pos_offset.y != 0.0)
+        pos.y += state->pos_offset.y;
+    return pos;
 }
 
 static inline uint32_t jitter_rand15(uint32_t *state)
@@ -2544,6 +2561,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->scale_x = style->ScaleX;
     state->scale_y = style->ScaleY;
     state->object_scale = 1.0;
+    state->soft_scale = 1.0;
     state->hspacing = style->Spacing;
     state->fsvp = 0;
     state->fshp = 0;
@@ -2604,6 +2622,8 @@ init_render_context(RenderContext *state, ASS_Event *event)
 
     state->pos_x = 0;
     state->pos_y = 0;
+    state->pos_offset = (ASS_DVector) {0};
+    state->pos_override_x = state->pos_override_y = false;
     state->org_x = 0;
     state->org_y = 0;
     state->have_origin = 0;
@@ -4507,6 +4527,10 @@ static bool append_glyph_to_target(RenderContext *state,
 
     double scale_x = state->scale_x * object_scale;
     double scale_y = state->scale_y * object_scale;
+    if (state->soft_scale != 1.0) {
+        scale_x *= state->soft_scale;
+        scale_y *= state->soft_scale;
+    }
     double hspacing = state->hspacing;
     if (is_furi) {
         scale_x *= state->furi_scale_x / 100.0;
@@ -4542,6 +4566,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->shadow_y = state->shadow_y * object_scale;
     info->scale_x = scale_x;
     info->scale_y = scale_y;
+    info->soft_scale = state->soft_scale;
     info->border_style = state->border_style;
     info->border_x = state->border_x * object_scale;
     info->border_y = state->border_y * object_scale;
@@ -5322,8 +5347,8 @@ static ASS_DVector evaluate_pos_segment(const RenderContext *state,
         double progress = duration > 0.0 ? elapsed / duration : 1.0;
         progress = FFMINMAX(progress, 0.0, 1.0);
         double eased = pow(progress, tr->accel);
-        pos.x += (tr->x - anchor.x) * eased;
-        pos.y += (tr->y - anchor.y) * eased;
+        pos.x += (tr->target_x - anchor.x) * eased;
+        pos.y += (tr->target_y - anchor.y) * eased;
     }
     return pos;
 }
@@ -5341,8 +5366,11 @@ static ASS_DVector evaluate_animated_position(RenderContext *state)
         return evaluate_motion_at(state, now);
 
     int64_t first = INT64_MAX;
-    for (int i = 0; i < state->n_pos_transforms; i++)
+    for (int i = 0; i < state->n_pos_transforms; i++) {
         first = FFMIN(first, (int64_t) state->pos_transforms[i].t1);
+        state->pos_transforms[i].target_x = state->pos_transforms[i].x;
+        state->pos_transforms[i].target_y = state->pos_transforms[i].y;
+    }
 
     if (now <= first)
         return evaluate_motion_at(state, now);
@@ -5352,7 +5380,13 @@ static ASS_DVector evaluate_animated_position(RenderContext *state)
     for (;;) {
         int64_t next = INT64_MAX;
         for (int i = 0; i < state->n_pos_transforms; i++) {
-            const PosTransformState *tr = &state->pos_transforms[i];
+            PosTransformState *tr = &state->pos_transforms[i];
+            if (tr->t1 == segment_start) {
+                if (tr->relative_x)
+                    tr->target_x = anchor.x + tr->x;
+                if (tr->relative_y)
+                    tr->target_y = anchor.y + tr->y;
+            }
             if (tr->t1 > segment_start)
                 next = FFMIN(next, (int64_t) tr->t1);
             if (tr->t2 > segment_start)
@@ -7708,6 +7742,12 @@ static bool bs4_effective_scales(const BS4BoxGeometry *box,
 {
     double x = box->geometry.scale_x * box->geometry.scale_fix;
     double y = box->geometry.scale_y * box->geometry.scale_fix;
+    if (box->geometry.soft_scale != 1.0) {
+        if (!isfinite(box->geometry.soft_scale) || box->geometry.soft_scale <= 0.0)
+            return false;
+        x /= box->geometry.soft_scale;
+        y /= box->geometry.soft_scale;
+    }
     if (!isfinite(x) || !isfinite(y) || x == 0.0 || y == 0.0)
         return false;
     *scale_x = fabs(x);
@@ -8200,7 +8240,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
     }
 
-    if (state->motion.type != MOTION_NONE || state->n_pos_transforms) {
+    bool automatic_position =
+        (state->motion.relative_x && !state->pos_override_x) ||
+        (state->motion.relative_y && !state->pos_override_y);
+    if (state->motion.type == MOTION_NONE)
+        for (int i = 0; i < state->n_pos_transforms; i++)
+            automatic_position |= state->pos_transforms[i].relative_x ||
+                                  state->pos_transforms[i].relative_y;
+    if (!automatic_position &&
+            (state->motion.type != MOTION_NONE || state->n_pos_transforms)) {
         ASS_DVector pos = evaluate_animated_position(state);
         state->pos_x = pos.x;
         state->pos_y = pos.y;
@@ -8400,6 +8448,23 @@ ass_render_event(RenderContext *state, ASS_Event *event,
                    &text_base_x, &text_base_y);
     object_anchor.x = device_x + object_base_x;
     object_anchor.y = device_y + object_base_y;
+    if (automatic_position) {
+        // Layout has now resolved Style margins, alignment and glyph metrics.
+        // Convert that anchor back to script units before applying operands.
+        double x0 = x2scr_pos(render_priv, 0);
+        double y0 = y2scr_pos(render_priv, 0);
+        double sx = x2scr_pos(render_priv, 1) - x0;
+        double sy = y2scr_pos(render_priv, 1) - y0;
+        state->pos_x = sx != 0 ? (object_anchor.x - x0) / sx : 0;
+        state->pos_y = sy != 0 ? (object_anchor.y - y0) / sy : 0;
+        ASS_DVector pos = evaluate_animated_position(state);
+        state->pos_x = pos.x;
+        state->pos_y = pos.y;
+        object_anchor.x = x2scr_pos(render_priv, pos.x);
+        object_anchor.y = y2scr_pos(render_priv, pos.y);
+        state->evt_type |= EVENT_POSITIONED;
+        state->detect_collisions = 0;
+    }
     device_x = object_anchor.x - text_base_x;
     device_y = object_anchor.y - text_base_y;
 

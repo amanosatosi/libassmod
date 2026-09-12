@@ -11,6 +11,9 @@ Mangetsu implements VSFilterMod’s six-argument `\distort` override tag and an 
   - P1 `(u1,v1)`: top-right
   - P2 `(u2,v2)`: bottom-right
   - P3 `(u3,v3)`: bottom-left
+- **Relative coordinates:** use explicit `~+N` or `~-N`, for example
+  `\distort(~+0.1,0,1,1,0,1,~+0.2,~-0.1)`. Bare signs remain absolute.
+  See [relative numeric values](relative-numbers.md).
 - **Defaults / enable:** The tag is disabled until first used. Defaults are identity: P0 `(0,0)`, P1 `(1,0)`, P2 `(1,1)`, P3 `(0,1)`. `\r` resets to disabled and the default corners. A six-argument tag after an eight-argument tag restores P0 to `(0,0)`.
 - **Animation:** Fully animatable with `\t`; each component, including `u0,v0`, interpolates independently toward its target with the same timing and acceleration. Six-argument transform targets interpolate P0 toward `(0,0)`. All transitions between six- and eight-argument states are supported.
 - **Scope:** Applied per word-like unit (runs split at spaces/NBSP/newlines and when `\distort` parameters change). Vector drawings (`\p`) are warped per drawing chunk. All layers (fill, border, shadow) share the same warp.

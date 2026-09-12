@@ -54,6 +54,83 @@ static inline double argtod(struct arg arg)
     return value;
 }
 
+typedef enum {
+    NUM_SIGNED,       // bare signs are absolute; relative values require ~
+    NUM_NONNEGATIVE,  // bare signs also introduce relative values
+} NumericDomain;
+
+typedef struct {
+    double value;
+    bool relative;
+} NumericOperand;
+
+/* Keep absolute parsing at each tag's existing strictness. Only the new
+ * relative spelling requires a complete, finite signed operand. Resolution
+ * happens in script units, before the tag's own conversion and validation. */
+static bool parse_numeric_operand(struct arg arg, NumericDomain domain,
+                                  bool strict, NumericOperand *out)
+{
+    char *ptr = arg.start;
+    skip_spaces(&ptr);
+    bool explicit_relative = ptr < arg.end && *ptr == '~';
+    if (explicit_relative)
+        ptr++;
+    bool sign = ptr < arg.end && (*ptr == '+' || *ptr == '-');
+    if (explicit_relative && !sign)
+        return false;
+    out->relative = explicit_relative || (domain == NUM_NONNEGATIVE && sign);
+    if (out->relative) {
+        if (!mystrtod(&ptr, &out->value) || !isfinite(out->value))
+            return false;
+        while (ptr < arg.end && (*ptr == ' ' || *ptr == '\t'))
+            ptr++;
+        if (ptr != arg.end)
+            return false;
+    } else if (strict) {
+        if (!parse_double_arg_strict(arg, &out->value))
+            return false;
+    } else {
+        out->value = argtod(arg);
+    }
+    return true;
+}
+
+static double resolve_numeric_operand(NumericOperand operand, double current)
+{
+    return operand.relative ? current + operand.value : operand.value;
+}
+
+static double numeric_argtod(struct arg arg, double current, NumericDomain domain)
+{
+    NumericOperand operand;
+    if (!parse_numeric_operand(arg, domain, false, &operand))
+        return current;
+    return resolve_numeric_operand(operand, current);
+}
+
+static void numeric_argtod_pair(struct arg arg, double current_x, double current_y,
+                                NumericDomain domain, double *x, double *y)
+{
+    NumericOperand operand;
+    if (!parse_numeric_operand(arg, domain, false, &operand)) {
+        *x = current_x;
+        *y = current_y;
+        return;
+    }
+    *x = resolve_numeric_operand(operand, current_x);
+    *y = resolve_numeric_operand(operand, current_y);
+}
+
+static bool numeric_arg_strict(struct arg arg, double current,
+                               NumericDomain domain, double *value)
+{
+    NumericOperand operand;
+    if (!parse_numeric_operand(arg, domain, true, &operand))
+        return false;
+    *value = resolve_numeric_operand(operand, current);
+    return isfinite(*value);
+}
+
 static inline void push_arg(struct arg *args, int *nargs, char *start, char *end)
 {
     if (*nargs <= MAX_VALID_NARGS) {
@@ -83,7 +160,7 @@ static inline int mystrcmp(char **p, const char *sample)
 
 static inline bool rnd_numeric_start(const char *p)
 {
-    if (*p == '+' || *p == '-' || *p == '.')
+    if (*p == '+' || *p == '-' || *p == '.' || *p == '~')
         return true;
     char *next = (char *) p;
     return ass_unicode_decimal_value(ass_utf8_get_char(&next)) >= 0;
@@ -142,6 +219,22 @@ static double calc_anim(double new, double old, double pwr)
    return (1 - pwr) * old + new * pwr;
 }
 
+static int32_t numeric_argtoi32(struct arg arg, double current, NumericDomain domain)
+{
+    char *ptr = arg.start;
+    skip_spaces(&ptr);
+    // Keep the common absolute path on the original integer parser alone.
+    if (ptr >= arg.end || (*ptr != '~' &&
+            (domain == NUM_SIGNED || (*ptr != '+' && *ptr != '-'))))
+        return argtoi32(arg);
+    NumericOperand operand;
+    if (!parse_numeric_operand(arg, domain, false, &operand))
+        return dtoi32(current);
+    // Preserve legacy integer tokenization (including numeric prefixes).
+    return operand.relative ? dtoi32(resolve_numeric_operand(operand, current)) :
+                              argtoi32(arg);
+}
+
 static int32_t calc_anim_int32(uint32_t new, uint32_t old, double pwr)
 {
     return dtoi32(calc_anim(new, old, pwr));
@@ -153,13 +246,16 @@ static void apply_motion(RenderContext *state, MotionState motion,
     if (motion.type == MOTION_NONE || pwr <= 0)
         return;
 
-    if ((state->evt_type & EVENT_POSITIONED) && !allow_override)
+    if (((state->evt_type & EVENT_POSITIONED) ||
+            state->motion.type != MOTION_NONE) && !allow_override)
         return;
 
     MotionState *dst = &state->motion;
     MotionState old = *dst;
 
     dst->type = motion.type;
+    dst->relative_x = motion.relative_x;
+    dst->relative_y = motion.relative_y;
     dst->x1 = calc_anim(motion.x1, old.x1, pwr);
     dst->y1 = calc_anim(motion.y1, old.y1, pwr);
     dst->x2 = calc_anim(motion.x2, old.x2, pwr);
@@ -212,9 +308,9 @@ static void apply_jitter(RenderContext *state, JitterState jitter, double pwr)
     }
 }
 
-static double jitter_extent_from_arg(struct arg arg)
+static double jitter_extent_from_arg(struct arg arg, double current)
 {
-    int32_t raw = argtoi32(arg);
+    int32_t raw = numeric_argtoi32(arg, current / 8.0, NUM_NONNEGATIVE);
     int64_t extent = raw;
     if (extent < 0)
         extent = -extent;
@@ -232,7 +328,41 @@ static void normalize_motion_timing(MotionState *motion)
     }
 }
 
-static bool append_pos_transform(RenderContext *state, double x, double y)
+/* Translate the already parsed position timeline, including absolute targets.
+ * Relative targets stay deltas. This applies an ordinary operand to the current
+ * animated position without evaluating (and then applying) the animation twice.
+ * A mixed absolute axis replaces that axis throughout the preceding timeline.
+ */
+static void apply_relative_position(RenderContext *state,
+                                    NumericOperand x, NumericOperand y)
+{
+    if (state->motion.type == MOTION_NONE) {
+        state->motion = (MotionState) {
+            .type = MOTION_POS, .relative_x = true, .relative_y = true,
+        };
+    }
+    state->pos_offset.x = resolve_numeric_operand(x, state->pos_offset.x);
+    state->pos_offset.y = resolve_numeric_operand(y, state->pos_offset.y);
+    state->pos_override_x |= !x.relative;
+    state->pos_override_y |= !y.relative;
+    for (int i = 0; i < state->n_pos_transforms; i++) {
+        PosTransformState *tr = &state->pos_transforms[i];
+        if (!x.relative || !tr->relative_x)
+            tr->x = resolve_numeric_operand(x, tr->x);
+        if (!y.relative || !tr->relative_y)
+            tr->y = resolve_numeric_operand(y, tr->y);
+        tr->relative_x &= x.relative;
+        tr->relative_y &= y.relative;
+    }
+    if ((state->motion.relative_x && !state->pos_override_x) ||
+            (state->motion.relative_y && !state->pos_override_y))
+        state->evt_type &= ~EVENT_POSITIONED;
+    else
+        state->evt_type |= EVENT_POSITIONED;
+    state->detect_collisions = 0;
+}
+
+static bool append_pos_transform(RenderContext *state, NumericOperand x, NumericOperand y)
 {
     if (!state->pos_transform_context)
         return false;
@@ -242,7 +372,7 @@ static bool append_pos_transform(RenderContext *state, double x, double y)
     double accel = state->pos_transform_accel;
     if (t2 <= t1)
         return false;
-    if (!isfinite(x) || !isfinite(y) || !isfinite(accel) || accel <= 0.0)
+    if (!isfinite(x.value) || !isfinite(y.value) || !isfinite(accel) || accel <= 0.0)
         return false;
 
     if (state->n_pos_transforms >= state->max_pos_transforms) {
@@ -257,8 +387,10 @@ static bool append_pos_transform(RenderContext *state, double x, double y)
     }
 
     state->pos_transforms[state->n_pos_transforms++] = (PosTransformState) {
-        .x = x,
-        .y = y,
+        .x = x.value,
+        .y = y.value,
+        .relative_x = x.relative,
+        .relative_y = y.relative,
         .accel = accel,
         .t1 = t1,
         .t2 = t2,
@@ -442,6 +574,8 @@ static void apply_img_tag(RenderContext *state, int layer,
     if (path_arg.end > path_arg.start)
         state->renderer->track->has_rgba = 1;
 
+    double old_x = state->image_fill.layer[layer].xoffset;
+    double old_y = state->image_fill.layer[layer].yoffset;
     if (pwr >= 1.0 && path_arg.end > path_arg.start) {
         state->image_fill.layer[layer].enabled = true;
         state->image_fill.layer[layer].path.str = path_arg.start;
@@ -457,10 +591,10 @@ static void apply_img_tag(RenderContext *state, int layer,
 
     if (have_offsets) {
         state->image_fill.layer[layer].xoffset =
-            dtoi32(calc_anim(argtoi32(x_arg),
+            dtoi32(calc_anim(numeric_argtoi32(x_arg, old_x, NUM_SIGNED),
                              state->image_fill.layer[layer].xoffset, pwr));
         state->image_fill.layer[layer].yoffset =
-            dtoi32(calc_anim(argtoi32(y_arg),
+            dtoi32(calc_anim(numeric_argtoi32(y_arg, old_y, NUM_SIGNED),
                              state->image_fill.layer[layer].yoffset, pwr));
     }
 }
@@ -573,10 +707,15 @@ static int split_clip_args(char *start, char *end,
 static bool parse_clip_rectangle_coord(RenderContext *state, struct arg token,
                                        int idx, int32_t *value)
 {
-    char *ptr = token.start;
+    const double current[] = {state->clip_x0, state->clip_y0,
+                              state->clip_x1, state->clip_y1};
     double parsed;
 
-    if (!mystrtod(&ptr, &parsed) || ptr != token.end) {
+    char *ptr = token.start;
+    bool valid = ptr < token.end && *ptr == '~' ?
+        numeric_arg_strict(token, current[idx], NUM_SIGNED, &parsed) :
+        mystrtod(&ptr, &parsed) && ptr == token.end;
+    if (!valid) {
         ass_msg(state->renderer->library, MSGL_DBG2,
                 "PARSE clip rectangle coord[%d] rejected: '%.*s'",
                 idx, (int) (token.end - token.start), token.start);
@@ -1965,13 +2104,6 @@ static void set_border_layer_size_pair(RenderContext *state, int layer,
     }
 }
 
-static void set_border_layer_size(RenderContext *state, int layer,
-                                  bool set_x, bool set_y, double val,
-                                  double pwr)
-{
-    set_border_layer_size_pair(state, layer, set_x, set_y, val, val, pwr);
-}
-
 static void set_box_border_layer_size(RenderContext *state, int layer,
                                       double val, double pwr)
 {
@@ -1993,7 +2125,7 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
         double val;
         if (!arg.start) {
             set_box_border_layer_size(state, layer, 0, pwr);
-        } else if (parse_double_arg_strict(arg, &val)) {
+        } else if (numeric_arg_strict(arg, border->size_x, NUM_NONNEGATIVE, &val)) {
             set_box_border_layer_size(state, layer, val, pwr);
         }
         break;
@@ -2059,7 +2191,7 @@ static void apply_numbered_border_tag(RenderContext *state,
     case BORDER_TAG_SIZE:
     case BORDER_TAG_SIZE_X:
     case BORDER_TAG_SIZE_Y: {
-        double val;
+        NumericOperand operand;
         if (!arg.start) {
             const BorderLayerState *def =
                 &state->default_style.border_layers[layer];
@@ -2068,13 +2200,18 @@ static void apply_numbered_border_tag(RenderContext *state,
                                        tag != BORDER_TAG_SIZE_X,
                                        def->size_x, def->size_y, pwr);
             break;
-        } else if (!parse_double_arg_strict(arg, &val)) {
+        } else if (!parse_numeric_operand(arg, NUM_NONNEGATIVE, true, &operand)) {
             return;
         }
-        set_border_layer_size(state, layer,
-                              tag != BORDER_TAG_SIZE_Y,
-                              tag != BORDER_TAG_SIZE_X,
-                              val, pwr);
+        const BorderLayerState *border = &state->border_layers[layer];
+        double x = resolve_numeric_operand(operand, border->size_x);
+        double y = resolve_numeric_operand(operand, border->size_y);
+        if (!isfinite(x) || !isfinite(y))
+            return;
+        set_border_layer_size_pair(state, layer,
+                                   tag != BORDER_TAG_SIZE_Y,
+                                   tag != BORDER_TAG_SIZE_X,
+                                   x, y, pwr);
         break;
     }
     case BORDER_TAG_COLOR: {
@@ -2419,8 +2556,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             continue;
         } else if (tag("colsp")) {
             if (nargs) {
+                const TextInfo *info = &state->text_info;
+                int column = state->column_index;
+                double current = column >= 0 && column < info->max_columns ?
+                    info->column_spacing[column] : 1.0;
                 double val;
-                if (parse_double_arg_strict(*args, &val))
+                if (numeric_arg_strict(*args, current, NUM_NONNEGATIVE, &val))
                     ass_column_set_spacing(state, val);
             }
         } else if (tag("colan")) {
@@ -2439,7 +2580,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("xbord")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->border_x, NUM_NONNEGATIVE);
                 val = state->border_x * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
             } else
@@ -2450,7 +2591,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("ybord")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->border_y, NUM_NONNEGATIVE);
                 val = state->border_y * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
             } else
@@ -2461,7 +2602,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("xshad")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->shadow_x, NUM_SIGNED);
                 val = state->shadow_x * (1 - pwr) + val * pwr;
             } else
                 val = state->default_style.shadow_x;
@@ -2470,7 +2611,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("yshad")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->shadow_y, NUM_SIGNED);
                 val = state->shadow_y * (1 - pwr) + val * pwr;
             } else
                 val = state->default_style.shadow_y;
@@ -2479,7 +2620,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fax")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->fax, NUM_SIGNED);
                 state->fax =
                     val * pwr + state->fax * (1 - pwr);
             } else
@@ -2487,51 +2628,30 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fay")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->fay, NUM_SIGNED);
                 state->fay =
                     val * pwr + state->fay * (1 - pwr);
             } else
                 state->fay = 0.;
         } else if (complex_tag("rndx")) {
             // Match axis-specific rnd* first so \rnd does not swallow them
-            double val = 0.0;
-            if (nargs) {
-                val = fabs(argtod(*args));
-            } else {
-                char *tmp = p;
-                if (rnd_numeric_start(tmp))
-                    mystrtod(&tmp, &val);
-                val = fabs(val);
-                p = tmp;
-            }
+            struct arg value = nargs ? *args : (struct arg) {p, name_end};
+            double val = nargs || rnd_numeric_start(p) ?
+                fabs(numeric_argtod(value, state->rnd_x, NUM_NONNEGATIVE)) : 0;
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_x = calc_anim(val, state->rnd_x, pwr);
         } else if (complex_tag("rndy")) {
-            double val = 0.0;
-            if (nargs) {
-                val = fabs(argtod(*args));
-            } else {
-                char *tmp = p;
-                if (rnd_numeric_start(tmp))
-                    mystrtod(&tmp, &val);
-                val = fabs(val);
-                p = tmp;
-            }
+            struct arg value = nargs ? *args : (struct arg) {p, name_end};
+            double val = nargs || rnd_numeric_start(p) ?
+                fabs(numeric_argtod(value, state->rnd_y, NUM_NONNEGATIVE)) : 0;
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_y = calc_anim(val, state->rnd_y, pwr);
         } else if (complex_tag("rndz")) {
-            double val = 0.0;
-            if (nargs) {
-                val = fabs(argtod(*args));
-            } else {
-                char *tmp = p;
-                if (rnd_numeric_start(tmp))
-                    mystrtod(&tmp, &val);
-                val = fabs(val);
-                p = tmp;
-            }
+            struct arg value = nargs ? *args : (struct arg) {p, name_end};
+            double val = nargs || rnd_numeric_start(p) ?
+                fabs(numeric_argtod(value, state->rnd_z, NUM_NONNEGATIVE)) : 0;
             if (val > ASS_RND_MAX_PX)
                 val = ASS_RND_MAX_PX;
             state->rnd_z = calc_anim(val, state->rnd_z, pwr);
@@ -2542,21 +2662,18 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 continue;
 
             push_arg(args, &nargs, p, name_end);
-            double val = 0.0;
-            if (nargs) {
-                val = fabs(argtod(*args));
-            } else {
-                char *tmp = p;
-                if (rnd_numeric_start(tmp))
-                    mystrtod(&tmp, &val);
-                val = fabs(val);
-                p = tmp;
-            }
-            if (val > ASS_RND_MAX_PX)
-                val = ASS_RND_MAX_PX;
-            state->rnd_x = calc_anim(val, state->rnd_x, pwr);
-            state->rnd_y = calc_anim(val, state->rnd_y, pwr);
-            state->rnd_z = calc_anim(val, state->rnd_z, pwr);
+            NumericOperand operand;
+            if (!parse_numeric_operand(*args, NUM_NONNEGATIVE, false, &operand))
+                operand = (NumericOperand) {.relative = true};
+            double x = fabs(resolve_numeric_operand(operand, state->rnd_x));
+            double y = fabs(resolve_numeric_operand(operand, state->rnd_y));
+            double z = fabs(resolve_numeric_operand(operand, state->rnd_z));
+            x = x > ASS_RND_MAX_PX ? ASS_RND_MAX_PX : x;
+            y = y > ASS_RND_MAX_PX ? ASS_RND_MAX_PX : y;
+            z = z > ASS_RND_MAX_PX ? ASS_RND_MAX_PX : z;
+            state->rnd_x = calc_anim(x, state->rnd_x, pwr);
+            state->rnd_y = calc_anim(y, state->rnd_y, pwr);
+            state->rnd_z = calc_anim(z, state->rnd_z, pwr);
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;
@@ -2600,7 +2717,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 if (tok_end == ptr)
                     target[i] = current[i];
                 else
-                    target[i] = argtod((struct arg){ptr, tok_end});
+                    target[i] = numeric_argtod((struct arg){ptr, tok_end}, current[i], NUM_SIGNED);
                 ptr = next ? next + 1 : raw_end;
             }
             skip_spaces(&ptr);
@@ -2623,9 +2740,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("iclip")) {
             apply_clip_tag(state, "iclip", true, name_end, q, end, pwr);
         } else if (tag("blur")) {
-            double target = nargs ? argtod(*args) :
-                            state->default_style.blur_x;
-            double target_y = nargs ? target : state->default_style.blur_y;
+            double target = state->default_style.blur_x;
+            double target_y = state->default_style.blur_y;
+            if (nargs)
+                numeric_argtod_pair(*args, state->blur_x, state->blur_y,
+                                    NUM_NONNEGATIVE, &target, &target_y);
             double val_x = state->blur_x * (1 - pwr) + target * pwr;
             double val_y = state->blur_y * (1 - pwr) + target_y * pwr;
 
@@ -2640,7 +2759,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("xblur")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->blur_x, NUM_NONNEGATIVE);
                 val = state->blur_x * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
                 val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
@@ -2650,7 +2769,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("yblur")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->blur_y, NUM_NONNEGATIVE);
                 val = state->blur_y * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
                 val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
@@ -2661,7 +2780,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("scale")) {
             double target = 1.0;
             if (nargs) {
-                if (!parse_double_arg_strict(*args, &target))
+                if (!numeric_arg_strict(*args, state->object_scale * 100, NUM_NONNEGATIVE, &target))
                     continue;
                 target /= 100.0;
                 if (!isfinite(target))
@@ -2672,7 +2791,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fscx")) {
             double val;
             if (nargs) {
-                val = argtod(*args) / 100;
+                val = numeric_argtod(*args, state->scale_x * 100, NUM_NONNEGATIVE) / 100;
                 val = state->scale_x * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
             } else
@@ -2681,7 +2800,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fscy")) {
             double val;
             if (nargs) {
-                val = argtod(*args) / 100;
+                val = numeric_argtod(*args, state->scale_y * 100, NUM_NONNEGATIVE) / 100;
                 val = state->scale_y * (1 - pwr) + val * pwr;
                 val = (val < 0) ? 0 : val;
             } else
@@ -2689,14 +2808,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->scale_y = val;
         } else if (tag("fsc")) {
             if (nargs) {
-                double val = argtod(*args) / 100;
-                double x = state->scale_x * (1 - pwr) + val * pwr;
-                double y = state->scale_y * (1 - pwr) + val * pwr;
-                state->scale_x = x < 0 ? 0 : x;
-                state->scale_y = y < 0 ? 0 : y;
+                double val = numeric_argtod(*args, state->soft_scale * 100,
+                                            NUM_NONNEGATIVE) / 100;
+                val = state->soft_scale * (1 - pwr) + val * pwr;
+                state->soft_scale = val < 0 ? 0 : val;
             } else {
-                state->scale_x = state->style->ScaleX;
-                state->scale_y = state->style->ScaleY;
+                state->soft_scale = 1.0;
             }
         } else if (complex_tag("furipos")) {
             if (!nargs) {
@@ -2705,13 +2822,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->furi_position_explicit = false;
             } else if (nargs == 2) {
                 state->furi_offset_x =
-                    state->furi_offset_x * (1 - pwr) + argtod(args[0]) * pwr;
+                    state->furi_offset_x * (1 - pwr) +
+                    numeric_argtod(args[0], state->furi_offset_x, NUM_SIGNED) * pwr;
                 state->furi_offset_y =
-                    state->furi_offset_y * (1 - pwr) + argtod(args[1]) * pwr;
+                    state->furi_offset_y * (1 - pwr) +
+                    numeric_argtod(args[1], state->furi_offset_y, NUM_SIGNED) * pwr;
                 state->furi_position_explicit = true;
             }
         } else if (tag("furifsp")) {
-            double val = nargs ? argtod(*args) : 0.0;
+            double val = nargs ? numeric_argtod(*args, state->furi_hspacing, NUM_SIGNED) : 0.0;
             state->furi_hspacing =
                 state->furi_hspacing * (1 - pwr) + val * pwr;
         } else if (tag("furistyle")) {
@@ -2719,17 +2838,20 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (val >= 0 && val <= 2)
                 state->furi_style = val;
         } else if (tag("furisx")) {
-            double val = nargs ? argtod(*args) : 50.0;
+            double val = nargs ? numeric_argtod(*args, state->furi_scale_x, NUM_NONNEGATIVE) : 50.0;
             val = state->furi_scale_x * (1 - pwr) + val * pwr;
             state->furi_scale_x = val < 0 ? 0 : val;
         } else if (tag("furisy")) {
-            double val = nargs ? argtod(*args) : 50.0;
+            double val = nargs ? numeric_argtod(*args, state->furi_scale_y, NUM_NONNEGATIVE) : 50.0;
             val = state->furi_scale_y * (1 - pwr) + val * pwr;
             state->furi_scale_y = val < 0 ? 0 : val;
         } else if (tag("furis")) {
-            double val = nargs ? argtod(*args) : 50.0;
+            double val = 50.0, val_y = 50.0;
+            if (nargs)
+                numeric_argtod_pair(*args, state->furi_scale_x, state->furi_scale_y,
+                                    NUM_NONNEGATIVE, &val, &val_y);
             double x = state->furi_scale_x * (1 - pwr) + val * pwr;
-            double y = state->furi_scale_y * (1 - pwr) + val * pwr;
+            double y = state->furi_scale_y * (1 - pwr) + val_y * pwr;
             state->furi_scale_x = x < 0 ? 0 : x;
             state->furi_scale_y = y < 0 ? 0 : y;
         } else if (tag("furiap")) {
@@ -2741,7 +2863,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fsp")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->hspacing, NUM_SIGNED);
                 state->hspacing =
                     state->hspacing * (1 - pwr) + val * pwr;
             } else
@@ -2749,36 +2871,34 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fsvp")) {
             double val;
             if (nargs)
-                val = state->fsvp * (1 - pwr) + argtod(*args) * pwr;
+                val = state->fsvp * (1 - pwr) + numeric_argtod(*args, state->fsvp, NUM_SIGNED) * pwr;
             else
                 val = 0;
             state->fsvp = val;
         } else if (tag("fshp")) {
             double val;
             if (nargs)
-                val = state->fshp * (1 - pwr) + argtod(*args) * pwr;
+                val = state->fshp * (1 - pwr) + numeric_argtod(*args, state->fshp, NUM_SIGNED) * pwr;
             else
                 val = 0;
             state->fshp = val;
         } else if (tag("fs")) {
             double val = 0;
             if (nargs) {
-                val = argtod(*args);
-                if (*args->start == '+' || *args->start == '-')
-                    val = state->font_size * (1 + pwr * val / 10);
-                else
-                    val = state->font_size * (1 - pwr) + val * pwr;
+                val = numeric_argtod(*args, state->font_size, NUM_NONNEGATIVE);
+                val = state->font_size * (1 - pwr) + val * pwr;
             }
             if (val <= 0)
                 val = state->default_style.font_size;
             state->font_size = val;
             column_default(COLUMN_STYLE_FONT_SIZE);
         } else if (tag("bord")) {
-            double val, xval, yval;
+            double val, val_y, xval, yval;
             if (nargs) {
-                val = argtod(*args);
+                numeric_argtod_pair(*args, state->border_x, state->border_y,
+                                    NUM_NONNEGATIVE, &val, &val_y);
                 xval = state->border_x * (1 - pwr) + val * pwr;
-                yval = state->border_y * (1 - pwr) + val * pwr;
+                yval = state->border_y * (1 - pwr) + val_y * pwr;
                 xval = (xval < 0) ? 0 : xval;
                 yval = (yval < 0) ? 0 : yval;
             } else {
@@ -2792,11 +2912,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("movevc")) {
             if (nargs == 2 || nargs == 4 || nargs == 6) {
                 MoveVCState mv = { .active = true };
-                mv.x1 = argtod(args[0]);
-                mv.y1 = argtod(args[1]);
+                mv.x1 = numeric_argtod(args[0], state->movevc.x1, NUM_SIGNED);
+                mv.y1 = numeric_argtod(args[1], state->movevc.y1, NUM_SIGNED);
                 if (nargs >= 4) {
-                    mv.x2 = argtod(args[2]);
-                    mv.y2 = argtod(args[3]);
+                    mv.x2 = numeric_argtod(args[2], state->movevc.x2, NUM_SIGNED);
+                    mv.y2 = numeric_argtod(args[3], state->movevc.y2, NUM_SIGNED);
                     mv.animated = true;
                 } else {
                     mv.x2 = mv.x1;
@@ -2820,15 +2940,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("mover")) {
             MotionState mv = { .type = MOTION_MOVER };
             if (nargs == 4 || nargs == 6 || nargs == 8 || nargs == 10) {
-                mv.x1 = argtod(args[0]);
-                mv.y1 = argtod(args[1]);
-                mv.x2 = argtod(args[2]);
-                mv.y2 = argtod(args[3]);
+                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
+                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
+                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
+                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
                 if (nargs >= 8) {
-                    mv.angle1 = argtod(args[4]);
-                    mv.angle2 = argtod(args[5]);
-                    mv.radius1 = argtod(args[6]);
-                    mv.radius2 = argtod(args[7]);
+                    mv.angle1 = numeric_argtod(args[4], state->motion.angle1, NUM_SIGNED);
+                    mv.angle2 = numeric_argtod(args[5], state->motion.angle2, NUM_SIGNED);
+                    mv.radius1 = numeric_argtod(args[6], state->motion.radius1, NUM_SIGNED);
+                    mv.radius2 = numeric_argtod(args[7], state->motion.radius2, NUM_SIGNED);
                 }
                 if (nargs == 6 || nargs == 10) {
                     mv.has_timing = true;
@@ -2841,12 +2961,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("moves3")) {
             MotionState mv = { .type = MOTION_MOVES3 };
             if (nargs == 6 || nargs == 8) {
-                mv.x1 = argtod(args[0]);
-                mv.y1 = argtod(args[1]);
-                mv.x2 = argtod(args[2]);
-                mv.y2 = argtod(args[3]);
-                mv.x3 = argtod(args[4]);
-                mv.y3 = argtod(args[5]);
+                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
+                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
+                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
+                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
+                mv.x3 = numeric_argtod(args[4], state->motion.x3, NUM_SIGNED);
+                mv.y3 = numeric_argtod(args[5], state->motion.y3, NUM_SIGNED);
                 if (nargs == 8) {
                     mv.has_timing = true;
                     mv.t1 = argtoi32(args[6]);
@@ -2858,14 +2978,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("moves4")) {
             MotionState mv = { .type = MOTION_MOVES4 };
             if (nargs == 8 || nargs == 10) {
-                mv.x1 = argtod(args[0]);
-                mv.y1 = argtod(args[1]);
-                mv.x2 = argtod(args[2]);
-                mv.y2 = argtod(args[3]);
-                mv.x3 = argtod(args[4]);
-                mv.y3 = argtod(args[5]);
-                mv.x4 = argtod(args[6]);
-                mv.y4 = argtod(args[7]);
+                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
+                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
+                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
+                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
+                mv.x3 = numeric_argtod(args[4], state->motion.x3, NUM_SIGNED);
+                mv.y3 = numeric_argtod(args[5], state->motion.y3, NUM_SIGNED);
+                mv.x4 = numeric_argtod(args[6], state->motion.x4, NUM_SIGNED);
+                mv.y4 = numeric_argtod(args[7], state->motion.y4, NUM_SIGNED);
                 if (nargs == 10) {
                     mv.has_timing = true;
                     mv.t1 = argtoi32(args[8]);
@@ -2877,10 +2997,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("move")) {
             MotionState mv = { .type = MOTION_MOVE };
             if (nargs == 4 || nargs == 6) {
-                mv.x1 = argtod(args[0]);
-                mv.y1 = argtod(args[1]);
-                mv.x2 = argtod(args[2]);
-                mv.y2 = argtod(args[3]);
+                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
+                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
+                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
+                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
                 if (nargs == 6) {
                     mv.has_timing = true;
                     mv.t1 = argtoi32(args[4]);
@@ -2892,7 +3012,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("frx")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->frx, NUM_SIGNED);
                 state->frx =
                     val * pwr + state->frx * (1 - pwr);
             } else
@@ -2900,7 +3020,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("fry")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->fry, NUM_SIGNED);
                 state->fry =
                     val * pwr + state->fry * (1 - pwr);
             } else
@@ -2908,14 +3028,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("frs")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->frs, NUM_SIGNED);
                 state->frs = val * pwr + state->frs * (1 - pwr);
             } else
                 state->frs = 0.;
         } else if (tag("frz") || tag("fr")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->frz, NUM_SIGNED);
                 state->frz =
                     val * pwr + state->frz * (1 - pwr);
             } else
@@ -2924,7 +3044,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("z")) {
             double val;
             if (nargs) {
-                val = argtod(*args);
+                val = numeric_argtod(*args, state->z, NUM_SIGNED);
                 val = state->z * (1 - pwr) + val * pwr;
                 if (!isfinite(val))
                     val = 0.0;
@@ -3017,19 +3137,27 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->parsed_tags |= PARSED_A;
             }
         } else if (complex_tag("pos")) {
-            double v1, v2;
+            NumericOperand x, y;
             if (nargs == 2) {
-                v1 = argtod(args[0]);
-                v2 = argtod(args[1]);
+                if (!parse_numeric_operand(args[0], NUM_SIGNED, false, &x) ||
+                        !parse_numeric_operand(args[1], NUM_SIGNED, false, &y))
+                    continue;
             } else
                 continue;
+            bool relative = x.relative || y.relative;
             if (state->pos_transform_context) {
-                append_pos_transform(state, v1, v2);
-            } else if (state->evt_type & EVENT_POSITIONED) {
+                append_pos_transform(state, x, y);
+            } else if (relative) {
+                if (pwr > 0)
+                    apply_relative_position(state, x, y);
+            } else if ((state->evt_type & EVENT_POSITIONED) ||
+                       state->motion.type != MOTION_NONE) {
                 ass_msg(render_priv->library, MSGL_V, "Subtitle has a new \\pos "
                        "after \\move or \\pos, ignoring");
             } else {
-                MotionState mv = { .type = MOTION_POS, .x1 = v1, .y1 = v2 };
+                MotionState mv = {
+                    .type = MOTION_POS, .x1 = x.value, .y1 = y.value,
+                };
                 apply_motion(state, mv, pwr, false);
             }
         } else if (tag("jitter0")) {
@@ -3040,12 +3168,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else if (nargs >= 4) {
                 JitterState jit = ass_jitter_default_state();
                 jit.enabled = true;
-                jit.left = jitter_extent_from_arg(args[0]);
-                jit.right = jitter_extent_from_arg(args[1]);
-                jit.up = jitter_extent_from_arg(args[2]);
-                jit.down = jitter_extent_from_arg(args[3]);
+                jit.left = jitter_extent_from_arg(args[0], state->jitter.left);
+                jit.right = jitter_extent_from_arg(args[1], state->jitter.right);
+                jit.up = jitter_extent_from_arg(args[2], state->jitter.up);
+                jit.down = jitter_extent_from_arg(args[3], state->jitter.down);
                 if (nargs >= 5) {
-                    double period_ms = fabs(argtod(args[4]));
+                    double period_ms = fabs(numeric_argtod(args[4],
+                        state->jitter.period / 10000.0, NUM_NONNEGATIVE));
                     jit.period = period_ms * 10000.0;
                     jit.has_period = true;
                     if (nargs >= 6) {
@@ -3504,21 +3633,25 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("boxpx")) {
             if (nargs) {
                 double val;
-                if (parse_double_arg_strict(*args, &val))
+                if (numeric_arg_strict(*args, state->box_extra_x, NUM_NONNEGATIVE, &val))
                     state->box_extra_x = FFMAX(val, 0);
             }
         } else if (tag("boxpy")) {
             if (nargs) {
                 double val;
-                if (parse_double_arg_strict(*args, &val))
+                if (numeric_arg_strict(*args, state->box_extra_y, NUM_NONNEGATIVE, &val))
                     state->box_extra_y = FFMAX(val, 0);
             }
         } else if (tag("boxp")) {
             if (nargs) {
-                double val;
-                if (parse_double_arg_strict(*args, &val)) {
-                    state->box_extra_x = FFMAX(val, 0);
-                    state->box_extra_y = FFMAX(val, 0);
+                NumericOperand operand;
+                if (!parse_numeric_operand(*args, NUM_NONNEGATIVE, true, &operand))
+                    continue;
+                double x = resolve_numeric_operand(operand, state->box_extra_x);
+                double y = resolve_numeric_operand(operand, state->box_extra_y);
+                if (isfinite(x) && isfinite(y)) {
+                    state->box_extra_x = FFMAX(x, 0);
+                    state->box_extra_y = FFMAX(y, 0);
                 }
             }
         } else if (tag("box")) {
@@ -3541,7 +3674,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             double dval;
             if (nargs) {
                 int32_t val;
-                dval = argtod(*args);
+                dval = numeric_argtod(*args, state->be, NUM_NONNEGATIVE);
                 // VSFilter always adds +0.5, even if the value is negative
                 val = dtoi32(state->be * (1 - pwr) + dval * pwr + 0.5);
                 // Clamp to a safe upper limit, since high values need excessive CPU
@@ -3606,11 +3739,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     (uint32_t) state->effect_timing;
             state->effect_timing = dtoi32(val * 10);
         } else if (tag("shad")) {
-            double val, xval, yval;
+            double val, val_y, xval, yval;
             if (nargs) {
-                val = argtod(*args);
+                numeric_argtod_pair(*args, state->shadow_x, state->shadow_y,
+                                    NUM_NONNEGATIVE, &val, &val_y);
                 xval = state->shadow_x * (1 - pwr) + val * pwr;
-                yval = state->shadow_y * (1 - pwr) + val * pwr;
+                yval = state->shadow_y * (1 - pwr) + val_y * pwr;
                 // VSFilter compatibility: clip for \shad but not for \[xy]shad
                 xval = (xval < 0) ? 0 : xval;
                 yval = (yval < 0) ? 0 : yval;
@@ -3640,7 +3774,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->flags &= ~DECO_UNDERLINE;
             column_default(COLUMN_STYLE_UNDERLINE);
         } else if (tag("pbo")) {
-            double val = argtod(*args);
+            double val = numeric_argtod(*args, state->pbo, NUM_SIGNED);
             state->pbo = val;
         } else if (tag("p")) {
             int32_t val = argtoi32(*args);

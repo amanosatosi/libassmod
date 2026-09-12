@@ -27,6 +27,15 @@ distort_render_unit = executable(
     link_with: libass_for_tools,
 )
 
+relative_numbers_unit = executable(
+    'relative_numbers_unit',
+    files('relative_numbers_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 clip_unit = executable(
     'clip_unit',
     files('clip_selftest.c'),
@@ -150,6 +159,7 @@ endif
 
 test('distortion-warp', distort_unit)
 test('distortion-render', distort_render_unit)
+test('relative-numbers', relative_numbers_unit, timeout: 120)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit)
 test('multi-border-extension', multiborder_unit)

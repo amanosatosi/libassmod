@@ -87,10 +87,11 @@ Three or more overlapping position transforms follow the same rule:
 ```
 
 The default is 100%. `\scale100` is render-equivalent to omitting the tag.
-Negative values are clamped to zero, and malformed values are ignored.
+Bare signed values now use [relative percentage-point syntax](relative-numbers.md).
+Resolved negative values are clamped to zero, and malformed values are ignored.
 
-`\fsc`, `\fscx`, and `\fscy` retain their existing ASS behavior underneath the
-global scale. The factors multiply:
+`\fscx` and `\fscy` are direct axis scales. `\fsc` is a separate soft glyph
+multiplier, defaulting to 100%, underneath the object scale. The factors multiply:
 
 ```ass
 {\scale120\fscx80\fscy110}

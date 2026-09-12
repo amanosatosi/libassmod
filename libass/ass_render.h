@@ -280,6 +280,7 @@ typedef struct glyph_info {
     bool ortho;                 // orthographic projection toggle
     double fax, fay;            // text shearing
     double scale_x, scale_y;
+    double soft_scale;          // exclude \fsc from fixed BS4 padding/widths
     // amount of scale_x,y change due to fix_glyph_scaling
     // scale_fix = before / after
     double scale_fix;
@@ -493,6 +494,7 @@ typedef struct {
     double x3, y3, x4, y4;
     double angle1, angle2;
     double radius1, radius2;
+    bool relative_x, relative_y; // MOTION_POS offsets from automatic placement
     bool has_timing;
     int32_t t1, t2;
 } MotionState;
@@ -506,6 +508,8 @@ typedef struct {
     double x, y;
     double accel;
     int32_t t1, t2;
+    bool relative_x, relative_y;
+    double target_x, target_y;  // resolved at the start boundary each evaluation
 } PosTransformState;
 
 #include "ass_shaper.h"
@@ -539,8 +543,11 @@ struct render_context {
     double fax, fay;            // text shearing
     double pos_x, pos_y;        // position
     double org_x, org_y;        // origin
+    ASS_DVector pos_offset;     // ordinary relative \pos applied to the motion
+    bool pos_override_x, pos_override_y; // mixed absolute axes in that operand
     double scale_x, scale_y;
     double object_scale;        // Mangetsu top-level local geometry scale
+    double soft_scale;          // independent \fsc glyph multiplier; 1 = 100%
     double hspacing;            // distance between letters, in pixels
     double fsvp;                // per-glyph vertical shift, script pixels
     double fshp;                // extra vertical spacing between lines, script pixels
