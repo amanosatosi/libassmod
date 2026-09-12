@@ -4121,28 +4121,31 @@ int ass_event_has_hard_overrides(char *str)
             char *end = strchr(str, '}');
             char *limit = end ? end : str + strlen(str);
             char *scan = str;
-            ASS_OverrideText *buffer = NULL;
-            // An unmatched opening brace keeps its existing scan behavior.
-            if (end && !ass_prepare_override_block(&scan, &limit, &buffer))
-                return 0;
             bool found = false;
             while (scan < limit) {
+                // Unmatched opening braces retain their original raw scan.
+                if (end)
+                    ass_override_peek(&scan, limit);
+                if (scan == limit)
+                    break;
                 if (*scan == '\\') {
-                    char *p = scan + 1;
-                    if (mystrcmp(&p, "pos") || mystrcmp(&p, "move") ||
-                        mystrcmp(&p, "mover") || mystrcmp(&p, "moves3") ||
-                        mystrcmp(&p, "moves4") || mystrcmp(&p, "jitter") ||
-                        mystrcmp(&p, "movevc") ||
-                        mystrcmp(&p, "clip") || mystrcmp(&p, "iclip") ||
-                        mystrcmp(&p, "org") || mystrcmp(&p, "pbo") ||
-                        mystrcmp(&p, "p"))
-                        found = true;
+                    static const char *const names[] = {
+                        "pos", "move", "mover", "moves3", "moves4", "jitter",
+                        "movevc", "clip", "iclip", "org", "pbo", "p",
+                    };
+                    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+                        char *p = scan + 1;
+                        if (end ? ass_override_prefix(&p, limit, names[i]) :
+                                  mystrcmp(&p, names[i])) {
+                            found = true;
+                            break;
+                        }
+                    }
                 }
                 if (found)
                     break;
                 scan++;
             }
-            free(buffer);
             if (found)
                 return 1;
             str = end ? end + 1 : limit;

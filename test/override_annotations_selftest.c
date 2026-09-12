@@ -15,6 +15,8 @@ typedef struct {
     uint64_t hash, coverage;
     int count;
     double font_size, soft_scale, object_scale, frz;
+    int line_border_style;
+    bool line_border_style_set;
     bool explicit, source_intact, buffers_released;
 } Sample;
 
@@ -78,6 +80,8 @@ static Sample capture(ASS_Renderer *renderer, ASS_Track *track, long long now)
     out.soft_scale = s->soft_scale;
     out.object_scale = s->object_scale;
     out.frz = s->frz;
+    out.line_border_style = s->line_border_style;
+    out.line_border_style_set = s->line_border_style_set;
     out.explicit = s->explicit;
     out.buffers_released = s->override_buffers == NULL;
     for (ASS_Image *img = images; img; img = img->next) {
@@ -115,7 +119,9 @@ static bool check_pair(ASS_Library *lib, ASS_Renderer *renderer,
             fabs(a.font_size - b.font_size) < 1e-8 &&
             fabs(a.soft_scale - b.soft_scale) < 1e-8 &&
             fabs(a.object_scale - b.object_scale) < 1e-8 &&
-            fabs(a.frz - b.frz) < 1e-8 && a.explicit == b.explicit;
+            fabs(a.frz - b.frz) < 1e-8 && a.explicit == b.explicit &&
+            a.line_border_style_set == b.line_border_style_set &&
+            a.line_border_style == b.line_border_style;
         // Empty annotation-only blocks are tested separately below.
         ok &= a.coverage != 0;
     }
@@ -210,6 +216,109 @@ static bool test_pairs(ASS_Library *lib, ASS_Renderer *renderer)
     return ok;
 }
 
+static bool test_prescans(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    // Insert comments/markers between every source byte, including tag names,
+    // signs, digits and UTF-8 continuation bytes. The original compacting path
+    // and the new streaming prescans must agree on the same clean source.
+    const char *blocks[] = {
+        "\\bs4", "\\bs+0004", "\\bs( +0004 )", "\\bsjunk(4)",
+        "\\bs4 \\bs1", "\\bs4\t\\bs1", "\\bs(4 )\\bs1",
+        "\\bs000000000000000000000000000000000000000000000000000000000000000000004",
+        "\\bs999999999999999999999999999999999999999999999999999999999999999999999\\bs1",
+        "\\bs-4\\bs1", "\\bs+-4\\bs1", "\\bs4.0\\bs1", "\\bs4x\\bs1",
+        "\\bs\v+4", "\\bs4\v\\bs1", "\\bs + 4\\bs1",
+        "\\bs\xEF\xBC\x94", "\\bs\xF0\x9D\x9F\x9C", // Unicode 4
+        "\\bs\xC0\xAB" "4", "\\bs\xC0\xA0" "4", // existing permissive UTF-8
+        "\\bs4\xC0\xA0\\bs1", // trailing whitespace is still ASCII-only
+        "\\bs\xEF\xBC\\bs1", // truncated UTF-8 stays invalid
+        "\\t(0,500,\\bs4)", "\\t(0,500,\\t(0,500,\\bs4))",
+        "\\t (0,500,\\bs4)", "\\unknown(\\bs4)\\bs1",
+        "\\t(0,500,\\bs(4))\\bs1", "\\bs(4", "\\t(0,500,\\bs4",
+        "\\t((\\bs4)",
+        "\\col1\\colsp8", "\\col0", "\\col+1", "\\col01", "\\col(1)",
+        "\\col 1 \\colsp8", "\\col\xEF\xBC\x91\\colsp8",
+        "\\col\xF0\x9D\x9F\x99\\colsp8", // Unicode 1
+        "\\col\xEF\xBC", "\\col\v1", "\\col1\v", "\\unknown(\\col1)",
+        "\\t(0,500,\\col1)", "\\col1\\col0\\col1",
+        "\\pos(500,300)", "\\move(400,300,600,300)",
+        "\\mover(400,300,600,300)", "\\moves3(400,300,500,200,600,300)",
+        "\\moves4(400,300,450,200,550,200,600,300)",
+        "\\movevc(0,0)", "\\jitter(0,0,0,0)", "\\clip(0,0,1000,700)",
+        "\\iclip(0,0,1,1)", "\\org(500,350)", "\\pbo0", "\\p0",
+        "\\positions", "\\ position", // preserve prefix/whitespace quirks
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
+        char annotated[4096], clean[1024];
+        char *out = annotated;
+        *out++ = '{';
+        for (const char *p = blocks[i]; *p; p++) {
+            const char ignored[] = "[,(\\bs5\\col1\\pos(1,1))]\\N";
+            if ((size_t) (out - annotated) + sizeof(ignored) + 20 >= sizeof(annotated))
+                return false;
+            memcpy(out, ignored, sizeof(ignored) - 1);
+            out += sizeof(ignored) - 1;
+            *out++ = *p;
+        }
+        strcpy(out, "[]}Left|Right");
+        snprintf(clean, sizeof(clean), "{%s}Left|Right", blocks[i]);
+        ok &= check_pair(lib, renderer, annotated, clean, 0);
+        ok &= check_pair(lib, renderer, annotated, clean, 400);
+    }
+    const struct { const char *a, *b; } edges[] = {
+        {"{\\bs[unclosed\\bs5}Text", "{\\bs}Text"},
+        {"{\\t([)]0,[,]500,\\b[x]s([)]4[)]))}Text", "{\\t(0,500,\\bs(4))}Text"},
+        {"{\\t[ ](0,500,\\bs4)[\\bs5]}Text", "{\\t(0,500,\\bs4)}Text"},
+        {"{[abc[\\bs5]\\bs4}Text", "{\\bs4}Text"},
+        {"{[abc[\\col1]\\col0}Left|Right", "{\\col0}Left|Right"},
+        {"{\\co[unclosed\\col1}Left|Right", "{\\co}Left|Right"},
+        {"{\\cl[unclosed\\pos(1,1)}Text", "{\\cl}Text"},
+        {"{[\\bs5\\col1\\pos(1,1)]}Text{\\bs1}Next", "{}Text{\\bs1}Next"},
+        {"{\\[x]N\\bs4}Text", "{\\N\\bs4}Text"},
+    };
+    for (size_t i = 0; i < sizeof(edges) / sizeof(edges[0]); i++)
+        ok &= check_pair(lib, renderer, edges[i].a, edges[i].b, 400);
+
+    // Fix baseline expectations too, so an identical regression in both the
+    // clean and annotated scans cannot make the differential pairs pass.
+    const struct { const char *text; int border; bool hard; } expected[] = {
+        {"{\\bs+0004}Text", 4, false},
+        {"{\\bsjunk(4)}Text", 4, false},
+        {"{\\bs4.0\\bs1}Text", 1, false},
+        {"{\\bs4 \\bs1}Text", 1, false},
+        {"{\\bs4\t\\bs1}Text", 1, false},
+        {"{\\bs(4 )\\bs1}Text", 1, false},
+        {"{\\bs4\v\\bs1}Text", 1, false},
+        {"{\\bs\v+4}Text", 4, false},
+        {"{\\bs\xC0\xAB" "4}Text", 4, false},
+        {"{\\bs\xC0\xA0" "4}Text", 4, false},
+        {"{\\bs4\xC0\xA0\\bs1}Text", 1, false},
+        {"{\\t (0,500,\\bs4)\\bs1}Text", 1, false},
+        {"{\\t((\\bs4)}Text", 4, false},
+        {"{[\\pos(1,1)]\\bs1}Text", 1, false},
+        {"{\\positions\\bs1}Text", 1, true},
+        {"{\\ position\\bs1}Text", 1, false},
+        // The old hard-override scan does not strip an unmatched '{' suffix.
+        {"{\\bs1}Text {[\\pos(1,1)", 1, true},
+    };
+    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        ASS_Track *track = read_track(lib, expected[i].text);
+        if (!track) return false;
+        Sample s = capture(renderer, track, 400);
+        if (!s.coverage || s.line_border_style != expected[i].border ||
+                !s.line_border_style_set || s.explicit != expected[i].hard) {
+            fprintf(stderr, "prescan baseline changed: %s\n", expected[i].text);
+            ok = false;
+        }
+        ass_free_track(track);
+    }
+    ok &= check_pair(lib, renderer, "{\\col+1}Left|Right", "{}Left|Right", 0);
+    ok &= check_pair(lib, renderer, "{\\col01}Left|Right", "{}Left|Right", 0);
+    ok &= check_pair(lib, renderer, "{\\col(1)}Left|Right", "{}Left|Right", 0);
+    return ok;
+}
+
 static bool test_boundaries(ASS_Library *lib, ASS_Renderer *renderer)
 {
     const char *empty[] = {"{\\N}", "{[]}", "{[abc]}", "{[abc}"};
@@ -270,6 +379,7 @@ int main(void)
     ass_set_storage_size(renderer, 1000, 700);
     ass_set_fonts(renderer, NULL, "sans-serif", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     bool ok = test_pairs(lib, renderer);
+    ok &= test_prescans(lib, renderer);
     ok &= test_boundaries(lib, renderer);
     ass_renderer_done(renderer);
     ass_library_done(lib);

@@ -2369,32 +2369,82 @@ static bool border_style_tag_value_valid(int32_t value)
     return value == 1 || value == 3 || value == 4 || value == 5;
 }
 
+static unsigned override_codepoint(char **p, char *end)
+{
+    if (ass_override_peek(p, end) < 0x80)
+        return ass_override_next(p, end);
+
+    // Include one lookahead byte for the existing UTF-8 decoder's malformed
+    // sequence behavior. An annotation can even split UTF-8 bytes.
+    char bytes[7] = {0};
+    char *positions[6];
+    char *next = *p;
+    for (int i = 0; i < 6; i++) {
+        bytes[i] = ass_override_next(&next, end);
+        positions[i] = next;
+        if (!bytes[i])
+            break;
+    }
+    char *decoded = bytes;
+    unsigned code = ass_utf8_get_char(&decoded);
+    *p = positions[decoded - bytes - 1];
+    return code;
+}
+
 static bool parse_border_style_tag_value(char *start, char *end,
                                          int *border_style)
 {
-    int32_t value;
-    skip_spaces(&start);
-    rskip_spaces(&end, start);
-    if (start >= end || !mystrtoi32(&start, 10, &value))
-        return false;
-    skip_spaces(&start);
-    if (start != end || !border_style_tag_value_valid(value))
+    // strtoll's leading ASCII whitespace/sign rules, without constructing a
+    // numeric string. Only 1/3/4/5 can succeed, so saturation at 6 is sufficient
+    // even for arbitrarily long zero prefixes or overflowing invalid values.
+    char *next = start;
+    unsigned c = override_codepoint(&next, end);
+    while (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') {
+        start = next;
+        c = override_codepoint(&next, end);
+    }
+    bool negative = c == '-';
+    if (c == '+' || c == '-')
+        start = next;
+    int value = 0;
+    bool have_digit = false;
+    for (;;) {
+        next = start;
+        int digit = ass_unicode_decimal_value(override_codepoint(&next, end));
+        if (digit < 0)
+            break;
+        value = FFMIN(value * 10 + digit, 6);
+        have_digit = true;
+        start = next;
+    }
+    // Preserve the old rskip_spaces/skip_spaces end-pointer check: trailing
+    // whitespace made a BorderStyle value invalid, even ASCII space/tab.
+    ass_override_peek(&start, end);
+    if (!have_digit || negative || start != end || !border_style_tag_value_valid(value))
         return false;
     *border_style = value;
     return true;
 }
 
-static char *skip_parenthesized_tag_args(char *p, char *end)
+static char *skip_parenthesized_tag_args(char *p, char *end, char **value_end)
 {
-    if (p >= end || *p != '(')
+    if (value_end)
+        *value_end = end;
+    if (ass_override_peek(&p, end) != '(')
         return p;
 
     int depth = 1;
     p++;
     while (p < end && depth > 0) {
-        if (*p == '(')
+        unsigned char c = ass_override_peek(&p, end);
+        if (p == end)
+            break;
+        // The old scan trimmed a final ')' even with unbalanced parentheses.
+        if (value_end)
+            *value_end = c == ')' ? p : end;
+        if (c == '(')
             depth++;
-        else if (*p == ')')
+        else if (c == ')')
             depth--;
         p++;
     }
@@ -2405,23 +2455,23 @@ static bool scan_border_style_override_block(RenderContext *state,
                                              char *p, char *end)
 {
     while (p < end) {
-        while (p < end && *p != '\\')
+        while (ass_override_peek(&p, end) && *p != '\\')
             p++;
         if (p >= end)
             return false;
 
         p++;
-        skip_spaces(&p);
+        ass_override_spaces(&p, end);
         char *name = p;
-        while (p < end && *p != '\\' && *p != '(')
+        while (ass_override_peek(&p, end) && *p != '\\' && *p != '(')
             p++;
         char *name_end = p;
 
-        bool bs_tag = name_end - name >= 2 &&
-                      name[0] == 'b' && name[1] == 's';
+        char *value = name;
+        bool bs_tag = ass_override_prefix(&value, name_end, "bs");
         if (bs_tag) {
             int border_style;
-            if (parse_border_style_tag_value(name + 2, name_end,
+            if (parse_border_style_tag_value(value, name_end,
                                              &border_style)) {
                 state->line_border_style_set = true;
                 state->line_border_style = border_style;
@@ -2431,9 +2481,8 @@ static bool scan_border_style_override_block(RenderContext *state,
 
             if (p < end && *p == '(') {
                 char *arg_start = p + 1;
-                char *arg_end = skip_parenthesized_tag_args(p, end);
-                char *value_end = arg_end > arg_start &&
-                                  arg_end[-1] == ')' ? arg_end - 1 : arg_end;
+                char *value_end;
+                skip_parenthesized_tag_args(p, end, &value_end);
                 if (parse_border_style_tag_value(arg_start, value_end,
                                                  &border_style)) {
                     state->line_border_style_set = true;
@@ -2444,18 +2493,18 @@ static bool scan_border_style_override_block(RenderContext *state,
             }
         }
 
-        if (name_end - name == 1 && name[0] == 't' &&
+        if (ass_override_prefix(&name, name_end, "t") &&
+                !ass_override_peek(&name, name_end) &&
                 p < end && *p == '(') {
             char *arg_start = p + 1;
-            char *arg_end = skip_parenthesized_tag_args(p, end);
-            char *nested_end = arg_end > arg_start &&
-                               arg_end[-1] == ')' ? arg_end - 1 : arg_end;
+            char *nested_end;
+            char *arg_end = skip_parenthesized_tag_args(p, end, &nested_end);
             if (scan_border_style_override_block(state, arg_start,
                                                  nested_end))
                 return true;
             p = arg_end;
         } else {
-            p = skip_parenthesized_tag_args(p, end);
+            p = skip_parenthesized_tag_args(p, end, NULL);
         }
     }
 
@@ -2471,13 +2520,7 @@ static void scan_line_border_style_override(RenderContext *state, char *text)
             char *end = strchr(p, '}');
             if (!end)
                 break;
-            char *start = p + 1, *limit = end;
-            ASS_OverrideText *buffer;
-            if (!ass_prepare_override_block(&start, &limit, &buffer))
-                return;
-            bool found = scan_border_style_override_block(state, start, limit);
-            free(buffer);
-            if (found)
+            if (scan_border_style_override_block(state, p + 1, end))
                 return;
             p = end + 1;
         } else {
@@ -4927,30 +4970,12 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
     return group->length > 0;
 }
 
-static char *skip_column_tag_args(char *p, char *end)
-{
-    if (p >= end || *p != '(')
-        return p;
-
-    int depth = 1;
-    p++;
-    while (p < end && depth > 0) {
-        if (*p == '(')
-            depth++;
-        else if (*p == ')')
-            depth--;
-        p++;
-    }
-    return p;
-}
-
 static int parse_column_tag_value(char *start, char *end)
 {
-    skip_spaces(&start);
-    rskip_spaces(&end, start);
-    char *next = start;
-    int value = ass_unicode_decimal_value(ass_utf8_get_char(&next));
-    if (next != end || (value != 0 && value != 1))
+    ass_override_spaces(&start, end);
+    int value = ass_unicode_decimal_value(override_codepoint(&start, end));
+    ass_override_spaces(&start, end);
+    if (start != end || (value != 0 && value != 1))
         return -1;
     return value;
 }
@@ -4959,20 +4984,20 @@ static void scan_column_override_block(char *p, char *end, bool *active,
                                        bool *seen_active)
 {
     while (p < end) {
-        while (p < end && *p != '\\')
+        while (ass_override_peek(&p, end) && *p != '\\')
             p++;
         if (p >= end)
             break;
 
         p++;
-        skip_spaces(&p);
+        ass_override_spaces(&p, end);
         char *name = p;
-        while (p < end && *p != '\\' && *p != '(')
+        while (ass_override_peek(&p, end) && *p != '\\' && *p != '(')
             p++;
         char *name_end = p;
 
-        if (name_end - name >= 3 && !strncmp(name, "col", 3)) {
-            int value = parse_column_tag_value(name + 3, name_end);
+        if (ass_override_prefix(&name, name_end, "col")) {
+            int value = parse_column_tag_value(name, name_end);
             if (value == 0) {
                 *active = false;
             } else if (value == 1) {
@@ -4981,7 +5006,7 @@ static void scan_column_override_block(char *p, char *end, bool *active,
             }
         }
 
-        p = skip_column_tag_args(p, end);
+        p = skip_parenthesized_tag_args(p, end, NULL);
     }
 }
 
@@ -4998,12 +5023,7 @@ static bool event_has_active_column(char *text)
             char *end = strchr(p, '}');
             if (!end)
                 break;
-            char *start = p + 1, *limit = end;
-            ASS_OverrideText *buffer;
-            if (!ass_prepare_override_block(&start, &limit, &buffer))
-                return seen_active;
-            scan_column_override_block(start, limit, &active, &seen_active);
-            free(buffer);
+            scan_column_override_block(p + 1, end, &active, &seen_active);
             p = end + 1;
         } else {
             p++;
