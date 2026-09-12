@@ -16,7 +16,7 @@ enum Field {
     RNDX, RNDY, RNDZ, FURIX, FURIY, FURISX, FURISY, FURISP,
     P0X, P0Y, P1X, P1Y, P2X, P2Y, P3X, P3Y, POSX, POSY,
     CLIPX0, CLIPY0, CLIPX1, CLIPY1, JITX, JITPERIOD, IMGX, IMGY,
-    FSVP, FSHP, COLSP, GLYPHX, GLYPHY, PRIMARY, COUNT
+    FSVP, FSHP, PRIMARY, COUNT
 };
 
 typedef struct {
@@ -70,6 +70,8 @@ static Sample capture(ASS_Renderer *renderer, ASS_Track *track, long long now)
     int change;
     ASS_Image *images = ass_render_frame(renderer, track, now, &change);
     const RenderContext *s = &renderer->state;
+    // Event cleanup has already released column layout and cleared the glyph
+    // count. Observe surviving scalar state here; check geometry using images.
     Sample out = {
         .values = {
             s->font_size, s->scale_x * 100, s->scale_y * 100,
@@ -88,12 +90,6 @@ static Sample capture(ASS_Renderer *renderer, ASS_Track *track, long long now)
             s->jitter.left / 8, s->jitter.period / 10000,
             s->image_fill.layer[0].xoffset, s->image_fill.layer[0].yoffset,
             s->fsvp, s->fshp,
-            s->column_index < s->text_info.max_columns ?
-                s->text_info.column_spacing[s->column_index] : 1,
-            s->text_info.length ? s->text_info.glyphs[0].scale_x *
-                s->text_info.glyphs[0].scale_fix * 100 : 0,
-            s->text_info.length ? s->text_info.glyphs[0].scale_y *
-                s->text_info.glyphs[0].scale_fix * 100 : 0,
             s->c[0],
         },
         .hash = UINT64_C(1469598103934665603),
@@ -165,6 +161,36 @@ static bool compare(ASS_Library *lib, ASS_Renderer *renderer,
     return compare_samples(lib, renderer, a, b, now, false);
 }
 
+static bool test_geometry_changes(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    // Guard the equivalence checks against both inputs ignoring the property.
+    // Two columns are necessary for column spacing to affect visible geometry.
+    const struct { const char *a, *b; } cases[] = {
+        {"{\\fsc50}Ratio", "{\\fsc100}Ratio"},
+        {"{\\col1\\frz0\\colsp3}Left|Right",
+         "{\\col1\\frz0\\colsp3\\colsp+2}Left|Right"},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        ASS_Track *ta = read_track(lib, cases[i].a);
+        ASS_Track *tb = read_track(lib, cases[i].b);
+        bool changed = false;
+        if (ta && tb) {
+            Sample a = capture(renderer, ta, 0);
+            Sample b = capture(renderer, tb, 0);
+            changed = a.coverage && b.coverage && !same_pixels(a, b);
+        }
+        if (!changed) {
+            fprintf(stderr, "expected geometry change: %s versus %s\n",
+                    cases[i].a, cases[i].b);
+            ok = false;
+        }
+        if (ta) ass_free_track(ta);
+        if (tb) ass_free_track(tb);
+    }
+    return ok;
+}
+
 static bool test_values(ASS_Library *lib, ASS_Renderer *renderer)
 {
     const struct { const char *tags; enum Field field; double expected; } cases[] = {
@@ -183,11 +209,6 @@ static bool test_values(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\fscx+20", SX, 100}, {"\\fscy-20", SY, 100},
         {"\\fscx~+20", SX, 100}, {"\\fscy~-20", SY, 100},
         {"\\fsc50", SOFT, 50}, {"\\fsc150", SOFT, 150},
-        {"\\fsc50", GLYPHX, 40}, {"\\fsc50", GLYPHY, 60},
-        {"\\fsc150", GLYPHX, 120}, {"\\fsc150", GLYPHY, 180},
-        {"\\fsc-25", GLYPHX, 60}, {"\\fsc-25", GLYPHY, 90},
-        {"\\fscx60\\fscy140\\fsc150", GLYPHX, 90},
-        {"\\fscx60\\fscy140\\fsc150", GLYPHY, 210},
         {"\\fsc+50", SOFT, 150}, {"\\fsc-25", SOFT, 75},
         {"\\fsc~+50", SOFT, 150}, {"\\fsc~-25", SOFT, 75},
         {"\\fsc150\\fsc200", SOFT, 200}, {"\\fsc150\\fsc+50", SOFT, 200},
@@ -245,7 +266,6 @@ static bool test_values(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\clip(10,20,900,600)\\clip( ~+5 , ~-5 , ~+10 , ~-10 )", CLIPY1, 590},
         {"\\distort(1,0,1,1,0,1,.2,.1)\\distort(1,0,1,1,0,1,~+.3)", P0X, .2},
         {"\\fsvp10\\fsvp~-3", FSVP, 7}, {"\\fshp10\\fshp~+3", FSHP, 13},
-        {"\\col1\\colsp3\\colsp+2", COLSP, 5},
         {"\\img(\"\",10,20)\\img(\"\",~+2,~-3)", IMGX, 12},
         {"\\img(\"\",10,20)\\img(\"\",~+2,~-3)", IMGY, 17},
         {"\\pos(-100,350)", POSX, -100},
@@ -506,12 +526,22 @@ int main(void)
     ass_set_storage_size(renderer, 1000, 700);
     ass_set_fonts(renderer, NULL, "sans-serif", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     bool ok = test_values(lib, renderer);
+    // Effective glyph scales are checked against independent direct-axis
+    // renders, since temporary glyph state is gone after ass_render_frame().
     const struct { const char *a, *b; } pairs[] = {
         {"{\\fsc50}Ratio", "{\\fscx40\\fscy60}Ratio"},
         {"{\\fsc150}Ratio", "{\\fscx120\\fscy180}Ratio"},
         {"{\\fsc-25}Ratio", "{\\fscx60\\fscy90}Ratio"},
         {"{\\fscx60\\fscy140\\fsc150}Ratio", "{\\fscx90\\fscy210}Ratio"},
         {"{\\fsc150\\fscx60\\fscy140}Ratio", "{\\fscx90\\fscy210}Ratio"},
+        {"{\\col1\\frz0\\colsp3\\colsp+2}Left|Right",
+         "{\\col1\\frz0\\colsp5}Left|Right"},
+        {"{\\col1\\frz0\\colsp3\\colsp~+2}Left|Right",
+         "{\\col1\\frz0\\colsp5}Left|Right"},
+        {"{\\col1\\frz0\\colsp8\\colsp~-3}Left|Right",
+         "{\\col1\\frz0\\colsp5}Left|Right"},
+        {"{\\col1\\frz0\\colsp3\\colsp-5}Left|Right",
+         "{\\col1\\frz0\\colsp1}Left|Right"},
         {"{\\fsc50\\scale200}Ratio", "{\\bord4\\shad6}Ratio"},
         {"{\\blur1\\fsc50\\scale200}Ratio", "{\\blur2\\bord4\\shad6}Ratio"},
         {"{\\bs4\\bord0\\shad0\\boxp8\\bbs2\\fsc200}Ratio",
@@ -525,6 +555,7 @@ int main(void)
     };
     for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
         ok &= compare(lib, renderer, pairs[i].a, pairs[i].b, 500);
+    ok &= test_geometry_changes(lib, renderer);
     ok &= test_transforms(lib, renderer);
     ok &= test_automatic_position(lib, renderer);
     ok &= test_overlap(lib, renderer);
