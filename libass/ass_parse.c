@@ -28,6 +28,7 @@
 #include "ass_library.h"
 #include "ass_render.h"
 #include "ass_parse.h"
+#include "ass_string.h"
 
 #define MAX_VALID_NARGS 10
 #define MAX_BE 127
