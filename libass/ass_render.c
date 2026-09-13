@@ -923,6 +923,10 @@ static ASS_Image **render_glyph_i(RenderContext *state,
         r[j].y0 = (r[j].y0 + dst_y < zy) ? zy - dst_y : r[j].y0;
         r[j].x1 = (r[j].x1 + dst_x > sx) ? sx - dst_x : r[j].x1;
         r[j].y1 = (r[j].y1 + dst_y > sy) ? sy - dst_y : r[j].y1;
+        if (state->karaoke_clip_enabled) {
+            r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
+            r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
+        }
     }
 
         // draw the rectangles
@@ -1062,6 +1066,10 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     clip_y0 = FFMINMAX(state->clip_y0, 0, render_priv->height);
     clip_x1 = FFMINMAX(state->clip_x1, 0, render_priv->width);
     clip_y1 = FFMINMAX(state->clip_y1, 0, render_priv->height);
+    if (state->karaoke_clip_enabled) {
+        clip_x0 = FFMAX(clip_x0, state->karaoke_clip_x0);
+        clip_x1 = FFMIN(clip_x1, state->karaoke_clip_x1);
+    }
     b_x0 = 0;
     b_y0 = 0;
     int logical_w = bm->logical_w > 0 ? bm->logical_w : bm->w;
@@ -1166,6 +1174,166 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     return tail;
 }
 
+static ASS_Image **render_glyph_karaoke_region(
+        RenderContext *state, CombinedBitmapInfo *combined, Bitmap *bm,
+        int dst_x, int dst_y, uint32_t color, uint32_t color2, int brk,
+        int clip_x0, int clip_x1, ASS_Image **tail, unsigned type,
+        CompositeHashValue *source, int layer1, int layer2,
+        ASS_ImageRGBA ***rgba_tail)
+{
+    bool saved_enabled = state->karaoke_clip_enabled;
+    int saved_x0 = state->karaoke_clip_x0;
+    int saved_x1 = state->karaoke_clip_x1;
+    state->karaoke_clip_enabled = true;
+    state->karaoke_clip_x0 = clip_x0;
+    state->karaoke_clip_x1 = clip_x1;
+    tail = render_glyph(state, combined, bm, dst_x, dst_y, color, color2,
+                        brk, tail, type, source, layer1, layer2, rgba_tail);
+    state->karaoke_clip_enabled = saved_enabled;
+    state->karaoke_clip_x0 = saved_x0;
+    state->karaoke_clip_x1 = saved_x1;
+    return tail;
+}
+
+static bool furi_base_region_bounds(RenderContext *state,
+                                    CombinedBitmapInfo *info,
+                                    const FuriKaraokeRegion *region,
+                                    int *x0, int *x1)
+{
+    if (!info->furi_base_karaoke || info->furi_group < 0 ||
+            info->furi_group >= state->text_info.n_furi_groups)
+        return false;
+
+    int32_t width = info->furi_base_end - info->furi_base_start;
+    int32_t rel0 = info->furi_base_start +
+        ass_lrint(width * region->start);
+    int32_t rel1 = info->furi_base_start +
+        ass_lrint(width * region->end);
+    if (info->furi_base_reverse) {
+        rel0 = info->furi_base_end - ass_lrint(width * region->start);
+        rel1 = info->furi_base_end - ass_lrint(width * region->end);
+    }
+    int pos0 = lround(d6_to_double(info->leftmost_x) +
+        d6_to_double(rel0) * state->renderer->par_scale_x);
+    int pos1 = lround(d6_to_double(info->leftmost_x) +
+        d6_to_double(rel1) * state->renderer->par_scale_x);
+    *x0 = FFMIN(pos0, pos1);
+    *x1 = FFMAX(pos0, pos1);
+    return *x0 < *x1;
+}
+
+static int furi_base_frontier(RenderContext *state,
+                              CombinedBitmapInfo *info, double amount)
+{
+    int32_t width = info->furi_base_end - info->furi_base_start;
+    int32_t rel = info->furi_base_reverse ?
+        info->furi_base_end - ass_lrint(width * amount) :
+        info->furi_base_start + ass_lrint(width * amount);
+    return lround(d6_to_double(info->leftmost_x) +
+        d6_to_double(rel) * state->renderer->par_scale_x);
+}
+
+static ASS_Image **render_furi_base_border_regions(
+        RenderContext *state, CombinedBitmapInfo *info, Bitmap *bm,
+        uint32_t color, ASS_Image **tail, CompositeHashValue *source,
+        ASS_ImageRGBA ***rgba_tail)
+{
+    FuriGroup *group = &state->text_info.furi_groups[info->furi_group];
+    int64_t now = state->renderer->time - state->event->Start;
+    bool has_ko = false;
+    for (int i = 0; i < group->n_karaoke_regions; i++) {
+        int segment = group->karaoke_regions[i].segment;
+        if (segment >= 0 &&
+                segment < state->text_info.n_karaoke_segments &&
+                state->text_info.karaoke_segments[segment].effect_type ==
+                    EF_KARAOKE_KO) {
+            has_ko = true;
+            break;
+        }
+    }
+    if (!has_ko)
+        return render_glyph(state, info, bm, info->x, info->y, color, 0,
+                            100000000, tail, IMAGE_TYPE_OUTLINE, source,
+                            2, 2, rgba_tail);
+
+    int base0 = furi_base_frontier(state, info, 0.0);
+    int base1 = furi_base_frontier(state, info, 1.0);
+    for (int i = 0; i < group->n_karaoke_regions; i++) {
+        FuriKaraokeRegion *region = &group->karaoke_regions[i];
+        if (region->segment < 0 ||
+                region->segment >= state->text_info.n_karaoke_segments)
+            continue;
+        KaraokeSegment *segment =
+            &state->text_info.karaoke_segments[region->segment];
+        if (segment->effect_type == EF_KARAOKE_KO && now < segment->start)
+            continue;
+
+        int x0, x1;
+        if (!furi_base_region_bounds(state, info, region, &x0, &x1))
+            continue;
+        int clip_x0 = x0 == FFMIN(base0, base1) ? -100000000 : x0;
+        int clip_x1 = x1 == FFMAX(base0, base1) ? 100000000 : x1;
+        tail = render_glyph_karaoke_region(
+            state, info, bm, info->x, info->y, color, 0, 100000000,
+            clip_x0, clip_x1, tail, IMAGE_TYPE_OUTLINE, source, 2, 2,
+            rgba_tail);
+    }
+    return tail;
+}
+
+static ASS_Image **render_furi_base_character_regions(
+        RenderContext *state, CombinedBitmapInfo *info, ASS_Image **tail,
+        ASS_ImageRGBA ***rgba_tail)
+{
+    FuriGroup *group = &state->text_info.furi_groups[info->furi_group];
+    int64_t now = state->renderer->time - state->event->Start;
+    int base0 = furi_base_frontier(state, info, 0.0);
+    int base1 = furi_base_frontier(state, info, 1.0);
+    for (int i = 0; i < group->n_karaoke_regions; i++) {
+        FuriKaraokeRegion *region = &group->karaoke_regions[i];
+        if (region->segment < 0 ||
+                region->segment >= state->text_info.n_karaoke_segments)
+            continue;
+        KaraokeSegment *segment =
+            &state->text_info.karaoke_segments[region->segment];
+        int x0, x1;
+        if (!furi_base_region_bounds(state, info, region, &x0, &x1))
+            continue;
+        int clip_x0 = x0 == FFMIN(base0, base1) ? -100000000 : x0;
+        int clip_x1 = x1 == FFMAX(base0, base1) ? 100000000 : x1;
+
+        uint32_t color = info->c[0], color2 = 0;
+        int brk = 100000000;
+        int layer1 = 0, layer2 = 0;
+        if (segment->effect_type == EF_KARAOKE_KF &&
+                now >= segment->start && now < segment->end &&
+                segment->end > segment->start) {
+            double amount = (double) (now - segment->start) /
+                            (segment->end - segment->start);
+            double frontier = region->start +
+                (region->end - region->start) * amount;
+            color2 = info->c[1];
+            layer2 = 1;
+            if (info->furi_base_reverse) {
+                uint32_t tmp = color;
+                color = color2;
+                color2 = tmp;
+                layer1 = 1;
+                layer2 = 0;
+            }
+            brk = furi_base_frontier(state, info, frontier);
+        } else if (now < segment->start) {
+            color = info->c[1];
+            layer1 = 1;
+        }
+        tail = render_glyph_karaoke_region(
+            state, info, info->bm, info->x, info->y, color, color2, brk,
+            clip_x0, clip_x1, tail, IMAGE_TYPE_CHARACTER, info->image,
+            layer1, layer2, rgba_tail);
+    }
+    return tail;
+}
+
 static ASS_Image **render_border_layer(RenderContext *state,
                                        CombinedBitmapInfo *info,
                                        int layer, ASS_Image **tail,
@@ -1175,7 +1343,9 @@ static ASS_Image **render_border_layer(RenderContext *state,
     if (!bm)
         return tail;
 
-    if ((info->effect_type == EF_KARAOKE_KO) && (info->effect_timing <= 0))
+    if (!info->furi_base_karaoke &&
+            (info->effect_type == EF_KARAOKE_KO) &&
+            (info->effect_timing <= 0))
         return tail;
 
     if (layer == 0) {
@@ -1185,9 +1355,14 @@ static ASS_Image **render_border_layer(RenderContext *state,
         info->mangetsu_gradient.layer[2] = info->mangetsu_gradient.border[0];
         info->mangetsu_gradient.alpha[2] =
             info->mangetsu_gradient.border_alpha[0];
-        tail = render_glyph(state, info, bm, info->x, info->y, info->c[2],
-                            0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
-                            2, 2, rgba_tail);
+        if (info->furi_base_karaoke)
+            tail = render_furi_base_border_regions(
+                state, info, bm, info->c[2], tail, info->image, rgba_tail);
+        else
+            tail = render_glyph(state, info, bm, info->x, info->y,
+                                info->c[2], 0, 1000000, tail,
+                                IMAGE_TYPE_OUTLINE, info->image, 2, 2,
+                                rgba_tail);
         info->mangetsu_gradient.layer[2] = saved_mangetsu;
         info->mangetsu_gradient.alpha[2] = saved_mangetsu_alpha;
         return tail;
@@ -1209,9 +1384,13 @@ static ASS_Image **render_border_layer(RenderContext *state,
     uint32_t color = info->border_layers[layer].color;
     ass_apply_fade(&color, info->fade);
 
-    tail = render_glyph(state, info, bm, info->x, info->y, color,
-                        0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
-                        2, 2, rgba_tail);
+    if (info->furi_base_karaoke)
+        tail = render_furi_base_border_regions(
+            state, info, bm, color, tail, info->image, rgba_tail);
+    else
+        tail = render_glyph(state, info, bm, info->x, info->y, color,
+                            0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
+                            2, 2, rgba_tail);
 
     info->base_c[2] = saved_base;
     info->gradient.layer[2] = saved_gradient;
@@ -2002,7 +2181,10 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
         if (!info->bm)
             continue;
 
-        if ((info->effect_type == EF_KARAOKE)
+        if (info->furi_base_karaoke) {
+            tail = render_furi_base_character_regions(
+                state, info, tail, out_rgba ? &rgba_tail : NULL);
+        } else if ((info->effect_type == EF_KARAOKE)
                 || (info->effect_type == EF_KARAOKE_KO)) {
             if (info->effect_timing > 0)
                 tail =
@@ -2719,6 +2901,9 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->karaoke_only_parse = false;
     state->karaoke_alloc_failed = false;
     state->karaoke_tag_serial = 0;
+    state->karaoke_clip_enabled = false;
+    state->karaoke_clip_x0 = 0;
+    state->karaoke_clip_x1 = 0;
     state->fade_color = (FadeColorState) {0};
     state->distort_enabled = false;
     state->distort = (ASS_DistortParams) {
@@ -3581,7 +3766,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     }
     memcpy(m, m2, sizeof(m));
 
-    if (info->effect_type == EF_KARAOKE_KF)
+    if (info->effect_type == EF_KARAOKE_KF || info->furi_base_karaoke)
         ass_outline_update_min_transformed_x(&outline->outline[0], m, leftmost_x);
 
     BitmapHashKey key = {0};
@@ -5959,6 +6144,23 @@ static void update_glyph_jitter_offsets(RenderContext *state)
     }
 }
 
+typedef struct {
+    int segment;
+    double left;
+    double right;
+} FuriVisualKaraokeRegion;
+
+static int compare_furi_karaoke_region(const void *a, const void *b)
+{
+    const FuriVisualKaraokeRegion *ra = a;
+    const FuriVisualKaraokeRegion *rb = b;
+    if (ra->left < rb->left)
+        return -1;
+    if (ra->left > rb->left)
+        return 1;
+    return (ra->segment > rb->segment) - (ra->segment < rb->segment);
+}
+
 static bool prepare_furi_karaoke_regions(TextInfo *text_info,
                                          FuriGroup *group)
 {
@@ -6012,27 +6214,48 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
         return true;
     }
 
+    FuriVisualKaraokeRegion *visual =
+        malloc(regions * sizeof(*visual));
+    if (!visual) {
+        free(left);
+        free(right);
+        return false;
+    }
+    int visual_count = 0;
+    for (int i = 0; i < count; i++) {
+        if (left[i] >= right[i])
+            continue;
+        visual[visual_count++] = (FuriVisualKaraokeRegion) {
+            .segment = i,
+            .left = left[i],
+            .right = right[i],
+        };
+    }
+    // Segment ids are source-ordered; base ownership is visual after bidi.
+    qsort(visual, visual_count, sizeof(*visual),
+          compare_furi_karaoke_region);
+
     group->karaoke_regions = calloc(regions, sizeof(*group->karaoke_regions));
     if (!group->karaoke_regions) {
+        free(visual);
         free(left);
         free(right);
         return false;
     }
 
     double cursor = 0.0;
-    for (int i = 0; i < count; i++) {
-        if (left[i] >= right[i])
-            continue;
-        double width = (right[i] - left[i]) / total;
+    for (int i = 0; i < visual_count; i++) {
+        double width = (visual[i].right - visual[i].left) / total;
         FuriKaraokeRegion *region =
             &group->karaoke_regions[group->n_karaoke_regions++];
-        region->segment = i;
+        region->segment = visual[i].segment;
         region->start = cursor;
         cursor += width;
         region->end = cursor;
     }
     group->karaoke_regions[group->n_karaoke_regions - 1].end = 1.0;
 
+    free(visual);
     free(left);
     free(right);
     return true;
@@ -7104,7 +7327,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             if (info->shadow_x || info->shadow_y)
                 flags |= FILTER_NONZERO_SHADOW;
             if (flags & FILTER_NONZERO_SHADOW &&
-                (info->effect_type == EF_KARAOKE_KF ||
+                (info->furi_base_karaoke ||
+                 info->effect_type == EF_KARAOKE_KF ||
                  info->effect_type == EF_KARAOKE_KO ||
                  _a(info->c[0]) != 0xFF ||
                  info->border_style == 3))
@@ -7148,6 +7372,11 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
 
                 current_info->effect_type = info->effect_type;
                 current_info->effect_timing = info->effect_timing;
+                current_info->furi_base_karaoke = info->furi_base_karaoke;
+                current_info->furi_base_reverse = info->furi_base_reverse;
+                current_info->furi_group = info->furi_group;
+                current_info->furi_base_start = info->furi_base_start;
+                current_info->furi_base_end = info->furi_base_end;
                 current_info->leftmost_x = OUTLINE_MAX;
 
                 FilterDesc *filter = &current_info->filter;
@@ -7250,7 +7479,8 @@ static int decoration_filter_flags(const GlyphInfo *info)
     if (info->shadow_x || info->shadow_y)
         flags |= FILTER_NONZERO_SHADOW;
     if (flags & FILTER_NONZERO_SHADOW &&
-        (info->effect_type == EF_KARAOKE_KF ||
+        (info->furi_base_karaoke ||
+         info->effect_type == EF_KARAOKE_KF ||
          info->effect_type == EF_KARAOKE_KO ||
          _a(info->c[0]) != 0xFF ||
          info->border_style == 3))
@@ -7363,6 +7593,11 @@ static bool append_decoration_bitmap_info(RenderContext *state,
         ass_apply_fade(&current_info->c[j], deco.fade);
     current_info->effect_type = deco.effect_type;
     current_info->effect_timing = deco.effect_timing;
+    current_info->furi_base_karaoke = deco.furi_base_karaoke;
+    current_info->furi_base_reverse = deco.furi_base_reverse;
+    current_info->furi_group = deco.furi_group;
+    current_info->furi_base_start = deco.furi_base_start;
+    current_info->furi_base_end = deco.furi_base_end;
     current_info->leftmost_x = leftmost_x;
     current_info->filter.flags = flags;
     current_info->filter.be = deco.be;
@@ -7488,7 +7723,6 @@ static void render_and_combine_glyphs(RenderContext *state,
         if (info->effect_type == EF_KARAOKE_KF)
             info->effect_timing = lround(d6_to_double(info->leftmost_x) +
                 d6_to_double(info->effect_timing) * render_priv->par_scale_x);
-
         for (int j = 0; j < info->bitmap_count; j++) {
             info->bitmaps[j].pos.x -= info->x;
             info->bitmaps[j].pos.y -= info->y;
@@ -7904,7 +8138,8 @@ static bool bs4_glyph_has_visible_paint(const GlyphInfo *info)
     if (bs4_glyph_color_visible(info, 0))
         return true;
 
-    if ((info->effect_type == EF_KARAOKE ||
+    if ((info->furi_base_karaoke ||
+         info->effect_type == EF_KARAOKE ||
          info->effect_type == EF_KARAOKE_KO ||
          info->effect_type == EF_KARAOKE_KF) &&
         bs4_glyph_color_visible(info, 1))

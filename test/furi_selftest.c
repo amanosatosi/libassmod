@@ -20,6 +20,12 @@ typedef struct {
     uint64_t secondary;
 } KaraokeCounts;
 
+typedef struct {
+    uint32_t *primary;
+    uint32_t *secondary;
+    uint32_t *outline;
+} KaraokeFrame;
+
 static char *make_script(const char *text)
 {
     const char *prefix =
@@ -47,9 +53,9 @@ static char *make_script(const char *text)
     return script;
 }
 
-static char *make_karaoke_script(const char *text)
+static char *make_karaoke_script_with_outline(const char *text, bool outline)
 {
-    const char *prefix =
+    const char *prefix_no_outline =
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         "PlayResX: 384\n"
@@ -66,12 +72,146 @@ static char *make_karaoke_script(const char *text)
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,";
+    const char *prefix_outline =
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 384\n"
+        "PlayResY: 216\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,48,&H000000FF,&H00FF0000,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,2,0,5,20,20,20,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,";
+    const char *prefix = outline ? prefix_outline : prefix_no_outline;
     size_t len = strlen(prefix) + strlen(text) + 2;
     char *script = malloc(len);
     if (!script)
         return NULL;
     snprintf(script, len, "%s%s\n", prefix, text);
     return script;
+}
+
+static char *make_karaoke_script(const char *text)
+{
+    return make_karaoke_script_with_outline(text, false);
+}
+
+static void free_karaoke_frame(KaraokeFrame *frame)
+{
+    free(frame->primary);
+    free(frame->secondary);
+    free(frame->outline);
+    *frame = (KaraokeFrame) {0};
+}
+
+static int render_karaoke_frame(const char *text, long long now,
+                                bool outline, KaraokeFrame *frame)
+{
+    *frame = (KaraokeFrame) {0};
+    frame->primary = calloc(FRAME_W * FRAME_H, sizeof(*frame->primary));
+    frame->secondary = calloc(FRAME_W * FRAME_H, sizeof(*frame->secondary));
+    frame->outline = calloc(FRAME_W * FRAME_H, sizeof(*frame->outline));
+    if (!frame->primary || !frame->secondary || !frame->outline)
+        goto fail;
+
+    ASS_Library *lib = ass_library_init();
+    ASS_Renderer *renderer = NULL;
+    ASS_Track *track = NULL;
+    char *script = NULL;
+    int ret = 1;
+    if (!lib)
+        goto done;
+    renderer = ass_renderer_init(lib);
+    if (!renderer)
+        goto done;
+    ass_set_storage_size(renderer, FRAME_W, FRAME_H);
+    ass_set_frame_size(renderer, FRAME_W, FRAME_H);
+    ass_set_fonts(renderer, NULL, "Arial",
+                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+    script = make_karaoke_script_with_outline(text, outline);
+    if (!script)
+        goto done;
+    track = ass_read_memory(lib, script, strlen(script), NULL);
+    if (!track)
+        goto done;
+
+    int change = 0;
+    for (ASS_Image *img = ass_render_frame(renderer, track, now, &change);
+         img; img = img->next) {
+        uint32_t rgb = img->color & 0xFFFFFF00u;
+        uint32_t *plane = rgb == 0xFF000000u ? frame->primary :
+                          rgb == 0x0000FF00u ? frame->secondary :
+                          rgb == 0x00000000u ? frame->outline : NULL;
+        if (!plane)
+            continue;
+        int opacity = 255 - (img->color & 0xFF);
+        for (int y = 0; y < img->h; y++) {
+            int yy = img->dst_y + y;
+            if (yy < 0 || yy >= FRAME_H)
+                continue;
+            for (int x = 0; x < img->w; x++) {
+                int xx = img->dst_x + x;
+                if (xx < 0 || xx >= FRAME_W)
+                    continue;
+                plane[yy * FRAME_W + xx] +=
+                    img->bitmap[y * img->stride + x] * opacity;
+            }
+        }
+    }
+    ret = 0;
+
+done:
+    free(script);
+    if (track)
+        ass_free_track(track);
+    if (renderer)
+        ass_renderer_done(renderer);
+    if (lib)
+        ass_library_done(lib);
+    if (!ret)
+        return 0;
+fail:
+    free_karaoke_frame(frame);
+    return 1;
+}
+
+static uint64_t plane_coverage(const uint32_t *plane,
+                               int x0, int y0, int x1, int y1)
+{
+    uint64_t total = 0;
+    x0 = x0 < 0 ? 0 : x0;
+    y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 > FRAME_W ? FRAME_W : x1;
+    y1 = y1 > FRAME_H ? FRAME_H : y1;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++)
+            total += plane[y * FRAME_W + x];
+    return total;
+}
+
+static uint64_t positive_plane_delta(const uint32_t *before,
+                                     const uint32_t *after,
+                                     int x0, int y0, int x1, int y1)
+{
+    uint64_t total = 0;
+    x0 = x0 < 0 ? 0 : x0;
+    y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 > FRAME_W ? FRAME_W : x1;
+    y1 = y1 > FRAME_H ? FRAME_H : y1;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            int off = y * FRAME_W + x;
+            if (after[off] > before[off])
+                total += after[off] - before[off];
+        }
+    return total;
 }
 
 static void count_karaoke_images(ASS_Image *img, KaraokeCounts *counts)
@@ -494,6 +634,158 @@ static int expect_partition_tops_aligned(const char *text, int parts)
     return ok ? 0 : 1;
 }
 
+static int expect_ko_outline_activation(const char *text,
+                                        long long before,
+                                        long long after)
+{
+    KaraokeFrame first = {0}, second = {0};
+    int err = render_karaoke_frame(text, before, true, &first);
+    if (!err)
+        err = render_karaoke_frame(text, after, true, &second);
+    uint64_t before_outline = err ? 0 :
+        plane_coverage(first.outline, 0, 0, FRAME_W, FRAME_H);
+    uint64_t after_outline = err ? 0 :
+        plane_coverage(second.outline, 0, 0, FRAME_W, FRAME_H);
+    bool ok = !err && !before_outline && after_outline;
+    if (!ok)
+        fprintf(stderr, "expected delayed ko outline activation: `%s`\n", text);
+    free_karaoke_frame(&first);
+    free_karaoke_frame(&second);
+    return ok ? 0 : 1;
+}
+
+static int expect_furi_ko_base_outline_activation(const char *text,
+                                                   const char *base,
+                                                   long long before,
+                                                   long long after)
+{
+    KaraokeFrame first = {0}, second = {0};
+    Mask base_mask = {0};
+    int err = render_karaoke_frame(text, before, true, &first);
+    if (!err)
+        err = render_karaoke_frame(text, after, true, &second);
+    if (!err)
+        err = render_mask(base, &base_mask);
+    uint64_t before_outline = 0, after_outline = 0;
+    if (!err && !base_mask.empty) {
+        before_outline = plane_coverage(
+            first.outline, base_mask.x0, base_mask.y0,
+            base_mask.x1, base_mask.y1);
+        after_outline = plane_coverage(
+            second.outline, base_mask.x0, base_mask.y0,
+            base_mask.x1, base_mask.y1);
+    }
+    bool ok = !err && !before_outline && after_outline;
+    if (!ok)
+        fprintf(stderr, "expected delayed ko outline on furigana base: `%s`\n",
+                text);
+    free_karaoke_frame(&first);
+    free_karaoke_frame(&second);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_cross_segment_spatial_ownership(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}<\xE6\x8E\xB4|{\\k40}\xE3\x81\xA4"
+        "{\\k60}\xE3\x81\x8B>\xE3\x82\x93{\\k70}\xE3\x81\xA0";
+    const char *base = "{\\an1\\pos(40,180)}\xE6\x8E\xB4";
+    KaraokeFrame before = {0}, after = {0};
+    Mask base_mask = {0};
+    int err = render_karaoke_frame(text, 399, false, &before);
+    if (!err)
+        err = render_karaoke_frame(text, 400, false, &after);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    uint64_t base_change = 0, following_change = 0;
+    if (!err && !base_mask.empty) {
+        int lower_y = (base_mask.y0 + base_mask.y1) / 2;
+        base_change = positive_plane_delta(
+            before.primary, after.primary, base_mask.x0, lower_y,
+            base_mask.x1, base_mask.y1);
+        following_change = positive_plane_delta(
+            before.primary, after.primary, base_mask.x1, lower_y,
+            FRAME_W, base_mask.y1);
+    }
+    bool ok = !err && base_change && following_change;
+    if (!ok)
+        fprintf(stderr,
+                "cross-boundary karaoke did not activate both base region and following glyph\n");
+    free_karaoke_frame(&before);
+    free_karaoke_frame(&after);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_unequal_width_base_regions(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}<WWWW|{\\k30}W{\\k30}i>";
+    const char *base = "{\\an1\\pos(40,180)}WWWW";
+    KaraokeFrame frame = {0};
+    Mask base_mask = {0};
+    int err = render_karaoke_frame(text, 0, false, &frame);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    int last_primary = -1, first_secondary = FRAME_W;
+    if (!err && !base_mask.empty) {
+        int y0 = (base_mask.y0 + base_mask.y1) / 2;
+        for (int x = base_mask.x0; x < base_mask.x1; x++) {
+            if (plane_coverage(frame.primary, x, y0, x + 1, base_mask.y1))
+                last_primary = x;
+            if (first_secondary == FRAME_W &&
+                    plane_coverage(frame.secondary, x, y0,
+                                   x + 1, base_mask.y1))
+                first_secondary = x;
+        }
+    }
+    double split = last_primary >= 0 && first_secondary < FRAME_W ?
+        (last_primary + first_secondary + 1) / 2.0 : -1.0;
+    double ratio = split >= 0 ?
+        (split - base_mask.x0) / (base_mask.x1 - base_mask.x0) : 0.0;
+    bool ok = !err && ratio > 0.65 && ratio < 0.95;
+    if (!ok)
+        fprintf(stderr, "unequal shaped reading widths did not own unequal base regions\n");
+    free_karaoke_frame(&frame);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_bidi_visual_region_order(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}<WW|{\\k30}\xD7\x90{\\k30}\xD7\x91>";
+    const char *base = "{\\an1\\pos(40,180)}WW";
+    KaraokeFrame frame = {0};
+    Mask base_mask = {0};
+    int err = render_karaoke_frame(text, 0, false, &frame);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    uint64_t p_left = 0, p_right = 0, s_left = 0, s_right = 0;
+    if (!err && !base_mask.empty) {
+        int mid_x = (base_mask.x0 + base_mask.x1) / 2;
+        int y0 = (base_mask.y0 + base_mask.y1) / 2;
+        p_left = plane_coverage(frame.primary, base_mask.x0, y0,
+                                mid_x, base_mask.y1);
+        p_right = plane_coverage(frame.primary, mid_x, y0,
+                                 base_mask.x1, base_mask.y1);
+        s_left = plane_coverage(frame.secondary, base_mask.x0, y0,
+                                mid_x, base_mask.y1);
+        s_right = plane_coverage(frame.secondary, mid_x, y0,
+                                 base_mask.x1, base_mask.y1);
+    }
+    bool ok = !err && p_right > 2 * p_left && s_left > 2 * s_right;
+    if (!ok)
+        fprintf(stderr, "bidi-reordered reading did not map to visual base regions\n");
+    free_karaoke_frame(&frame);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int fail = 0;
@@ -586,6 +878,19 @@ int main(void)
         fail |= expect_karaoke_same_at(kf_furi, big_k_furi, kf_steps[i]);
     fail |= expect_karaoke_steps("<A|{\\kt50\\ko30}b>",
                                  (long long[]) {499, 500}, 2, true);
+    // The wait exposes the inactive sentinel before each reversed ko starts.
+    fail |= expect_ko_outline_activation(
+        "{\\frz180\\kt10\\ko30}A", 99, 100);
+    fail |= expect_furi_ko_base_outline_activation(
+        "{\\an1\\pos(40,180)\\frz180\\kt10}<A|{\\ko30}a>",
+        "{\\an1\\pos(40,180)\\frz180}A", 99, 100);
+    fail |= expect_furi_ko_base_outline_activation(
+        "{\\an1\\pos(40,180)\\frz180\\kt10}<A|{\\ko30}a{\\ko30}b>",
+        "{\\an1\\pos(40,180)\\frz180}A", 99, 100);
+    fail |= expect_furi_ko_base_outline_activation(
+        "{\\an1\\pos(40,180)\\kt10}<\xE7\x97\x85|{\\ko30}\xE3\x82\x84"
+        "{\\ko30}\xE3\x81\xBE{\\ko30}\xE3\x81\x84>",
+        "{\\an1\\pos(40,180)}\xE7\x97\x85", 99, 100);
     fail |= expect_karaoke_steps("<ABCD|{\\k30}a{\\k30}bb{\\k30}c>",
                                  (long long[]) {0, 300, 600}, 3, true);
     fail |= expect_karaoke_steps("<AB|{\\k30}W{\\k30}i{\\k30}WWW>",
@@ -597,6 +902,9 @@ int main(void)
     fail |= expect_karaoke_steps("<A|{\\k20}a>{\\r}B{\\k30}C",
                                  (long long[]) {0, 200}, 2, true);
     fail |= expect_karaoke_same_at(basic_karaoke, basic_karaoke, 560);
+    fail |= expect_cross_segment_spatial_ownership();
+    fail |= expect_unequal_width_base_regions();
+    fail |= expect_bidi_visual_region_order();
 
     fail |= expect_different("<A|B>", "{\\furi0}<A|B>");
     fail |= expect_same("<cool>", "{\\furi0}<cool>");

@@ -24,7 +24,9 @@ Karaoke timing may be placed in the reading side:
 
 Each visible timed reading segment maps to a corresponding region of the
 complete shaped base. The regions follow the relative visible widths of the
-shaped reading segments, so they are not forced into equal divisions. `\kf`
+shaped reading segments, so they are not forced into equal divisions. Region
+ownership follows the shaped visual order after bidi reordering, rather than
+karaoke tag source order. `\kf`
 and its `\K` alias use the same interval for the progressive reading fill and
 the matching base region. Lowercase `\ko` retains its existing meaning.
 

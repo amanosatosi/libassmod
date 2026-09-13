@@ -2526,6 +2526,7 @@ static void clear_karaoke_effects(GlyphInfo *glyphs, int length)
         for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
             info->effect_type = EF_NONE;
             info->effect_timing = 0;
+            info->furi_base_karaoke = false;
         }
 }
 
@@ -2554,6 +2555,7 @@ static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
         &state->text_info.karaoke_segments[segment_index];
     int64_t now = state->renderer->time - state->event->Start;
     int32_t x;
+    bool reverse = false;
     if (now < segment->start) {
         x = -100000000;
     } else if (segment->effect_type != EF_KARAOKE_KF ||
@@ -2570,23 +2572,11 @@ static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
         int32_t x_end = last->pos.x + last->advance.x;
         double progress = (double) (now - segment->start) /
                           (segment->end - segment->start);
+        double frz = fmod(glyphs[start].frz, 360);
+        reverse = frz > 90 && frz < 270;
+        if (reverse)
+            progress = 1 - progress;
         x = x_start + ass_lrint((x_end - x_start) * progress);
-    }
-
-    double frz = fmod(glyphs[start].frz, 360);
-    bool reverse = frz > 90 && frz < 270;
-    if (reverse && x > -100000000 && x < 100000000) {
-        GlyphInfo *first = &glyphs[start];
-        GlyphInfo *last = &glyphs[end - 1];
-        while (first < last && first->skip)
-            first++;
-        while (first < last && last->skip)
-            last--;
-        int32_t x_start = first->pos.x;
-        int32_t x_end = last->pos.x + last->advance.x;
-        x = x_start + x_end - x;
-    } else if (reverse) {
-        x = -x;
     }
     set_karaoke_boundary(glyphs, start, end, segment->effect_type, x,
                           reverse);
@@ -2639,55 +2629,36 @@ static void process_furi_base_karaoke(RenderContext *state,
         return;
 
     TextInfo *text_info = &state->text_info;
-    int64_t now = state->renderer->time - state->event->Start;
     int start = group->base_start;
     int end = start + group->base_len;
     if (group->n_karaoke_regions == 1) {
         int segment = group->karaoke_regions[0].segment;
-        if (text_info->karaoke_segments[segment].effect_type !=
-                EF_KARAOKE_KF) {
-            apply_karaoke_segment(state, text_info->glyphs,
-                                   start, end, segment);
-            if (end < text_info->length)
-                text_info->glyphs[end].starts_new_run = true;
-            return;
-        }
-    }
-
-    double progress = 0.0;
-    Effect single_effect = EF_KARAOKE_KF;
-    for (int i = 0; i < group->n_karaoke_regions; i++) {
-        FuriKaraokeRegion *region = &group->karaoke_regions[i];
-        KaraokeSegment *segment = &text_info->karaoke_segments[region->segment];
-        single_effect = segment->effect_type;
-        if (now < segment->start)
-            break;
-        if (segment->effect_type == EF_KARAOKE_KF &&
-                now < segment->end && segment->end > segment->start) {
-            double amount = (double) (now - segment->start) /
-                            (segment->end - segment->start);
-            progress = region->start + (region->end - region->start) * amount;
-            break;
-        }
-        progress = region->end;
+        apply_karaoke_segment(state, text_info->glyphs, start, end, segment);
+        if (end < text_info->length)
+            text_info->glyphs[end].starts_new_run = true;
+        return;
     }
 
     int32_t x_start = text_info->glyphs[start].pos.x;
     int32_t x_end = x_start + group->base_width;
     double frz = fmod(text_info->glyphs[start].frz, 360);
     bool reverse = frz > 90 && frz < 270;
-    int32_t x = reverse ?
-        x_end - ass_lrint((x_end - x_start) * progress) :
-        x_start + ass_lrint((x_end - x_start) * progress);
-    /* Multiple base regions share one monotone fill frontier.  Reuse the
-     * existing \kf fill clip as an internal carrier even for instantaneous
-     * \k/\ko regions.  The reading glyphs retain their real effect type;
-     * deliberately do not add the new border/outline clipping reserved for
-     * the later karaoke-layer phase. */
-    Effect effect_type = group->n_karaoke_regions == 1 ?
-                         single_effect : EF_KARAOKE_KF;
-    set_karaoke_boundary(text_info->glyphs, start, end, effect_type, x,
-                          reverse);
+    text_info->glyphs[start].starts_new_run = true;
+    for (int i = start; i < end; i++) {
+        for (GlyphInfo *info = &text_info->glyphs[i]; info;
+             info = info->next) {
+            /* Keep a single combined base bitmap, but defer its karaoke
+             * semantics to the shaped visual regions at render time.  The
+             * marker below is deliberately separate from effect_type so each
+             * region retains and applies its real \k/\kf/\ko effect. */
+            info->effect_type = EF_NONE;
+            info->effect_timing = 0;
+            info->furi_base_karaoke = true;
+            info->furi_base_reverse = reverse;
+            info->furi_base_start = x_start - info->pos.x;
+            info->furi_base_end = x_end - info->pos.x;
+        }
+    }
     if (end < text_info->length)
         text_info->glyphs[end].starts_new_run = true;
 }

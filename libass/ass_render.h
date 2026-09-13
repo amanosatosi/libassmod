@@ -176,6 +176,12 @@ typedef struct {
     FilterDesc filter;
     uint32_t c[4];              // colors (with fade applied)
     Effect effect_type;
+    bool furi_base_karaoke;
+    bool furi_base_reverse;
+    int furi_group;
+    // subpixel distances from this combined run's karaoke origin
+    int32_t furi_base_start;
+    int32_t furi_base_end;
 
     // during render_and_combine_glyphs: distance in subpixels from the karaoke origin.
     // after render_and_combine_glyphs: screen coordinate in pixels.
@@ -327,6 +333,10 @@ typedef struct glyph_info {
     bool is_furi_base;
     int furi_group;
     int karaoke_segment;
+    bool furi_base_karaoke;
+    bool furi_base_reverse;
+    int32_t furi_base_start;
+    int32_t furi_base_end;
 
     // next glyph in this cluster
     struct glyph_info *next;
@@ -656,6 +666,9 @@ struct render_context {
     bool karaoke_only_parse;
     bool karaoke_alloc_failed;
     unsigned karaoke_tag_serial;
+    bool karaoke_clip_enabled;
+    int karaoke_clip_x0;
+    int karaoke_clip_x1;
     bool distort_enabled;
     ASS_DistortParams distort;
 
