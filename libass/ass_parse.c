@@ -2463,6 +2463,254 @@ static ASS_Style *lookup_style_strict(ASS_Track *track, char *name, size_t len)
     return NULL;
 }
 
+static int append_karaoke_segment(RenderContext *state, Effect effect_type,
+                                  int64_t start, int64_t end)
+{
+    TextInfo *text_info = &state->text_info;
+    if (text_info->n_karaoke_segments >= text_info->max_karaoke_segments) {
+        int new_max = text_info->max_karaoke_segments ?
+            2 * text_info->max_karaoke_segments : 8;
+        if (new_max <= text_info->max_karaoke_segments ||
+                !ASS_REALLOC_ARRAY(text_info->karaoke_segments, new_max)) {
+            state->karaoke_alloc_failed = true;
+            return -1;
+        }
+        text_info->max_karaoke_segments = new_max;
+    }
+
+    int index = text_info->n_karaoke_segments++;
+    text_info->karaoke_segments[index] = (KaraokeSegment) {
+        .start = start,
+        .end = end,
+        .effect_type = effect_type,
+    };
+    return index;
+}
+
+static void apply_karaoke_reset_tag(RenderContext *state, double value)
+{
+    int32_t timing = dtoi32(value);
+    state->effect_skip_timing = timing;
+    state->effect_timing = 0;
+    state->reset_effect = true;
+
+    state->karaoke_cursor = timing;
+    state->karaoke_segment = !state->karaoke_timeline_enabled ||
+                             state->karaoke_effect_type == EF_NONE ? -1 :
+        append_karaoke_segment(state, state->karaoke_effect_type,
+                               timing, timing);
+    if (state->karaoke_only_parse)
+        state->karaoke_tag_serial++;
+}
+
+static void apply_karaoke_duration_tag(RenderContext *state,
+                                       Effect effect_type, double value)
+{
+    state->effect_type = effect_type;
+    state->effect_skip_timing += (uint32_t) state->effect_timing;
+    state->effect_timing = dtoi32(value * 10);
+
+    int64_t start = state->karaoke_cursor;
+    int64_t end = start + state->effect_timing;
+    state->karaoke_segment = state->karaoke_timeline_enabled ?
+        append_karaoke_segment(state, effect_type, start, end) : -1;
+    state->karaoke_cursor = end;
+    state->karaoke_effect_type = effect_type;
+    if (state->karaoke_only_parse)
+        state->karaoke_tag_serial++;
+}
+
+static void clear_karaoke_effects(GlyphInfo *glyphs, int length)
+{
+    for (int i = 0; i < length; i++)
+        for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
+            info->effect_type = EF_NONE;
+            info->effect_timing = 0;
+        }
+}
+
+static void set_karaoke_boundary(GlyphInfo *glyphs, int start, int end,
+                                  Effect effect_type, int32_t x,
+                                  bool reverse)
+{
+    glyphs[start].starts_new_run = true;
+    for (int i = start; i < end; i++) {
+        for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
+            info->effect_type = effect_type;
+            info->effect_timing = x - info->pos.x;
+            if (reverse) {
+                uint32_t color = info->c[0];
+                info->c[0] = info->c[1];
+                info->c[1] = color;
+            }
+        }
+    }
+}
+
+static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
+                                  int start, int end, int segment_index)
+{
+    KaraokeSegment *segment =
+        &state->text_info.karaoke_segments[segment_index];
+    int64_t now = state->renderer->time - state->event->Start;
+    int32_t x;
+    if (now < segment->start) {
+        x = -100000000;
+    } else if (segment->effect_type != EF_KARAOKE_KF ||
+               now >= segment->end || segment->end <= segment->start) {
+        x = 100000000;
+    } else {
+        GlyphInfo *first = &glyphs[start];
+        GlyphInfo *last = &glyphs[end - 1];
+        while (first < last && first->skip)
+            first++;
+        while (first < last && last->skip)
+            last--;
+        int32_t x_start = first->pos.x;
+        int32_t x_end = last->pos.x + last->advance.x;
+        double progress = (double) (now - segment->start) /
+                          (segment->end - segment->start);
+        x = x_start + ass_lrint((x_end - x_start) * progress);
+    }
+
+    double frz = fmod(glyphs[start].frz, 360);
+    bool reverse = frz > 90 && frz < 270;
+    if (reverse && x > -100000000 && x < 100000000) {
+        GlyphInfo *first = &glyphs[start];
+        GlyphInfo *last = &glyphs[end - 1];
+        while (first < last && first->skip)
+            first++;
+        while (first < last && last->skip)
+            last--;
+        int32_t x_start = first->pos.x;
+        int32_t x_end = last->pos.x + last->advance.x;
+        x = x_start + x_end - x;
+    } else if (reverse) {
+        x = -x;
+    }
+    set_karaoke_boundary(glyphs, start, end, segment->effect_type, x,
+                          reverse);
+}
+
+static bool is_internal_furi_base(TextInfo *text_info,
+                                  const GlyphInfo *info)
+{
+    return info->is_furi_base && info->furi_group >= 0 &&
+           info->furi_group < text_info->n_furi_groups &&
+           text_info->furi_groups[info->furi_group].has_internal_karaoke;
+}
+
+static void process_karaoke_glyph_list(RenderContext *state,
+                                       GlyphInfo *glyphs, int length,
+                                       bool main_text)
+{
+    TextInfo *text_info = &state->text_info;
+    int i = 0;
+    while (i < length) {
+        int segment = glyphs[i].karaoke_segment;
+        bool excluded = main_text &&
+                        is_internal_furi_base(text_info, &glyphs[i]);
+        if (segment < 0 || segment >= text_info->n_karaoke_segments ||
+                excluded) {
+            i++;
+            continue;
+        }
+
+        int line = glyphs[i].line;
+        int end = i + 1;
+        while (end < length &&
+               glyphs[end].karaoke_segment == segment &&
+               glyphs[end].line == line &&
+               !(main_text &&
+                 is_internal_furi_base(text_info, &glyphs[end])))
+            end++;
+        apply_karaoke_segment(state, glyphs, i, end, segment);
+        if (end < length)
+            glyphs[end].starts_new_run = true;
+        i = end;
+    }
+}
+
+static void process_furi_base_karaoke(RenderContext *state,
+                                      FuriGroup *group)
+{
+    if (!group->has_internal_karaoke || !group->n_karaoke_regions ||
+            group->base_len <= 0 || group->base_width <= 0)
+        return;
+
+    TextInfo *text_info = &state->text_info;
+    int64_t now = state->renderer->time - state->event->Start;
+    int start = group->base_start;
+    int end = start + group->base_len;
+    if (group->n_karaoke_regions == 1) {
+        int segment = group->karaoke_regions[0].segment;
+        if (text_info->karaoke_segments[segment].effect_type !=
+                EF_KARAOKE_KF) {
+            apply_karaoke_segment(state, text_info->glyphs,
+                                   start, end, segment);
+            if (end < text_info->length)
+                text_info->glyphs[end].starts_new_run = true;
+            return;
+        }
+    }
+
+    double progress = 0.0;
+    Effect single_effect = EF_KARAOKE_KF;
+    for (int i = 0; i < group->n_karaoke_regions; i++) {
+        FuriKaraokeRegion *region = &group->karaoke_regions[i];
+        KaraokeSegment *segment = &text_info->karaoke_segments[region->segment];
+        single_effect = segment->effect_type;
+        if (now < segment->start)
+            break;
+        if (segment->effect_type == EF_KARAOKE_KF &&
+                now < segment->end && segment->end > segment->start) {
+            double amount = (double) (now - segment->start) /
+                            (segment->end - segment->start);
+            progress = region->start + (region->end - region->start) * amount;
+            break;
+        }
+        progress = region->end;
+    }
+
+    int32_t x_start = text_info->glyphs[start].pos.x;
+    int32_t x_end = x_start + group->base_width;
+    double frz = fmod(text_info->glyphs[start].frz, 360);
+    bool reverse = frz > 90 && frz < 270;
+    int32_t x = reverse ?
+        x_end - ass_lrint((x_end - x_start) * progress) :
+        x_start + ass_lrint((x_end - x_start) * progress);
+    /* Multiple base regions share one monotone fill frontier.  Reuse the
+     * existing \kf fill clip as an internal carrier even for instantaneous
+     * \k/\ko regions.  The reading glyphs retain their real effect type;
+     * deliberately do not add the new border/outline clipping reserved for
+     * the later karaoke-layer phase. */
+    Effect effect_type = group->n_karaoke_regions == 1 ?
+                         single_effect : EF_KARAOKE_KF;
+    set_karaoke_boundary(text_info->glyphs, start, end, effect_type, x,
+                          reverse);
+    if (end < text_info->length)
+        text_info->glyphs[end].starts_new_run = true;
+}
+
+static void process_unified_karaoke_effects(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    clear_karaoke_effects(text_info->glyphs, text_info->length);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        clear_karaoke_effects(group->glyphs, group->length);
+    }
+
+    process_karaoke_glyph_list(state, text_info->glyphs,
+                               text_info->length, true);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        process_karaoke_glyph_list(state, group->glyphs,
+                                   group->length, false);
+        process_furi_base_karaoke(state, group);
+    }
+}
+
 /**
  * \brief Parse style override tags.
  * \param p string to parse
@@ -2573,6 +2821,29 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nested && !state->colorcode_parse) \
                 ass_column_update_default(state, (fields)); \
         } while (0)
+
+        if (state->karaoke_only_parse) {
+            if (state->column_event && state->column_active)
+                continue;
+            // Uppercase \kO belongs to a later Mangetsu phase.  Do not let
+            // the legacy prefix-matching \k parser reinterpret it here.
+            if (name_end - p >= 2 && p[0] == 'k' && p[1] == 'O')
+                continue;
+            if (tag("kt")) {
+                double val = nargs ? argtod(*args) * 10 : 0;
+                apply_karaoke_reset_tag(state, val);
+            } else if (tag("kf") || tag("K")) {
+                double val = nargs ? argtod(*args) : 100;
+                apply_karaoke_duration_tag(state, EF_KARAOKE_KF, val);
+            } else if (tag("ko")) {
+                double val = nargs ? argtod(*args) : 100;
+                apply_karaoke_duration_tag(state, EF_KARAOKE_KO, val);
+            } else if (tag("k")) {
+                double val = nargs ? argtod(*args) : 100;
+                apply_karaoke_duration_tag(state, EF_KARAOKE, val);
+            }
+            continue;
+        }
 
         // New tags introduced in vsfilter 2.39
         int numbered_border_layer = -1;
@@ -3755,39 +4026,28 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             double val = 0;
             if (nargs)
                 val = argtod(*args) * 10;
-            state->effect_skip_timing = dtoi32(val);
-            state->effect_timing = 0;
-            state->reset_effect = true;
+            apply_karaoke_reset_tag(state, val);
         } else if (tag("kf") || tag("K")) {
             if (state->column_event && state->column_active)
                 continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
-            state->effect_type = EF_KARAOKE_KF;
-            state->effect_skip_timing +=
-                    (uint32_t) state->effect_timing;
-            state->effect_timing = dtoi32(val * 10);
+            apply_karaoke_duration_tag(state, EF_KARAOKE_KF, val);
         } else if (tag("ko")) {
             if (state->column_event && state->column_active)
                 continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
-            state->effect_type = EF_KARAOKE_KO;
-            state->effect_skip_timing +=
-                    (uint32_t) state->effect_timing;
-            state->effect_timing = dtoi32(val * 10);
+            apply_karaoke_duration_tag(state, EF_KARAOKE_KO, val);
         } else if (tag("k")) {
             if (state->column_event && state->column_active)
                 continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
-            state->effect_type = EF_KARAOKE;
-            state->effect_skip_timing +=
-                    (uint32_t) state->effect_timing;
-            state->effect_timing = dtoi32(val * 10);
+            apply_karaoke_duration_tag(state, EF_KARAOKE, val);
         } else if (tag("shad")) {
             double val, val_y, xval, yval;
             if (nargs) {
@@ -3848,7 +4108,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
     return p;
 }
 
-char *ass_parse_override_block(RenderContext *state, char *start, char *end)
+static char *parse_override_block(RenderContext *state, char *start, char *end,
+                                  bool karaoke_only)
 {
     char *source_end = end;
     ASS_OverrideText *buffer;
@@ -3862,8 +4123,22 @@ char *ass_parse_override_block(RenderContext *state, char *start, char *end)
         buffer->next = state->override_buffers;
         state->override_buffers = buffer;
     }
+    bool saved = state->karaoke_only_parse;
+    state->karaoke_only_parse = karaoke_only;
     ass_parse_tags(state, start, end, 1.0, false);
+    state->karaoke_only_parse = saved;
     return source_end;
+}
+
+char *ass_parse_override_block(RenderContext *state, char *start, char *end)
+{
+    return parse_override_block(state, start, end, false);
+}
+
+char *ass_parse_karaoke_override_block(RenderContext *state,
+                                       char *start, char *end)
+{
+    return parse_override_block(state, start, end, true);
 }
 
 void ass_apply_transition_effects(RenderContext *state)
@@ -3970,10 +4245,16 @@ void ass_apply_transition_effects(RenderContext *state)
  * 1. sets effect_type for all glyphs in the word (_karaoke_ word)
  * 2. sets effect_timing for all glyphs to x coordinate of the border line between the left and right karaoke parts
  * (left part is filled with PrimaryColour, right one - with SecondaryColour).
+ * Events containing furigana use the explicit event-level segment table built
+ * during parsing; ordinary events retain the legacy glyph-run algorithm below.
  */
 void ass_process_karaoke_effects(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
+    if (text_info->n_furi_groups && text_info->n_karaoke_segments) {
+        process_unified_karaoke_effects(state);
+        return;
+    }
     long long tm_current = state->renderer->time - state->event->Start;
 
     int32_t timing = 0, skip_timing = 0;

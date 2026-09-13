@@ -15,6 +15,11 @@ typedef struct {
     bool empty;
 } Mask;
 
+typedef struct {
+    uint64_t primary;
+    uint64_t secondary;
+} KaraokeCounts;
+
 static char *make_script(const char *text)
 {
     const char *prefix =
@@ -40,6 +45,177 @@ static char *make_script(const char *text)
         return NULL;
     snprintf(script, len, "%s%s\n", prefix, text);
     return script;
+}
+
+static char *make_karaoke_script(const char *text)
+{
+    const char *prefix =
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 384\n"
+        "PlayResY: 216\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,48,&H000000FF,&H00FF0000,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,5,20,20,20,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,";
+    size_t len = strlen(prefix) + strlen(text) + 2;
+    char *script = malloc(len);
+    if (!script)
+        return NULL;
+    snprintf(script, len, "%s%s\n", prefix, text);
+    return script;
+}
+
+static void count_karaoke_images(ASS_Image *img, KaraokeCounts *counts)
+{
+    *counts = (KaraokeCounts) {0};
+    for (; img; img = img->next) {
+        uint32_t rgb = img->color & 0xFFFFFF00u;
+        if (rgb != 0xFF000000u && rgb != 0x0000FF00u)
+            continue;
+        uint64_t coverage = 0;
+        int opacity = 255 - (img->color & 0xFF);
+        for (int y = 0; y < img->h; y++)
+            for (int x = 0; x < img->w; x++)
+                coverage += img->bitmap[y * img->stride + x] * opacity;
+        if (rgb == 0xFF000000u)
+            counts->primary += coverage;
+        else
+            counts->secondary += coverage;
+    }
+}
+
+static int render_karaoke_counts(const char *text, long long now,
+                                  KaraokeCounts *counts)
+{
+    *counts = (KaraokeCounts) {0};
+    ASS_Library *lib = ass_library_init();
+    ASS_Renderer *renderer = NULL;
+    ASS_Track *track = NULL;
+    char *script = NULL;
+    int ret = 1;
+
+    if (!lib)
+        goto done;
+    renderer = ass_renderer_init(lib);
+    if (!renderer)
+        goto done;
+    ass_set_storage_size(renderer, FRAME_W, FRAME_H);
+    ass_set_frame_size(renderer, FRAME_W, FRAME_H);
+    ass_set_fonts(renderer, NULL, "Arial",
+                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+    script = make_karaoke_script(text);
+    if (!script)
+        goto done;
+    track = ass_read_memory(lib, script, strlen(script), NULL);
+    if (!track)
+        goto done;
+
+    int change = 0;
+    count_karaoke_images(ass_render_frame(renderer, track, now, &change),
+                          counts);
+    ret = 0;
+
+done:
+    free(script);
+    if (track)
+        ass_free_track(track);
+    if (renderer)
+        ass_renderer_done(renderer);
+    if (lib)
+        ass_library_done(lib);
+    return ret;
+}
+
+static int render_karaoke_sequence(const char *text, const long long *times,
+                                    int count, KaraokeCounts *counts)
+{
+    ASS_Library *lib = ass_library_init();
+    ASS_Renderer *renderer = NULL;
+    ASS_Track *track = NULL;
+    char *script = NULL;
+    int ret = 1;
+    if (!lib)
+        goto done;
+    renderer = ass_renderer_init(lib);
+    if (!renderer)
+        goto done;
+    ass_set_storage_size(renderer, FRAME_W, FRAME_H);
+    ass_set_frame_size(renderer, FRAME_W, FRAME_H);
+    ass_set_fonts(renderer, NULL, "Arial",
+                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+    script = make_karaoke_script(text);
+    if (!script)
+        goto done;
+    track = ass_read_memory(lib, script, strlen(script), NULL);
+    if (!track)
+        goto done;
+
+    for (int i = 0; i < count; i++) {
+        int change = 0;
+        ASS_Image *images = ass_render_frame(renderer, track, times[i], &change);
+        count_karaoke_images(images, &counts[i]);
+    }
+    ret = 0;
+
+done:
+    free(script);
+    if (track)
+        ass_free_track(track);
+    if (renderer)
+        ass_renderer_done(renderer);
+    if (lib)
+        ass_library_done(lib);
+    return ret;
+}
+
+static bool same_counts(KaraokeCounts a, KaraokeCounts b)
+{
+    return a.primary == b.primary && a.secondary == b.secondary;
+}
+
+static int expect_karaoke_same_at(const char *a, const char *b, long long now)
+{
+    KaraokeCounts ca, cb;
+    int err = render_karaoke_counts(a, now, &ca);
+    if (!err)
+        err = render_karaoke_counts(b, now, &cb);
+    bool ok = !err && same_counts(ca, cb);
+    if (!ok)
+        fprintf(stderr, "expected same karaoke render at %lld: `%s` vs `%s`\n",
+                now, a, b);
+    return ok ? 0 : 1;
+}
+
+static int expect_karaoke_steps(const char *text, const long long *times,
+                                int count, bool strictly_increasing)
+{
+    KaraokeCounts previous = {0};
+    for (int i = 0; i < count; i++) {
+        KaraokeCounts current;
+        if (render_karaoke_counts(text, times[i], &current))
+            return 1;
+        if (!current.primary && !current.secondary)
+            return 1;
+        if (i && (current.primary < previous.primary ||
+                  current.secondary > previous.secondary ||
+                  (strictly_increasing &&
+                   current.primary == previous.primary))) {
+            fprintf(stderr, "unexpected karaoke progression at %lld: `%s`\n",
+                    times[i], text);
+            return 1;
+        }
+        previous = current;
+    }
+    return 0;
 }
 
 static int render_mask(const char *text, Mask *mask)
@@ -322,12 +498,117 @@ int main(void)
 {
     int fail = 0;
 
+    const char *basic_karaoke =
+        "<\xE7\x97\x85|{\\k30}\xE3\x82\x84{\\k26}"
+        "\xE3\x81\xBE{\\k10}\xE3\x81\x84>";
+    const char *wait_karaoke =
+        "<\xE5\x90\x8C|{\\k30}\xE3\x81\x8A{\\k20}"
+        "{\\k50}\xE3\x81\xAA>";
+    const char *cross_karaoke =
+        "<\xE6\x8E\xB4|{\\k40}\xE3\x81\xA4{\\k60}"
+        "\xE3\x81\x8B>\xE3\x82\x93{\\k70}\xE3\x81\xA0";
+    const char *cross_extended =
+        "<\xE6\x8E\xB4|{\\k40}\xE3\x81\xA4{\\k60}"
+        "\xE3\x81\x8B>\xE3\x82\x93\xE3\x81\xA7\xE3\x81\x84"
+        "\xE3\x82\x8B{\\k70}\xE3\x81\x9E";
+    const long long ordinary_steps[] = {0, 300, 700};
+    const long long basic_steps[] = {0, 300, 560};
+    const long long cross_steps[] = {0, 400, 1000};
+    const long long kf_steps[] = {0, 100, 200, 300, 430, 560, 610};
+
+    // The legacy-only path remains selected when no furigana group exists.
+    fail |= expect_karaoke_steps("{\\k30}a{\\k40}b{\\k50}c",
+                                 ordinary_steps, 3, true);
+    fail |= expect_karaoke_same_at("{\\kf60}abc", "{\\K60}abc", 175);
+    fail |= expect_karaoke_same_at("{\\kf60}abc", "{\\K60}abc", 600);
+    fail |= expect_karaoke_same_at("{\\ko30}a{\\ko40}b",
+                                    "{\\k30}a{\\k40}b", 300);
+    fail |= expect_karaoke_steps("{\\kt50\\k30}a",
+                                 (long long[]) {499, 500}, 2, true);
+    fail |= expect_karaoke_same_at("{\\k0}a{\\k0}b{\\k30}c",
+                                    "{\\k0}ab{\\k30}c", 0);
+
+    fail |= expect_karaoke_steps(basic_karaoke, basic_steps, 3, true);
+    fail |= expect_karaoke_same_at("<A|{\\b1\\k30}b>C",
+                                    "<A|{\\k30}b>C", 100);
+    for (int i = 0; i < 3; i++)
+        fail |= expect_karaoke_same_at(basic_karaoke, basic_karaoke,
+                                       basic_steps[i]);
+    const long long seek_order[] = {560, 0, 300, 300, 560};
+    KaraokeCounts seek_counts[5];
+    KaraokeCounts direct_zero, direct_mid;
+    if (render_karaoke_sequence(basic_karaoke, seek_order, 5, seek_counts) ||
+            render_karaoke_counts(basic_karaoke, 0, &direct_zero) ||
+            render_karaoke_counts(basic_karaoke, 300, &direct_mid) ||
+            !same_counts(seek_counts[0], seek_counts[4]) ||
+            !same_counts(seek_counts[1], direct_zero) ||
+            !same_counts(seek_counts[2], direct_mid) ||
+            !same_counts(seek_counts[2], seek_counts[3])) {
+        fprintf(stderr, "furigana karaoke depends on render history\n");
+        fail = 1;
+    }
+
+    KaraokeCounts wait_before, wait_during;
+    if (render_karaoke_counts(wait_karaoke, 299, &wait_before) ||
+            render_karaoke_counts(wait_karaoke, 400, &wait_during) ||
+            !same_counts(wait_before, wait_during)) {
+        fprintf(stderr, "empty furigana karaoke segment consumed visual width\n");
+        fail = 1;
+    }
+    fail |= expect_karaoke_steps(wait_karaoke,
+                                 (long long[]) {299, 400, 500}, 3, false);
+
+    fail |= expect_karaoke_steps("{\\k50}<love|ai> {\\k30}<will|nara>",
+                                 (long long[]) {0, 500}, 2, true);
+    fail |= expect_karaoke_same_at(
+        "<{\\k50}\xE7\x97\x85|\xE3\x82\x84\xE3\x81\xBE\xE3\x81\x84>",
+        "<\xE7\x97\x85|\xE3\x82\x84\xE3\x81\xBE\xE3\x81\x84>", 0);
+    fail |= expect_karaoke_same_at(
+        "{\\k20}A<{\\k999}\xE7\x97\x85|\xE3\x82\x84\xE3\x81\xBE\xE3\x81\x84>B{\\k30}C",
+        "{\\k20}A<\xE7\x97\x85|\xE3\x82\x84\xE3\x81\xBE\xE3\x81\x84>B{\\k30}C", 250);
+    fail |= expect_karaoke_same_at("<{\\kf50}A|b>", "<A|b>", 250);
+    fail |= expect_karaoke_same_at("<{\\K50}A|b>", "<A|b>", 250);
+    fail |= expect_karaoke_same_at("<{\\ko50}A|b>", "<A|b>", 250);
+    fail |= expect_karaoke_same_at("<{\\kt50}A|b>", "<A|b>", 250);
+
+    fail |= expect_karaoke_steps(cross_karaoke, cross_steps, 3, true);
+    fail |= expect_karaoke_steps(cross_extended, cross_steps, 3, true);
+    fail |= expect_karaoke_same_at(cross_karaoke, cross_karaoke, 650);
+
+    const char *kf_furi =
+        "<\xE7\x97\x85|{\\kf30}\xE3\x82\x84{\\kf26}"
+        "\xE3\x81\xBE{\\kf10}\xE3\x81\x84>";
+    const char *big_k_furi =
+        "<\xE7\x97\x85|{\\K30}\xE3\x82\x84{\\K26}"
+        "\xE3\x81\xBE{\\K10}\xE3\x81\x84>";
+    fail |= expect_karaoke_steps(kf_furi, kf_steps, 7, true);
+    for (int i = 0; i < 7; i++)
+        fail |= expect_karaoke_same_at(kf_furi, big_k_furi, kf_steps[i]);
+    fail |= expect_karaoke_steps("<A|{\\kt50\\ko30}b>",
+                                 (long long[]) {499, 500}, 2, true);
+    fail |= expect_karaoke_steps("<ABCD|{\\k30}a{\\k30}bb{\\k30}c>",
+                                 (long long[]) {0, 300, 600}, 3, true);
+    fail |= expect_karaoke_steps("<AB|{\\k30}W{\\k30}i{\\k30}WWW>",
+                                 (long long[]) {0, 300, 600}, 3, true);
+    fail |= expect_karaoke_steps("<A|{\\k20}a><B|{\\k30}b>C{\\k40}D",
+                                 (long long[]) {0, 200, 500}, 3, true);
+    fail |= expect_karaoke_steps("{\\k20}A<B|{\\k30}b>C{\\k40}D",
+                                 (long long[]) {0, 200, 500}, 3, true);
+    fail |= expect_karaoke_steps("<A|{\\k20}a>{\\r}B{\\k30}C",
+                                 (long long[]) {0, 200}, 2, true);
+    fail |= expect_karaoke_same_at(basic_karaoke, basic_karaoke, 560);
+
     fail |= expect_different("<A|B>", "{\\furi0}<A|B>");
     fail |= expect_same("<cool>", "{\\furi0}<cool>");
     fail |= expect_same("<dramatic>", "{\\furi0}<dramatic>");
     fail |= expect_same("<A|>", "{\\furi0}<A|>");
     fail |= expect_same("<|B>", "{\\furi0}<|B>");
     fail |= expect_same("<A|B", "{\\furi0}<A|B");
+    fail |= expect_same("<A|{\\k30B>", "{\\furi0}<A|{\\k30B>");
+    fail |= expect_same("<A|{\\b1}B>", "<A|{\\b1}B>");
+    fail |= expect_same("<A|{\\kO30}B>", "<A|{\\kO30}B>");
+    fail |= expect_same("<A|{\\k30}>", "<A|{\\k30}>");
+    fail |= expect_same("<A|{\\k30}b|c>", "<A|{\\k30}b|c>");
     fail |= expect_same("A|B>", "{\\furi0}A|B>");
     fail |= expect_same("<>", "{\\furi0}<>");
     fail |= expect_same("\\<", "{\\furi0}<");

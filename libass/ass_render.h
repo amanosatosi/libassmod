@@ -129,6 +129,12 @@ typedef enum {
 } Effect;
 
 typedef struct {
+    int64_t start;
+    int64_t end;
+    Effect effect_type;
+} KaraokeSegment;
+
+typedef struct {
     bool enabled;
     ASS_StringView path;
     int32_t xoffset;
@@ -320,6 +326,7 @@ typedef struct glyph_info {
     bool is_furi;
     bool is_furi_base;
     int furi_group;
+    int karaoke_segment;
 
     // next glyph in this cluster
     struct glyph_info *next;
@@ -331,6 +338,12 @@ typedef struct glyph_info {
 void ass_free_glyph_render_resources(GlyphInfo *info);
 
 typedef struct {
+    int segment;
+    double start;
+    double end;
+} FuriKaraokeRegion;
+
+typedef struct {
     int base_start;
     int base_len;
     GlyphInfo *glyphs;
@@ -338,6 +351,7 @@ typedef struct {
     int length;
     int max_glyphs;
     int style;
+    int32_t base_width;
     int32_t layout_width;
     int32_t base_shift;
     double scale_x;
@@ -348,6 +362,9 @@ typedef struct {
     double auto_gap;
     bool auto_placement;
     bool position_explicit;
+    bool has_internal_karaoke;
+    FuriKaraokeRegion *karaoke_regions;
+    int n_karaoke_regions;
 } FuriGroup;
 
 typedef struct {
@@ -469,6 +486,9 @@ typedef struct {
     int max_columns;
     int column_rows;
     int column_count;
+    KaraokeSegment *karaoke_segments;
+    int n_karaoke_segments;
+    int max_karaoke_segments;
 } TextInfo;
 
 typedef struct {
@@ -629,6 +649,13 @@ struct render_context {
     int32_t effect_timing;
     int32_t effect_skip_timing;
     bool reset_effect;
+    int karaoke_segment;
+    int64_t karaoke_cursor;
+    Effect karaoke_effect_type;
+    bool karaoke_timeline_enabled;
+    bool karaoke_only_parse;
+    bool karaoke_alloc_failed;
+    unsigned karaoke_tag_serial;
     bool distort_enabled;
     ASS_DistortParams distort;
 

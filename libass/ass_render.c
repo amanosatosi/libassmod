@@ -133,6 +133,7 @@ static void free_furi_groups(TextInfo *text_info)
         }
         free(group->glyphs);
         free(group->event_text);
+        free(group->karaoke_regions);
     }
     free(text_info->furi_groups);
     text_info->furi_groups = NULL;
@@ -181,6 +182,7 @@ static void text_info_done(TextInfo* text_info)
 {
     free_furi_groups(text_info);
     free_column_layout(text_info);
+    free(text_info->karaoke_segments);
     free(text_info->glyphs);
     free(text_info->event_text);
     free(text_info->breaks);
@@ -2710,6 +2712,13 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
     state->reset_effect = false;
+    state->karaoke_segment = -1;
+    state->karaoke_cursor = 0;
+    state->karaoke_effect_type = EF_NONE;
+    state->karaoke_timeline_enabled = false;
+    state->karaoke_only_parse = false;
+    state->karaoke_alloc_failed = false;
+    state->karaoke_tag_serial = 0;
     state->fade_color = (FadeColorState) {0};
     state->distort_enabled = false;
     state->distort = (ASS_DistortParams) {
@@ -3153,6 +3162,10 @@ static void free_render_context(RenderContext *state)
     free_distortion_resources(state);
     free_furi_groups(&state->text_info);
     free_column_layout(&state->text_info);
+    free(state->text_info.karaoke_segments);
+    state->text_info.karaoke_segments = NULL;
+    state->text_info.n_karaoke_segments = 0;
+    state->text_info.max_karaoke_segments = 0;
     state->font = NULL;
     state->family.str = NULL;
     state->family.len = 0;
@@ -4402,7 +4415,8 @@ fix_glyph_scaling(ASS_Renderer *priv, GlyphInfo *glyph)
 }
 
 // Initial run splitting based purely on the characters' styles
-static void split_style_runs_list(GlyphInfo *glyphs, int length)
+static void split_style_runs_list(GlyphInfo *glyphs, int length,
+                                  bool unified_karaoke)
 {
     if (length <= 0)
         return;
@@ -4415,6 +4429,8 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length)
         Effect effect_type = info->effect_type;
         info->starts_new_run =
             info->effect_timing ||  // but ignore effect_skip_timing
+            (unified_karaoke &&
+             info->karaoke_segment != last->karaoke_segment) ||
             (effect_type != EF_NONE && effect_type != last_effect_type) ||
             info->drawing_text.str ||
             last->drawing_text.str ||
@@ -4462,7 +4478,11 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length)
 
 static void split_style_runs(RenderContext *state)
 {
-    split_style_runs_list(state->text_info.glyphs, state->text_info.length);
+    TextInfo *text_info = &state->text_info;
+    bool unified_karaoke = text_info->n_furi_groups &&
+                           text_info->n_karaoke_segments;
+    split_style_runs_list(text_info->glyphs, text_info->length,
+                          unified_karaoke);
 }
 
 static bool furi_escapes_char(char c)
@@ -4693,6 +4713,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->has_distort_outline = false;
     info->is_furi = is_furi;
     info->furi_group = furi_group;
+    info->karaoke_segment = state->karaoke_segment;
     info->fade_color = state->fade_color;
 
     info->hspacing_scaled = 0;
@@ -4743,12 +4764,79 @@ static bool append_text_segment(RenderContext *state, char *start, char *end,
                                     is_furi, furi_group))
             return false;
 
-        if (!is_furi) {
-            state->effect_type = EF_NONE;
-            state->effect_timing = 0;
-            state->effect_skip_timing = 0;
-            state->reset_effect = false;
+        state->effect_type = EF_NONE;
+        state->effect_timing = 0;
+        state->effect_skip_timing = 0;
+        state->reset_effect = false;
+    }
+    return true;
+}
+
+static bool append_furi_base(RenderContext *state, char *start, char *end,
+                             int group_id)
+{
+    TextInfo *text_info = &state->text_info;
+    char *p = start;
+    while (p < end) {
+        if (*p == '{') {
+            char *close = memchr(p + 1, '}', end - (p + 1));
+            if (!close)
+                return false;
+            // Base-side overrides are not part of the ruby feature.  Skip
+            // the whole block, most importantly without letting karaoke
+            // tags mutate the shared event timeline.
+            p = close + 1;
+            continue;
         }
+
+        unsigned code = get_next_char_bounded(state, &p, end);
+        if (!code)
+            break;
+        if (!append_glyph_to_target(state, &text_info->glyphs,
+                                    &text_info->event_text,
+                                    &text_info->breaks, &text_info->length,
+                                    &text_info->max_glyphs, code,
+                                    (ASS_StringView) {NULL, 0}, false,
+                                    group_id))
+            return false;
+        state->effect_type = EF_NONE;
+        state->effect_timing = 0;
+        state->effect_skip_timing = 0;
+        state->reset_effect = false;
+    }
+    return true;
+}
+
+static bool append_furi_reading(RenderContext *state, char *start, char *end,
+                                FuriGroup *group, int group_id)
+{
+    char *p = start;
+    while (p < end) {
+        if (*p == '{') {
+            char *close = memchr(p + 1, '}', end - (p + 1));
+            if (!close)
+                return false;
+            unsigned serial = state->karaoke_tag_serial;
+            ass_parse_karaoke_override_block(state, p + 1, close);
+            if (state->karaoke_tag_serial != serial)
+                group->has_internal_karaoke = true;
+            p = close + 1;
+            continue;
+        }
+
+        unsigned code = get_next_char_bounded(state, &p, end);
+        if (!code)
+            break;
+        if (!append_glyph_to_target(state, &group->glyphs,
+                                    &group->event_text, NULL, &group->length,
+                                    &group->max_glyphs, code,
+                                    (ASS_StringView) {NULL, 0}, true,
+                                    group_id))
+            return false;
+        state->effect_type = EF_NONE;
+        state->effect_timing = 0;
+        state->effect_skip_timing = 0;
+        state->reset_effect = false;
     }
     return true;
 }
@@ -4858,6 +4946,48 @@ typedef enum {
     FURI_CANDIDATE_GROUP,
 } FuriCandidateType;
 
+static bool furi_override_has_karaoke(char *start, char *end)
+{
+    char *p = start;
+    while (p < end) {
+        while (ass_override_peek(&p, end) && *p != '\\')
+            p++;
+        if (p >= end)
+            break;
+        p++;
+        ass_override_spaces(&p, end);
+        if (p >= end)
+            break;
+        if (*p == 'K')
+            return true;
+        if (*p != 'k')
+            continue;
+        char next = p + 1 < end ? p[1] : '\0';
+        if (next == 'O')
+            continue;
+        if (!next || next == '\\' || next == 'f' || next == 'o' ||
+                next == 't' || next == '+' || next == '-' || next == '.' ||
+                (next >= '0' && next <= '9') || (unsigned char) next >= 0x80)
+            return true;
+    }
+    return false;
+}
+
+static bool furi_part_has_text(char *start, char *end)
+{
+    for (char *p = start; p < end;) {
+        if (*p == '{') {
+            char *close = memchr(p + 1, '}', end - (p + 1));
+            if (!close)
+                return true;
+            p = close + 1;
+        } else {
+            return true;
+        }
+    }
+    return false;
+}
+
 static FuriCandidateType parse_furi_candidate(char *p, FuriCandidate *candidate)
 {
     if (*p != '<')
@@ -4871,9 +5001,19 @@ static FuriCandidateType parse_furi_candidate(char *p, FuriCandidate *candidate)
             q += 2;
             continue;
         }
-        // Override blocks inside a furi group are reserved for a later
-        // implementation; literalize them instead of half-parsing them.
-        if (*q == '<' || *q == '{' || *q == '}')
+        if (*q == '{') {
+            char *close = strchr(q + 1, '}');
+            if (!close) {
+                malformed = true;
+                q++;
+                continue;
+            }
+            if (!furi_override_has_karaoke(q + 1, close))
+                malformed = true;
+            q = close + 1;
+            continue;
+        }
+        if (*q == '<' || *q == '}')
             malformed = true;
         if (*q == '|') {
             if (!pipe)
@@ -4891,6 +5031,10 @@ static FuriCandidateType parse_furi_candidate(char *p, FuriCandidate *candidate)
                 return FURI_CANDIDATE_LITERAL;
             if (candidate->base_start == candidate->base_end ||
                     candidate->furi_start == candidate->furi_end ||
+                    !furi_part_has_text(candidate->base_start,
+                                        candidate->base_end) ||
+                    !furi_part_has_text(candidate->furi_start,
+                                        candidate->furi_end) ||
                     malformed)
                 return FURI_CANDIDATE_LITERAL;
             return FURI_CANDIDATE_GROUP;
@@ -4946,10 +5090,8 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
     group->auto_placement = state->furi_auto_placement;
     group->position_explicit = state->furi_position_explicit;
 
-    if (!append_text_segment(state, candidate->base_start, candidate->base_end,
-                             &text_info->glyphs, &text_info->event_text,
-                             &text_info->breaks, &text_info->length,
-                             &text_info->max_glyphs, false, group_id))
+    if (!append_furi_base(state, candidate->base_start, candidate->base_end,
+                          group_id))
         return false;
 
     group->base_len = text_info->length - group->base_start;
@@ -4961,10 +5103,8 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
         info->furi_group = group_id;
     }
 
-    if (!append_text_segment(state, candidate->furi_start, candidate->furi_end,
-                             &group->glyphs, &group->event_text, NULL,
-                             &group->length, &group->max_glyphs,
-                             true, group_id))
+    if (!append_furi_reading(state, candidate->furi_start,
+                             candidate->furi_end, group, group_id))
         return false;
 
     return group->length > 0;
@@ -5040,6 +5180,12 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
     TextInfo *text_info = &state->text_info;
 
     char *p = event->Text, *q;
+
+    // Ordinary karaoke retains the allocation-free legacy path.  Build the
+    // explicit timeline only for events which may contain native furigana;
+    // malformed candidates are filtered by the normal parser below.
+    state->karaoke_timeline_enabled =
+        strchr(event->Text, '<') && strchr(event->Text, '|');
 
     if (event_has_active_column(event->Text) && !begin_column_layout(state))
         goto fail;
@@ -5133,6 +5279,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         state->reset_effect = false;
     }
 
+    if (state->karaoke_alloc_failed)
+        goto fail;
     return true;
 
 fail:
@@ -5492,6 +5640,7 @@ static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
     // Preserve the shaped advance (and its font-provided spacing), while
     // also reserving enough room for ink that overhangs its advance box.
     int32_t furi_width = furi_text_reserved_width(group);
+    group->base_width = base_width;
     group->layout_width = base_width;
     group->base_shift = 0;
 
@@ -5810,6 +5959,85 @@ static void update_glyph_jitter_offsets(RenderContext *state)
     }
 }
 
+static bool prepare_furi_karaoke_regions(TextInfo *text_info,
+                                         FuriGroup *group)
+{
+    if (!group->has_internal_karaoke || !text_info->n_karaoke_segments)
+        return true;
+
+    int count = text_info->n_karaoke_segments;
+    double *left = malloc(count * sizeof(*left));
+    double *right = malloc(count * sizeof(*right));
+    if (!left || !right) {
+        free(left);
+        free(right);
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        left[i] = DBL_MAX;
+        right[i] = -DBL_MAX;
+    }
+
+    for (int i = 0; i < group->length; i++) {
+        GlyphInfo *root = &group->glyphs[i];
+        int segment = root->karaoke_segment;
+        if (root->skip || segment < 0 || segment >= count)
+            continue;
+
+        double x0 = d6_to_double(root->pos.x);
+        double x1 = x0 + d6_to_double(root->cluster_advance.x -
+                                      root->hspacing_scaled);
+        left[segment] = FFMIN(left[segment], FFMIN(x0, x1));
+        right[segment] = FFMAX(right[segment], FFMAX(x0, x1));
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double x = d6_to_double(info->pos.x);
+            left[segment] = FFMIN(left[segment],
+                                  x + d6_to_double(info->bbox.x_min));
+            right[segment] = FFMAX(right[segment],
+                                   x + d6_to_double(info->bbox.x_max));
+        }
+    }
+
+    int regions = 0;
+    double total = 0.0;
+    for (int i = 0; i < count; i++) {
+        if (left[i] >= right[i])
+            continue;
+        regions++;
+        total += right[i] - left[i];
+    }
+    if (!regions || total <= 0.0) {
+        free(left);
+        free(right);
+        return true;
+    }
+
+    group->karaoke_regions = calloc(regions, sizeof(*group->karaoke_regions));
+    if (!group->karaoke_regions) {
+        free(left);
+        free(right);
+        return false;
+    }
+
+    double cursor = 0.0;
+    for (int i = 0; i < count; i++) {
+        if (left[i] >= right[i])
+            continue;
+        double width = (right[i] - left[i]) / total;
+        FuriKaraokeRegion *region =
+            &group->karaoke_regions[group->n_karaoke_regions++];
+        region->segment = i;
+        region->start = cursor;
+        cursor += width;
+        region->end = cursor;
+    }
+    group->karaoke_regions[group->n_karaoke_regions - 1].end = 1.0;
+
+    free(left);
+    free(right);
+    return true;
+}
+
 static bool prepare_furi_groups(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
@@ -5823,7 +6051,8 @@ static bool prepare_furi_groups(RenderContext *state)
         FuriGroup *group = &text_info->furi_groups[i];
         TextInfo furi_text = furi_group_text_info(group);
 
-        split_style_runs_list(group->glyphs, group->length);
+        split_style_runs_list(group->glyphs, group->length,
+                              text_info->n_karaoke_segments > 0);
         ass_shaper_find_runs(state->furi_shaper, state->renderer,
                              group->glyphs, group->length);
         if (!ass_shaper_shape(state->furi_shaper, &furi_text))
@@ -5835,6 +6064,8 @@ static bool prepare_furi_groups(RenderContext *state)
             return false;
         apply_furi_group_layout(state, group);
         if (!reorder_furi_group(state, group))
+            return false;
+        if (!prepare_furi_karaoke_regions(text_info, group))
             return false;
     }
 

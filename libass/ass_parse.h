@@ -89,6 +89,8 @@ static inline bool ass_override_prefix(char **p, char *end, const char *name)
 // owns *storage, or it is NULL when the original source can be used directly.
 bool ass_prepare_override_block(char **start, char **end, ASS_OverrideText **storage);
 char *ass_parse_override_block(RenderContext *state, char *start, char *end);
+char *ass_parse_karaoke_override_block(RenderContext *state,
+                                       char *start, char *end);
 void ass_free_override_buffers(RenderContext *state);
 unsigned ass_get_next_char(RenderContext *state, char **str);
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,

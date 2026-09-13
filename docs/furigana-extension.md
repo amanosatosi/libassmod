@@ -10,9 +10,56 @@ Furigana parsing is enabled by default. A text sequence is treated as furigana
 only if it is an angle-bracket group containing an unescaped pipe. Angle-bracket
 text without a pipe, such as `<cool>` or `<dramatic>`, remains literal text.
 
-Malformed groups are rendered literally. Override tags inside a furigana group
-are not supported in this first implementation; use override tags around the
-group instead.
+Malformed groups are rendered literally. Balanced override blocks are accepted
+inside a group for karaoke timing, but only karaoke tags in the reading side
+are interpreted. Other override tags should still be placed around the group.
+
+## Karaoke timing
+
+Karaoke timing may be placed in the reading side:
+
+```ass
+<病|{\k30}や{\k26}ま{\k10}い>
+```
+
+Each visible timed reading segment maps to a corresponding region of the
+complete shaped base. The regions follow the relative visible widths of the
+shaped reading segments, so they are not forced into equal divisions. `\kf`
+and its `\K` alias use the same interval for the progressive reading fill and
+the matching base region. Lowercase `\ko` retains its existing meaning.
+
+An empty timing is a wait. It advances the shared event karaoke clock but does
+not create a base region:
+
+```ass
+<同|{\k30}お{\k20}{\k50}な>
+```
+
+Karaoke tags in the base side are invalid and ignored for karaoke purposes;
+they neither create a segment nor alter timing after the group:
+
+```ass
+<{\k50}病|やまい>
+```
+
+When the reading has no internal karaoke timing, ordinary outer karaoke is the
+fallback and activates the base and reading together:
+
+```ass
+{\k50}<love|ai>
+```
+
+All timing belongs to one event-level timeline. A segment started in a reading
+therefore remains active after the closing `>` until another karaoke tag starts
+a segment:
+
+```ass
+<掴|{\k40}つ{\k60}か>ん{\k70}だ
+```
+
+Here the 60-centisecond segment owns `か`, the matching second base region, and
+`ん`. Normal text without furigana continues to use the existing libass/VSFilter
+karaoke path unchanged.
 
 ## Tags
 
