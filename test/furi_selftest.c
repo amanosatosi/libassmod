@@ -972,44 +972,29 @@ static int expect_bidi_kf_direction(void)
     double rx[6] = {0}, bx[6] = {0};
     if (!err && !base_mask.empty) {
         int base_y = (base_mask.y0 + base_mask.y1) / 2;
-        rx[0] = plane_centroid_x(frame[0].primary, 0, 0,
-                                 FRAME_W, base_mask.y0, &rc[0]);
-        bx[0] = plane_centroid_x(frame[0].primary, base_mask.x0, base_y,
-                                 base_mask.x1, base_mask.y1, &bc[0]);
-        for (int i = 1; i < 3; i++) {
-            rx[i] = positive_delta_centroid_x(
-                frame[i - 1].primary, frame[i].primary,
-                0, 0, FRAME_W, base_mask.y0, &rc[i]);
-            bx[i] = positive_delta_centroid_x(
-                frame[i - 1].primary, frame[i].primary,
-                base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[i]);
-        }
-        rx[3] = positive_delta_centroid_x(
-            frame[3].primary, frame[4].primary,
-            0, 0, FRAME_W, base_mask.y0, &rc[3]);
-        bx[3] = positive_delta_centroid_x(
-            frame[3].primary, frame[4].primary,
-            base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[3]);
-        for (int i = 4; i < 6; i++) {
-            rx[i] = positive_delta_centroid_x(
-                frame[i].primary, frame[i + 1].primary,
-                0, 0, FRAME_W, base_mask.y0, &rc[i]);
-            bx[i] = positive_delta_centroid_x(
-                frame[i].primary, frame[i + 1].primary,
-                base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[i]);
+        for (int i = 0; i < 6; i++) {
+            int frame_index = i < 3 ? i : i + 1;
+            rx[i] = plane_centroid_x(frame[frame_index].primary,
+                                     0, 0, FRAME_W, base_mask.y0, &rc[i]);
+            bx[i] = plane_centroid_x(frame[frame_index].primary,
+                                     base_mask.x0, base_y,
+                                     base_mask.x1, base_mask.y1, &bc[i]);
         }
     }
     bool covered = !err;
     for (int i = 0; i < 6; i++)
         covered &= rc[i] && bc[i];
+    // A frontier can cross blank columns between glyph strokes at a sampled
+    // time. Cumulative active-paint ownership may therefore plateau, but it
+    // must never move right and must move strictly left over each segment.
     bool ok = covered &&
-        rx[0] > rx[1] && rx[1] > rx[2] &&
-        bx[0] > bx[1] && bx[1] > bx[2] &&
-        rx[3] > rx[4] && rx[4] > rx[5] &&
-        bx[3] > bx[4] && bx[4] > bx[5];
+        rx[0] >= rx[1] && rx[1] >= rx[2] && rx[0] > rx[2] &&
+        bx[0] >= bx[1] && bx[1] >= bx[2] && bx[0] > bx[2] &&
+        rx[3] >= rx[4] && rx[4] >= rx[5] && rx[3] > rx[5] &&
+        bx[3] >= bx[4] && bx[4] >= bx[5] && bx[3] > bx[5];
     if (!ok)
         fprintf(stderr,
-                "::error title=RTL KF sweep::RTL kf sweep did not progress right to left: err=%d empty=%d reading coverage=[%llu,%llu,%llu;%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f;%.3f,%.3f,%.3f] base coverage=[%llu,%llu,%llu;%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f;%.3f,%.3f,%.3f]\n",
+                "::error title=RTL KF sweep::RTL kf cumulative active paint did not progress right to left at 25/50/75 percent: err=%d empty=%d reading coverage=[%llu,%llu,%llu;%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f;%.3f,%.3f,%.3f] base coverage=[%llu,%llu,%llu;%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f;%.3f,%.3f,%.3f]\n",
                 err, base_mask.empty,
                 (unsigned long long) rc[0], (unsigned long long) rc[1],
                 (unsigned long long) rc[2], (unsigned long long) rc[3],
