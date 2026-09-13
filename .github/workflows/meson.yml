@@ -180,7 +180,7 @@ jobs:
         if: matrix.config.skip_tests != 'yes' && runner.os != 'Windows'
         continue-on-error: true
         run: |
-          meson test -C build furi-extension --verbose --no-rebuild
+          build/test/furi_unit
 
       - name: Run tests
         id: run-tests
