@@ -659,6 +659,15 @@ static int process_event_tail(ASS_Track *track, ASS_Event *event,
     return 1;
 }
 
+static bool colorcode_marker_matches(const char *value, size_t len,
+                                     const char *marker)
+{
+    size_t marker_len = strlen(marker);
+    return (len == marker_len && !memcmp(value, marker, marker_len)) ||
+           (len == marker_len + 2 && value[0] == '{' && value[len - 1] == '}' &&
+            !memcmp(value + 1, marker, marker_len));
+}
+
 static bool colorcode_effect_matches(const char *effect)
 {
     if (!effect)
@@ -672,9 +681,7 @@ static bool colorcode_effect_matches(const char *effect)
     while (end > start && ass_isspace(end[-1]))
         end--;
 
-    size_t len = end - start;
-    return len == strlen(COLORCODE_EFFECT) &&
-           !strncmp(start, COLORCODE_EFFECT, len);
+    return colorcode_marker_matches(start, end - start, COLORCODE_EFFECT);
 }
 
 static int try_process_actor_colorcode_event(ASS_Track *track, bool is_comment,
@@ -689,7 +696,8 @@ static int try_process_actor_colorcode_event(ASS_Track *track, bool is_comment,
         return 0;
 
     int ret;
-    bool applied_styles = !strcmp(event->Name, COLORCODE_APPLIED_STYLES);
+    bool applied_styles = colorcode_marker_matches(
+        event->Name, strlen(event->Name), COLORCODE_APPLIED_STYLES);
     if (applied_styles)
         ret = set_colorcode_applied_styles(track, event->Text);
     else

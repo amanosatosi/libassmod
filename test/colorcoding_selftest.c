@@ -665,6 +665,21 @@ int main(void)
         "{\\fs42\\1c&HFFB6D9&}Basic",
         "basic actor font size/color did not match explicit tags");
 
+    ok &= expect_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,{mangetsu-colorcoding},{\\fs42\\1c&HFFB6D9&}\n",
+        "BracedEffect",
+        "{\\fs42\\1c&HFFB6D9&}BracedEffect",
+        "braced colorcoding effect did not match the bare marker");
+
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,{mangetsu-colorcode-applied-styles},0,0,0,{mangetsu-colorcoding},{Default}{Alt}\n"
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,{mangetsu-colorcoding},{\\1c&HFFB6D9&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Other,Nene,0,0,0,,{\\pos(320,180)}BracedWhitelist\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Other,Nene,0,0,0,,{\\pos(320,180)}BracedWhitelist\n",
+        "braced applied-styles marker did not preserve whitelist behavior");
+
     ASS_Track *chunk_track = read_header_track(lib);
     if (!chunk_track) {
         ok = false;
@@ -688,6 +703,30 @@ int main(void)
             ok = false;
         }
         ass_free_track(chunk_track);
+    }
+
+    ASS_Track *braced_api_track = read_header_track(lib);
+    if (!braced_api_track) {
+        ok = false;
+    } else {
+        int whitelist = ass_process_mangetsu_colorcoding_line(
+            braced_api_track, "{mangetsu-colorcode-applied-styles}",
+            "{mangetsu-colorcoding}", "{Default}", 1, 1);
+        int actor = ass_process_mangetsu_colorcoding_line(
+            braced_api_track, "Nene", "{mangetsu-colorcoding}",
+            "{\\1c&HFFB6D9&}", 1, 1);
+        int arbitrary = ass_process_mangetsu_colorcoding_line(
+            braced_api_track, "Other", "{unrelated-metadata}",
+            "{\\1c&H0000FF&}", 1, 1);
+        if (whitelist != 1 || actor != 1 || arbitrary != 0 ||
+                !braced_api_track->colorcode.has_applied_styles ||
+                braced_api_track->colorcode.n_applied_styles != 1 ||
+                braced_api_track->colorcode.n_actors != 1) {
+            fprintf(stderr,
+                    "host API did not accept braced colorcoding markers\n");
+            ok = false;
+        }
+        ass_free_track(braced_api_track);
     }
 
     ASS_Track *stripped_track = read_header_track(lib);
