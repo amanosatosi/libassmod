@@ -125,7 +125,8 @@ typedef enum {
     EF_NONE = 0,
     EF_KARAOKE,
     EF_KARAOKE_KF,
-    EF_KARAOKE_KO
+    EF_KARAOKE_KO,
+    EF_KARAOKE_REVEAL
 } Effect;
 
 typedef struct {
@@ -140,6 +141,23 @@ typedef struct {
     int32_t xoffset;
     int32_t yoffset;
 } ImageFillLayer;
+
+typedef enum {
+    KARAOKE_OUTLINE_UNSET = 0,
+    KARAOKE_OUTLINE_SOLID,
+    KARAOKE_OUTLINE_VECTOR,
+    KARAOKE_OUTLINE_GRADIENT,
+} KaraokeOutlinePaintType;
+
+/* Explicit waiting paint for the ordinary layer-1 outline.  Alpha continues
+ * to come from the active outline state, just as \3c/\3vc/\3grd only replace
+ * the active colour source. */
+typedef struct {
+    KaraokeOutlinePaintType type;
+    uint32_t color;
+    GradientValues vector;
+    MangetsuGradientLayer gradient;
+} KaraokeOutlinePaint;
 
 typedef struct {
     bool active;
@@ -176,6 +194,7 @@ typedef struct {
     FilterDesc filter;
     uint32_t c[4];              // colors (with fade applied)
     Effect effect_type;
+    bool karaoke_reverse;
     bool furi_base_karaoke;
     bool furi_base_reverse;
     int furi_group;
@@ -206,6 +225,7 @@ typedef struct {
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
     ImageFillState image_fill;
+    KaraokeOutlinePaint secondary_outline;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t base_c[4];
     int fade;
@@ -269,12 +289,14 @@ typedef struct glyph_info {
     uint32_t c[4];              // colors
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    KaraokeOutlinePaint secondary_outline;
     ImageFillState image_fill;
     int line;
     ASS_Vector advance;         // 26.6
     ASS_Vector cluster_advance;
     int32_t vshift;             // 26.6 vertical shift from \fsvp
     Effect effect_type;
+    bool karaoke_reverse;
     int32_t effect_timing;          // time duration of current karaoke word
     // after ass_process_karaoke_effects: distance in subpixels from the karaoke origin.
     // part of the glyph to the left of it is displayed in a different color.
@@ -612,6 +634,7 @@ struct render_context {
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    KaraokeOutlinePaint secondary_outline;
     int mangetsu_gradient_next_id;
     ImageFillState image_fill;
     bool needs_rgba;

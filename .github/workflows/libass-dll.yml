@@ -114,10 +114,24 @@ jobs:
             }
             throw "libass DLL not found in dist or build"
           }
+          $canonical = Join-Path artifact $dll.Name
+          Copy-Item $dll.FullName $canonical -Force
           Copy-Item $dll.FullName artifact\\ass.dll -Force
           Copy-Item $dll.FullName artifact\\libassmod.dll -Force
           Copy-Item $dll.FullName artifact\\assmod.dll -Force
           Copy-Item $dll.FullName artifact\\libass.dll -Force
+          $mangetsu = Join-Path artifact 'mangetsu.dll'
+          Copy-Item $dll.FullName $mangetsu -Force
+
+          if (-not (Test-Path -LiteralPath $canonical) -or
+              -not (Test-Path -LiteralPath $mangetsu)) {
+            throw "Expected canonical DLL and mangetsu.dll in artifact"
+          }
+          $canonicalHash = (Get-FileHash -LiteralPath $canonical -Algorithm SHA256).Hash
+          $mangetsuHash = (Get-FileHash -LiteralPath $mangetsu -Algorithm SHA256).Hash
+          if ($canonicalHash -ne $mangetsuHash) {
+            throw "mangetsu.dll is not byte-identical to $($dll.Name)"
+          }
 
           # Keep the matching PDB with the DLL. Crash dumps require the exact
           # GUID/age-matched PDB; a later rebuild cannot safely symbolize them.
@@ -138,6 +152,8 @@ jobs:
             "ref: $env:GITHUB_REF"
             "build_time_utc: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
             "toolchain: msvc-static"
+            "runtime_dll: $($dll.Name)"
+            "mangetsu_sha256: $mangetsuHash"
             "pdb: $($pdb.Name)"
           )
           $info | Set-Content -Path artifact\\libassmod-build.txt -Encoding ASCII

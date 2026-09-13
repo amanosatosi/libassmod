@@ -63,6 +63,15 @@ furi_unit = executable(
     link_with: libass_for_tools,
 )
 
+karaoke_paint_unit = executable(
+    'karaoke_paint_unit',
+    files('karaoke_paint_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 multiborder_unit = executable(
     'multiborder_unit',
     files('multiborder_selftest.c'),
@@ -172,6 +181,7 @@ test('relative-numbers', relative_numbers_unit, timeout: 120)
 test('override-annotations', override_annotations_unit, timeout: 120)
 test('clip-regression', clip_unit)
 test('furi-extension', furi_unit, timeout: 120)
+test('karaoke-paint-extension', karaoke_paint_unit, timeout: 120)
 test('multi-border-extension', multiborder_unit)
 test('actor-colorcoding', colorcoding_unit)
 test('fad-color-fade', fad_unit)

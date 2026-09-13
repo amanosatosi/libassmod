@@ -30,7 +30,9 @@ karaoke tag source order. `\kf`
 and its `\K` alias use the same interval for the progressive reading fill and
 the matching base region. Their sweep follows the reading segment's bidi
 direction, including on the corresponding base region. Lowercase `\ko`
-retains its existing meaning.
+retains its existing meaning. Uppercase `\kO` is Mangetsu reveal karaoke:
+each reading segment and matching base region are hidden before their shared
+start and appear fully at that start. It has no progressive sweep.
 
 An empty timing is a wait. It advances the shared event karaoke clock but does
 not create a base region:

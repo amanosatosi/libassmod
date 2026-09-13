@@ -1855,6 +1855,125 @@ static bool apply_mangetsu_positioned_primary_gradient_tag(
     return true;
 }
 
+static void init_secondary_outline_paint(RenderContext *state)
+{
+    KaraokeOutlinePaint *paint = &state->secondary_outline;
+    if (paint->type != KARAOKE_OUTLINE_UNSET)
+        return;
+    paint->type = KARAOKE_OUTLINE_SOLID;
+    paint->color = state->c[2];
+    ass_gradient_values_reset(&paint->vector, paint->color);
+    ass_mangetsu_gradient_layer_reset(&paint->gradient);
+}
+
+static void apply_secondary_outline_color(RenderContext *state,
+                                          struct arg *args, int nargs,
+                                          double pwr)
+{
+    if (!nargs) {
+        state->secondary_outline = (KaraokeOutlinePaint) {0};
+        return;
+    }
+
+    uint32_t color = parse_color_tag(args->start);
+    if (pwr <= 0.0 && state->secondary_outline.type == KARAOKE_OUTLINE_UNSET)
+        return;
+    init_secondary_outline_paint(state);
+    change_color(&state->secondary_outline.color, color, pwr);
+    state->secondary_outline.type = KARAOKE_OUTLINE_SOLID;
+    ass_gradient_values_disable_color(&state->secondary_outline.vector,
+                                      state->secondary_outline.color, 1.0);
+    ass_mangetsu_gradient_layer_reset(&state->secondary_outline.gradient);
+}
+
+static void apply_secondary_outline_vector(RenderContext *state,
+                                           struct arg *args, int nargs,
+                                           double pwr)
+{
+    KaraokeOutlinePaint *paint = &state->secondary_outline;
+    if (!nargs) {
+        if (paint->type != KARAOKE_OUTLINE_UNSET) {
+            paint->type = KARAOKE_OUTLINE_SOLID;
+            ass_gradient_values_disable_color(&paint->vector,
+                                              paint->color, 1.0);
+            ass_mangetsu_gradient_layer_reset(&paint->gradient);
+        }
+        return;
+    }
+    if (pwr <= 0.0 && paint->type == KARAOKE_OUTLINE_UNSET)
+        return;
+
+    init_secondary_outline_paint(state);
+    if (paint->type != KARAOKE_OUTLINE_VECTOR)
+        ass_gradient_values_reset(&paint->vector, paint->color);
+    uint32_t values[4];
+    int count = FFMIN(nargs, 4);
+    for (int i = 0; i < count; i++)
+        values[i] = parse_color_tag(args[i].start);
+    ass_gradient_values_apply_color(&paint->vector, values, count, pwr);
+    paint->type = KARAOKE_OUTLINE_VECTOR;
+    ass_mangetsu_gradient_layer_reset(&paint->gradient);
+    mark_rgba_needed(state);
+}
+
+static void apply_secondary_outline_gradient(RenderContext *state,
+                                             char *name_end, char *q,
+                                             struct arg *args, int nargs,
+                                             double pwr, bool nested)
+{
+    KaraokeOutlinePaint *paint = &state->secondary_outline;
+    if (*name_end != '(') {
+        if (nargs && parse_mangetsu_gradient_reset_arg(args[0]) && !nested &&
+                paint->type != KARAOKE_OUTLINE_UNSET) {
+            paint->type = KARAOKE_OUTLINE_SOLID;
+            ass_mangetsu_gradient_layer_reset(&paint->gradient);
+        }
+        return;
+    }
+
+    char *raw_start = name_end + 1;
+    char *raw_end = q;
+    if (raw_end > raw_start && raw_end[-1] == ')')
+        raw_end--;
+    if (raw_start == raw_end) {
+        if (!nested && paint->type != KARAOKE_OUTLINE_UNSET) {
+            paint->type = KARAOKE_OUTLINE_SOLID;
+            ass_mangetsu_gradient_layer_reset(&paint->gradient);
+        }
+        return;
+    }
+    struct arg raw_arg = {raw_start, raw_end};
+    if (parse_mangetsu_gradient_reset_arg(raw_arg)) {
+        if (!nested && paint->type != KARAOKE_OUTLINE_UNSET) {
+            paint->type = KARAOKE_OUTLINE_SOLID;
+            ass_mangetsu_gradient_layer_reset(&paint->gradient);
+        }
+        return;
+    }
+
+    MangetsuGradientLayer gradient;
+    if (!parse_mangetsu_gradient_raw_args(raw_start, raw_end, &gradient) ||
+            (pwr <= 0.0 && paint->type == KARAOKE_OUTLINE_UNSET))
+        return;
+
+    init_secondary_outline_paint(state);
+    if (nested) {
+        if (!transform_mangetsu_gradient_layer(state, &paint->gradient,
+                                               &gradient, paint->color,
+                                               pwr, false))
+            return;
+    } else {
+        paint->gradient = gradient;
+        paint->gradient.segment_id = ++state->mangetsu_gradient_next_id;
+        paint->gradient.rect = (GradientRect) {0};
+        paint->gradient.positioned_rect =
+            (MangetsuGradientPositionedRect) {0};
+    }
+    paint->type = KARAOKE_OUTLINE_GRADIENT;
+    ass_gradient_values_disable_color(&paint->vector, paint->color, 1.0);
+    mark_rgba_needed(state);
+}
+
 static void disable_mangetsu_color_source(RenderContext *state, int layer)
 {
     if (layer == 2)
@@ -2526,6 +2645,7 @@ static void clear_karaoke_effects(GlyphInfo *glyphs, int length)
         for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
             info->effect_type = EF_NONE;
             info->effect_timing = 0;
+            info->karaoke_reverse = false;
             info->furi_base_karaoke = false;
         }
 }
@@ -2539,6 +2659,7 @@ static void set_karaoke_boundary(GlyphInfo *glyphs, int start, int end,
         for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
             info->effect_type = effect_type;
             info->effect_timing = x - info->pos.x;
+            info->karaoke_reverse = reverse;
             if (reverse) {
                 uint32_t color = info->c[0];
                 info->c[0] = info->c[1];
@@ -2810,16 +2931,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         if (state->karaoke_only_parse) {
             if (state->column_event && state->column_active)
                 continue;
-            // Uppercase \kO belongs to a later Mangetsu phase.  Do not let
-            // the legacy prefix-matching \k parser reinterpret it here.
-            if (name_end - p >= 2 && p[0] == 'k' && p[1] == 'O')
-                continue;
             if (tag("kt")) {
                 double val = nargs ? argtod(*args) * 10 : 0;
                 apply_karaoke_reset_tag(state, val);
             } else if (tag("kf") || tag("K")) {
                 double val = nargs ? argtod(*args) : 100;
                 apply_karaoke_duration_tag(state, EF_KARAOKE_KF, val);
+            } else if (tag("kO")) {
+                double val = nargs ? argtod(*args) : 100;
+                apply_karaoke_duration_tag(state, EF_KARAOKE_REVEAL, val);
             } else if (tag("ko")) {
                 double val = nargs ? argtod(*args) : 100;
                 apply_karaoke_duration_tag(state, EF_KARAOKE_KO, val);
@@ -2847,6 +2967,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                              &mangetsu_fill_arg);
         bool mangetsu_positioned_primary_gradient_tag =
             parse_mangetsu_positioned_primary_gradient_tag(p, name_end);
+        bool secondary_outline_color_tag =
+            tag_name_matches(p, name_end, "3sc");
+        bool secondary_outline_vector_tag =
+            tag_name_matches(p, name_end, "3svc");
+        bool secondary_outline_gradient_tag =
+            tag_name_matches(p, name_end, "3sgrd");
         if (numbered_border_tag == BORDER_TAG_IGNORE) {
             continue;
         } else if (numbered_border_tag != BORDER_TAG_NONE) {
@@ -2860,6 +2986,16 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (state->colorcode_parse &&
                    !colorcode_tag_allowed(p, name_end)) {
             continue;
+        } else if (secondary_outline_color_tag) {
+            push_arg(args, &nargs, p + strlen("3sc"), name_end);
+            apply_secondary_outline_color(state, args, nargs, pwr);
+        } else if (secondary_outline_vector_tag) {
+            push_arg(args, &nargs, p + strlen("3svc"), name_end);
+            apply_secondary_outline_vector(state, args, nargs, pwr);
+        } else if (secondary_outline_gradient_tag) {
+            push_arg(args, &nargs, p + strlen("3sgrd"), name_end);
+            apply_secondary_outline_gradient(state, name_end, q, args, nargs,
+                                             pwr, nested);
         } else if (tag("colsp")) {
             if (nargs) {
                 const TextInfo *info = &state->text_info;
@@ -4019,6 +4155,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs)
                 val = argtod(*args);
             apply_karaoke_duration_tag(state, EF_KARAOKE_KF, val);
+        } else if (tag("kO")) {
+            if (state->column_event && state->column_active)
+                continue;
+            double val = 100;
+            if (nargs)
+                val = argtod(*args);
+            apply_karaoke_duration_tag(state, EF_KARAOKE_REVEAL, val);
         } else if (tag("ko")) {
             if (state->column_event && state->column_active)
                 continue;
@@ -4287,6 +4430,7 @@ void ass_process_karaoke_effects(RenderContext *state)
             tm_end = tm_start;
 
         int x;
+        bool reverse = false;
         if (tm_current < tm_start)
             x = -100000000;
         else if (tm_current >= tm_end)
@@ -4304,6 +4448,7 @@ void ass_process_karaoke_effects(RenderContext *state)
             double frz = fmod(start->frz, 360);
             if (frz > 90 && frz < 270) {
                 // Fill from right to left
+                reverse = true;
                 dt = 1 - dt;
                 for (GlyphInfo *info = start; info < end; info++) {
                     uint32_t tmp = info->c[0];
@@ -4317,6 +4462,7 @@ void ass_process_karaoke_effects(RenderContext *state)
         for (GlyphInfo *info = start; info < end; info++) {
             info->effect_type = effect_type;
             info->effect_timing = x - info->pos.x;
+            info->karaoke_reverse = reverse;
         }
     }
 }

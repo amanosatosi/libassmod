@@ -1095,6 +1095,7 @@ int main(void)
     fail |= expect_karaoke_same_at("<{\\kf50}A|b>", "<A|b>", 250);
     fail |= expect_karaoke_same_at("<{\\K50}A|b>", "<A|b>", 250);
     fail |= expect_karaoke_same_at("<{\\ko50}A|b>", "<A|b>", 250);
+    fail |= expect_karaoke_same_at("<{\\kO50}A|b>", "<A|b>", 250);
     fail |= expect_karaoke_same_at("<{\\kt50}A|b>", "<A|b>", 250);
 
     fail |= expect_karaoke_steps(cross_karaoke, cross_steps, 3, true);
@@ -1112,6 +1113,14 @@ int main(void)
         fail |= expect_karaoke_same_at(kf_furi, big_k_furi, kf_steps[i]);
     fail |= expect_karaoke_steps("<A|{\\kt50\\ko30}b>",
                                  (long long[]) {499, 500}, 2, true);
+    fail |= expect_karaoke_steps(
+        "<\xE7\x97\x85|{\\kO30}\xE3\x82\x84{\\kO26}"
+        "\xE3\x81\xBE{\\kO10}\xE3\x81\x84>",
+        (long long[]) {0, 300, 560}, 3, true);
+    fail |= expect_karaoke_steps(
+        "<\xE6\x8E\xB4|{\\kO40}\xE3\x81\xA4{\\kO60}"
+        "\xE3\x81\x8B>\xE3\x82\x93{\\kO70}\xE3\x81\xA0",
+        (long long[]) {0, 400, 1000}, 3, true);
     // The wait exposes the inactive sentinel before each reversed ko starts.
     fail |= expect_ko_outline_activation(
         "{\\frz180\\kt10\\ko30}A", 99, 100);
