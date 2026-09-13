@@ -493,6 +493,9 @@ static bool image_fill_state_equal(const ImageFillState *a,
     return true;
 }
 
+static bool secondary_outline_equal(const KaraokeOutlinePaint *a,
+                                    const KaraokeOutlinePaint *b);
+
 static inline int wrap_image_coord(int c, int size)
 {
     int out = c % size;
@@ -5142,7 +5145,7 @@ static bool secondary_outline_equal(const KaraokeOutlinePaint *a,
                !memcmp(a->vector.color, b->vector.color,
                        sizeof(a->vector.color));
     if (a->type == KARAOKE_OUTLINE_GRADIENT)
-        return !memcmp(&a->gradient, &b->gradient, sizeof(a->gradient));
+        return ass_mangetsu_gradient_layer_equal(&a->gradient, &b->gradient);
     return true;
 }
 

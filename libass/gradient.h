@@ -156,6 +156,8 @@ uint8_t ass_gradient_sample_alpha_fixed(const GradientValues *val, int32_t uf, i
 
 void ass_mangetsu_gradient_state_reset(MangetsuGradientState *state);
 void ass_mangetsu_gradient_layer_reset(MangetsuGradientLayer *layer);
+bool ass_mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
+                                       const MangetsuGradientLayer *b);
 bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
                                        const MangetsuGradientState *b);
 uint32_t ass_mangetsu_gradient_sample_color(const MangetsuGradientLayer *layer,

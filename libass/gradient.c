@@ -255,8 +255,8 @@ void ass_mangetsu_gradient_state_reset(MangetsuGradientState *state)
     memset(state, 0, sizeof(*state));
 }
 
-static bool mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
-                                          const MangetsuGradientLayer *b)
+bool ass_mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
+                                       const MangetsuGradientLayer *b)
 {
     if (a->active != b->active)
         return false;
@@ -281,17 +281,17 @@ bool ass_mangetsu_gradient_state_equal(const MangetsuGradientState *a,
                                        const MangetsuGradientState *b)
 {
     for (int i = 0; i < MANGETSU_GRADIENT_LAYERS; i++)
-        if (!mangetsu_gradient_layer_equal(&a->layer[i], &b->layer[i]))
+        if (!ass_mangetsu_gradient_layer_equal(&a->layer[i], &b->layer[i]))
             return false;
     for (int i = 0; i < MANGETSU_GRADIENT_BORDER_LAYERS; i++)
-        if (!mangetsu_gradient_layer_equal(&a->border[i], &b->border[i]))
+        if (!ass_mangetsu_gradient_layer_equal(&a->border[i], &b->border[i]))
             return false;
     for (int i = 0; i < MANGETSU_GRADIENT_LAYERS; i++)
-        if (!mangetsu_gradient_layer_equal(&a->alpha[i], &b->alpha[i]))
+        if (!ass_mangetsu_gradient_layer_equal(&a->alpha[i], &b->alpha[i]))
             return false;
     for (int i = 0; i < MANGETSU_GRADIENT_BORDER_LAYERS; i++)
-        if (!mangetsu_gradient_layer_equal(&a->border_alpha[i],
-                                           &b->border_alpha[i]))
+        if (!ass_mangetsu_gradient_layer_equal(&a->border_alpha[i],
+                                               &b->border_alpha[i]))
             return false;
     return true;
 }
