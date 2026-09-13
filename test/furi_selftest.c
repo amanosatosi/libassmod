@@ -791,7 +791,11 @@ static int expect_unequal_width_base_regions(void)
         (split - base_mask.x0) / (base_mask.x1 - base_mask.x0) : 0.0;
     bool ok = !err && ratio > 0.65 && ratio < 0.95;
     if (!ok)
-        fprintf(stderr, "unequal shaped reading widths did not own unequal base regions\n");
+        fprintf(stderr,
+                "::error title=unequal-width base regions::unequal shaped reading widths did not own unequal base regions: err=%d empty=%d bounds=[%d,%d)x[%d,%d) last_primary=%d first_secondary=%d split=%.3f ratio=%.6f\n",
+                err, base_mask.empty, base_mask.x0, base_mask.x1,
+                base_mask.y0, base_mask.y1, last_primary,
+                first_secondary, split, ratio);
     free_karaoke_frame(&frame);
     free_mask(&base_mask);
     return ok ? 0 : 1;
@@ -833,7 +837,14 @@ static int expect_bidi_visual_region_order(void)
     bool ok = !err && p_right > 2 * p_left && s_left > 2 * s_right &&
         rp_right > 2 * rp_left && rs_left > 2 * rs_right;
     if (!ok)
-        fprintf(stderr, "bidi-reordered reading did not map to visual base regions\n");
+        fprintf(stderr,
+                "::error title=bidi visual-region order::bidi-reordered reading did not map to visual base regions: err=%d empty=%d bounds=[%d,%d)x[%d,%d) base primary(left=%llu right=%llu) secondary(left=%llu right=%llu) reading primary(left=%llu right=%llu) secondary(left=%llu right=%llu)\n",
+                err, base_mask.empty, base_mask.x0, base_mask.x1,
+                base_mask.y0, base_mask.y1,
+                (unsigned long long) p_left, (unsigned long long) p_right,
+                (unsigned long long) s_left, (unsigned long long) s_right,
+                (unsigned long long) rp_left, (unsigned long long) rp_right,
+                (unsigned long long) rs_left, (unsigned long long) rs_right);
     free_karaoke_frame(&frame);
     free_mask(&base_mask);
     return ok ? 0 : 1;
@@ -876,7 +887,13 @@ static int expect_three_segment_bidi_order(void)
         rx[0] > rx[1] && rx[1] > rx[2] &&
         bx[0] > bx[1] && bx[1] > bx[2];
     if (!ok)
-        fprintf(stderr, "three-segment RTL karaoke did not activate right to left\n");
+        fprintf(stderr,
+                "::error title=three-segment RTL karaoke::three-segment RTL karaoke did not activate right to left: err=%d empty=%d reading coverage=[%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f] base coverage=[%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f]\n",
+                err, base_mask.empty,
+                (unsigned long long) rc[0], (unsigned long long) rc[1],
+                (unsigned long long) rc[2], rx[0], rx[1], rx[2],
+                (unsigned long long) bc[0], (unsigned long long) bc[1],
+                (unsigned long long) bc[2], bx[0], bx[1], bx[2]);
     for (int i = 0; i < 3; i++)
         free_karaoke_frame(&frame[i]);
     free_mask(&base_mask);
@@ -938,7 +955,17 @@ static int expect_bidi_kf_direction(void)
         rx[3] > rx[4] && rx[4] > rx[5] &&
         bx[3] > bx[4] && bx[4] > bx[5];
     if (!ok)
-        fprintf(stderr, "RTL kf sweep did not progress right to left\n");
+        fprintf(stderr,
+                "::error title=RTL KF sweep::RTL kf sweep did not progress right to left: err=%d empty=%d reading coverage=[%llu,%llu,%llu;%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f;%.3f,%.3f,%.3f] base coverage=[%llu,%llu,%llu;%llu,%llu,%llu] centroid=[%.3f,%.3f,%.3f;%.3f,%.3f,%.3f]\n",
+                err, base_mask.empty,
+                (unsigned long long) rc[0], (unsigned long long) rc[1],
+                (unsigned long long) rc[2], (unsigned long long) rc[3],
+                (unsigned long long) rc[4], (unsigned long long) rc[5],
+                rx[0], rx[1], rx[2], rx[3], rx[4], rx[5],
+                (unsigned long long) bc[0], (unsigned long long) bc[1],
+                (unsigned long long) bc[2], (unsigned long long) bc[3],
+                (unsigned long long) bc[4], (unsigned long long) bc[5],
+                bx[0], bx[1], bx[2], bx[3], bx[4], bx[5]);
     for (int i = 0; i < 7; i++)
         free_karaoke_frame(&frame[i]);
     free_mask(&base_mask);
@@ -987,7 +1014,15 @@ static int expect_unequal_width_bidi_regions(void)
     bool ok = !err && rpc && rsc && bpc && bsc &&
         rpx > rsx && bpx > bsx && ratio > 0.10 && ratio < 0.45;
     if (!ok)
-        fprintf(stderr, "unequal RTL segments did not map by visual width\n");
+        fprintf(stderr,
+                "::error title=unequal-width RTL regions::unequal RTL segments did not map by visual width: err=%d empty=%d bounds=[%d,%d)x[%d,%d) first_primary=%d last_secondary=%d split=%.3f ratio=%.6f reading primary(coverage=%llu centroid=%.3f) secondary(coverage=%llu centroid=%.3f) base primary(coverage=%llu centroid=%.3f) secondary(coverage=%llu centroid=%.3f)\n",
+                err, base_mask.empty, base_mask.x0, base_mask.x1,
+                base_mask.y0, base_mask.y1, first_primary,
+                last_secondary, split, ratio,
+                (unsigned long long) rpc, rpx,
+                (unsigned long long) rsc, rsx,
+                (unsigned long long) bpc, bpx,
+                (unsigned long long) bsc, bsx);
     free_karaoke_frame(&frame);
     free_mask(&base_mask);
     return ok ? 0 : 1;
@@ -1014,7 +1049,12 @@ static int expect_mixed_text_bidi_reading(void)
     }
     bool ok = !err && pc && sc && px > sx;
     if (!ok)
-        fprintf(stderr, "surrounding LTR text changed RTL furigana ordering\n");
+        fprintf(stderr,
+                "::error title=mixed LTR and RTL furigana::surrounding LTR text changed RTL furigana ordering: err=%d empty=%d bounds=[%d,%d)x[%d,%d) primary(coverage=%llu centroid=%.3f) secondary(coverage=%llu centroid=%.3f)\n",
+                err, base_mask.empty, base_mask.x0, base_mask.x1,
+                base_mask.y0, base_mask.y1,
+                (unsigned long long) pc, px,
+                (unsigned long long) sc, sx);
     free_karaoke_frame(&frame);
     free_mask(&base_mask);
     return ok ? 0 : 1;

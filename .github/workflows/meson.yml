@@ -161,6 +161,27 @@ jobs:
           ${{ matrix.config.devenv }}
           meson compile -C build
 
+      - name: Report furigana test environment
+        if: matrix.config.skip_tests != 'yes' && runner.os != 'Windows'
+        run: |
+          arch="$(uname -m)"
+          arial="unavailable"
+          sans="unavailable"
+          if command -v fc-match >/dev/null 2>&1; then
+            arial="$(fc-match -f '%{file}|%{family}\n' Arial | head -n 1)"
+            sans="$(fc-match -f '%{file}|%{family}\n' sans-serif | head -n 1)"
+          fi
+          printf 'uname -m: %s\nfc-match Arial: %s\nfc-match sans-serif: %s\n' \
+            "$arch" "$arial" "$sans"
+          printf '::notice title=Furigana test environment::arch=%s; Arial=%s; sans-serif=%s\n' \
+            "$arch" "$arial" "$sans"
+
+      - name: Run focused furigana diagnostic
+        if: matrix.config.skip_tests != 'yes' && runner.os != 'Windows'
+        continue-on-error: true
+        run: |
+          meson test -C build furi-extension --verbose --no-rebuild
+
       - name: Run tests
         id: run-tests
         if: matrix.config.skip_tests != 'yes'
