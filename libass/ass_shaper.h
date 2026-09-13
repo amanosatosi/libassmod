@@ -48,6 +48,7 @@ bool ass_shaper_shape(ASS_Shaper *shaper, TextInfo *text_info);
 void ass_shaper_cleanup(ASS_Shaper *shaper, TextInfo *text_info);
 FriBidiStrIndex *ass_shaper_reorder(ASS_Shaper *shaper, TextInfo *text_info);
 FriBidiStrIndex *ass_shaper_get_reorder_map(ASS_Shaper *shaper);
+bool ass_shaper_is_rtl(const ASS_Shaper *shaper, size_t index);
 FriBidiParType ass_resolve_base_direction(int font_encoding);
 
 #endif

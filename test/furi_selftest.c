@@ -214,6 +214,49 @@ static uint64_t positive_plane_delta(const uint32_t *before,
     return total;
 }
 
+static double plane_centroid_x(const uint32_t *plane,
+                               int x0, int y0, int x1, int y1,
+                               uint64_t *coverage)
+{
+    uint64_t total = 0;
+    long double weighted = 0.0;
+    x0 = x0 < 0 ? 0 : x0;
+    y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 > FRAME_W ? FRAME_W : x1;
+    y1 = y1 > FRAME_H ? FRAME_H : y1;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            uint32_t value = plane[y * FRAME_W + x];
+            total += value;
+            weighted += (x + 0.5) * value;
+        }
+    *coverage = total;
+    return total ? (double) (weighted / total) : 0.0;
+}
+
+static double positive_delta_centroid_x(const uint32_t *before,
+                                        const uint32_t *after,
+                                        int x0, int y0, int x1, int y1,
+                                        uint64_t *coverage)
+{
+    uint64_t total = 0;
+    long double weighted = 0.0;
+    x0 = x0 < 0 ? 0 : x0;
+    y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 > FRAME_W ? FRAME_W : x1;
+    y1 = y1 > FRAME_H ? FRAME_H : y1;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            int off = y * FRAME_W + x;
+            uint32_t value = after[off] > before[off] ?
+                after[off] - before[off] : 0;
+            total += value;
+            weighted += (x + 0.5) * value;
+        }
+    *coverage = total;
+    return total ? (double) (weighted / total) : 0.0;
+}
+
 static void count_karaoke_images(ASS_Image *img, KaraokeCounts *counts)
 {
     *counts = (KaraokeCounts) {0};
@@ -766,6 +809,7 @@ static int expect_bidi_visual_region_order(void)
         err = render_mask(base, &base_mask);
 
     uint64_t p_left = 0, p_right = 0, s_left = 0, s_right = 0;
+    uint64_t rp_left = 0, rp_right = 0, rs_left = 0, rs_right = 0;
     if (!err && !base_mask.empty) {
         int mid_x = (base_mask.x0 + base_mask.x1) / 2;
         int y0 = (base_mask.y0 + base_mask.y1) / 2;
@@ -777,10 +821,200 @@ static int expect_bidi_visual_region_order(void)
                                 mid_x, base_mask.y1);
         s_right = plane_coverage(frame.secondary, mid_x, y0,
                                  base_mask.x1, base_mask.y1);
+        rp_left = plane_coverage(frame.primary, 0, 0,
+                                 mid_x, base_mask.y0);
+        rp_right = plane_coverage(frame.primary, mid_x, 0,
+                                  FRAME_W, base_mask.y0);
+        rs_left = plane_coverage(frame.secondary, 0, 0,
+                                 mid_x, base_mask.y0);
+        rs_right = plane_coverage(frame.secondary, mid_x, 0,
+                                  FRAME_W, base_mask.y0);
     }
-    bool ok = !err && p_right > 2 * p_left && s_left > 2 * s_right;
+    bool ok = !err && p_right > 2 * p_left && s_left > 2 * s_right &&
+        rp_right > 2 * rp_left && rs_left > 2 * rs_right;
     if (!ok)
         fprintf(stderr, "bidi-reordered reading did not map to visual base regions\n");
+    free_karaoke_frame(&frame);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_three_segment_bidi_order(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}<WWW|{\\k30}\xD7\x90{\\k30}\xD7\x91"
+        "{\\k30}\xD7\x92>";
+    const char *base = "{\\an1\\pos(40,180)}WWW";
+    KaraokeFrame frame[3] = {0};
+    Mask base_mask = {0};
+    const long long times[] = {0, 300, 600};
+    int err = 0;
+    for (int i = 0; i < 3 && !err; i++)
+        err = render_karaoke_frame(text, times[i], false, &frame[i]);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    uint64_t rc[3] = {0}, bc[3] = {0};
+    double rx[3] = {0}, bx[3] = {0};
+    if (!err && !base_mask.empty) {
+        int base_y = (base_mask.y0 + base_mask.y1) / 2;
+        rx[0] = plane_centroid_x(frame[0].primary, 0, 0,
+                                 FRAME_W, base_mask.y0, &rc[0]);
+        bx[0] = plane_centroid_x(frame[0].primary, base_mask.x0, base_y,
+                                 base_mask.x1, base_mask.y1, &bc[0]);
+        for (int i = 1; i < 3; i++) {
+            rx[i] = positive_delta_centroid_x(
+                frame[i - 1].primary, frame[i].primary,
+                0, 0, FRAME_W, base_mask.y0, &rc[i]);
+            bx[i] = positive_delta_centroid_x(
+                frame[i - 1].primary, frame[i].primary,
+                base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[i]);
+        }
+    }
+    bool ok = !err && rc[0] && rc[1] && rc[2] &&
+        bc[0] && bc[1] && bc[2] &&
+        rx[0] > rx[1] && rx[1] > rx[2] &&
+        bx[0] > bx[1] && bx[1] > bx[2];
+    if (!ok)
+        fprintf(stderr, "three-segment RTL karaoke did not activate right to left\n");
+    for (int i = 0; i < 3; i++)
+        free_karaoke_frame(&frame[i]);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_bidi_kf_direction(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}<WW|{\\kf100}\xD7\x90"
+        "{\\kf100}\xD7\x91>";
+    const char *base = "{\\an1\\pos(40,180)}WW";
+    const long long times[] = {250, 500, 750, 1000, 1250, 1500, 1750};
+    KaraokeFrame frame[7] = {0};
+    Mask base_mask = {0};
+    int err = 0;
+    for (int i = 0; i < 7 && !err; i++)
+        err = render_karaoke_frame(text, times[i], false, &frame[i]);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    uint64_t rc[6] = {0}, bc[6] = {0};
+    double rx[6] = {0}, bx[6] = {0};
+    if (!err && !base_mask.empty) {
+        int base_y = (base_mask.y0 + base_mask.y1) / 2;
+        rx[0] = plane_centroid_x(frame[0].primary, 0, 0,
+                                 FRAME_W, base_mask.y0, &rc[0]);
+        bx[0] = plane_centroid_x(frame[0].primary, base_mask.x0, base_y,
+                                 base_mask.x1, base_mask.y1, &bc[0]);
+        for (int i = 1; i < 3; i++) {
+            rx[i] = positive_delta_centroid_x(
+                frame[i - 1].primary, frame[i].primary,
+                0, 0, FRAME_W, base_mask.y0, &rc[i]);
+            bx[i] = positive_delta_centroid_x(
+                frame[i - 1].primary, frame[i].primary,
+                base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[i]);
+        }
+        rx[3] = positive_delta_centroid_x(
+            frame[3].primary, frame[4].primary,
+            0, 0, FRAME_W, base_mask.y0, &rc[3]);
+        bx[3] = positive_delta_centroid_x(
+            frame[3].primary, frame[4].primary,
+            base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[3]);
+        for (int i = 4; i < 6; i++) {
+            rx[i] = positive_delta_centroid_x(
+                frame[i].primary, frame[i + 1].primary,
+                0, 0, FRAME_W, base_mask.y0, &rc[i]);
+            bx[i] = positive_delta_centroid_x(
+                frame[i].primary, frame[i + 1].primary,
+                base_mask.x0, base_y, base_mask.x1, base_mask.y1, &bc[i]);
+        }
+    }
+    bool covered = !err;
+    for (int i = 0; i < 6; i++)
+        covered &= rc[i] && bc[i];
+    bool ok = covered &&
+        rx[0] > rx[1] && rx[1] > rx[2] &&
+        bx[0] > bx[1] && bx[1] > bx[2] &&
+        rx[3] > rx[4] && rx[4] > rx[5] &&
+        bx[3] > bx[4] && bx[4] > bx[5];
+    if (!ok)
+        fprintf(stderr, "RTL kf sweep did not progress right to left\n");
+    for (int i = 0; i < 7; i++)
+        free_karaoke_frame(&frame[i]);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_unequal_width_bidi_regions(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}<WWWW|{\\k30}\xD7\x90\xD7\x90\xD7\x90"
+        "{\\k30}\xD7\x91>";
+    const char *base = "{\\an1\\pos(40,180)}WWWW";
+    KaraokeFrame frame = {0};
+    Mask base_mask = {0};
+    int err = render_karaoke_frame(text, 0, false, &frame);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    int first_primary = FRAME_W, last_secondary = -1;
+    uint64_t rpc = 0, rsc = 0, bpc = 0, bsc = 0;
+    double rpx = 0, rsx = 0, bpx = 0, bsx = 0;
+    if (!err && !base_mask.empty) {
+        int base_y = (base_mask.y0 + base_mask.y1) / 2;
+        for (int x = base_mask.x0; x < base_mask.x1; x++) {
+            if (first_primary == FRAME_W &&
+                    plane_coverage(frame.primary, x, base_y,
+                                   x + 1, base_mask.y1))
+                first_primary = x;
+            if (plane_coverage(frame.secondary, x, base_y,
+                               x + 1, base_mask.y1))
+                last_secondary = x;
+        }
+        rpx = plane_centroid_x(frame.primary, 0, 0, FRAME_W,
+                               base_mask.y0, &rpc);
+        rsx = plane_centroid_x(frame.secondary, 0, 0, FRAME_W,
+                               base_mask.y0, &rsc);
+        bpx = plane_centroid_x(frame.primary, base_mask.x0, base_y,
+                               base_mask.x1, base_mask.y1, &bpc);
+        bsx = plane_centroid_x(frame.secondary, base_mask.x0, base_y,
+                               base_mask.x1, base_mask.y1, &bsc);
+    }
+    double split = first_primary < FRAME_W && last_secondary >= 0 ?
+        (first_primary + last_secondary + 1) / 2.0 : -1.0;
+    double ratio = split >= 0 ?
+        (split - base_mask.x0) / (base_mask.x1 - base_mask.x0) : 0.0;
+    bool ok = !err && rpc && rsc && bpc && bsc &&
+        rpx > rsx && bpx > bsx && ratio > 0.10 && ratio < 0.45;
+    if (!ok)
+        fprintf(stderr, "unequal RTL segments did not map by visual width\n");
+    free_karaoke_frame(&frame);
+    free_mask(&base_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_mixed_text_bidi_reading(void)
+{
+    const char *text =
+        "{\\an1\\pos(40,180)}L<WW|{\\k30}\xD7\x90{\\k30}\xD7\x91>R";
+    const char *base = "{\\an1\\pos(40,180)}LWWR";
+    KaraokeFrame frame = {0};
+    Mask base_mask = {0};
+    int err = render_karaoke_frame(text, 0, false, &frame);
+    if (!err)
+        err = render_mask(base, &base_mask);
+
+    uint64_t pc = 0, sc = 0;
+    double px = 0, sx = 0;
+    if (!err && !base_mask.empty) {
+        px = plane_centroid_x(frame.primary, 0, 0, FRAME_W,
+                              base_mask.y0, &pc);
+        sx = plane_centroid_x(frame.secondary, 0, 0, FRAME_W,
+                              base_mask.y0, &sc);
+    }
+    bool ok = !err && pc && sc && px > sx;
+    if (!ok)
+        fprintf(stderr, "surrounding LTR text changed RTL furigana ordering\n");
     free_karaoke_frame(&frame);
     free_mask(&base_mask);
     return ok ? 0 : 1;
@@ -905,6 +1139,10 @@ int main(void)
     fail |= expect_cross_segment_spatial_ownership();
     fail |= expect_unequal_width_base_regions();
     fail |= expect_bidi_visual_region_order();
+    fail |= expect_three_segment_bidi_order();
+    fail |= expect_bidi_kf_direction();
+    fail |= expect_unequal_width_bidi_regions();
+    fail |= expect_mixed_text_bidi_reading();
 
     fail |= expect_different("<A|B>", "{\\furi0}<A|B>");
     fail |= expect_same("<cool>", "{\\furi0}<cool>");

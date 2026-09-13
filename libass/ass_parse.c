@@ -2570,10 +2570,24 @@ static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
             last--;
         int32_t x_start = first->pos.x;
         int32_t x_end = last->pos.x + last->advance.x;
+        if (first->karaoke_rtl) {
+            x_start = INT_MAX;
+            x_end = INT_MIN;
+            for (int i = start; i < end; i++) {
+                if (glyphs[i].skip)
+                    continue;
+                for (GlyphInfo *info = &glyphs[i]; info;
+                     info = info->next) {
+                    int32_t edge = info->pos.x + info->advance.x;
+                    x_start = FFMIN(x_start, FFMIN(info->pos.x, edge));
+                    x_end = FFMAX(x_end, FFMAX(info->pos.x, edge));
+                }
+            }
+        }
         double progress = (double) (now - segment->start) /
                           (segment->end - segment->start);
         double frz = fmod(glyphs[start].frz, 360);
-        reverse = frz > 90 && frz < 270;
+        reverse = first->karaoke_rtl ^ (frz > 90 && frz < 270);
         if (reverse)
             progress = 1 - progress;
         x = x_start + ass_lrint((x_end - x_start) * progress);

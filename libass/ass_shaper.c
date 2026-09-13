@@ -1130,6 +1130,12 @@ FriBidiStrIndex *ass_shaper_get_reorder_map(ASS_Shaper *shaper)
     return shaper->cmap;
 }
 
+bool ass_shaper_is_rtl(const ASS_Shaper *shaper, size_t index)
+{
+    return index < (size_t) shaper->n_codepoints &&
+           FRIBIDI_LEVEL_IS_RTL(shaper->emblevels[index]);
+}
+
 /**
  * \brief Resolve a Windows font charset number to a suitable base
  * direction. Generally, use LTR for compatibility with VSFilter. The

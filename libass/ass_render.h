@@ -333,6 +333,7 @@ typedef struct glyph_info {
     bool is_furi_base;
     int furi_group;
     int karaoke_segment;
+    bool karaoke_rtl;
     bool furi_base_karaoke;
     bool furi_base_reverse;
     int32_t furi_base_start;
@@ -351,6 +352,7 @@ typedef struct {
     int segment;
     double start;
     double end;
+    bool rtl;
 } FuriKaraokeRegion;
 
 typedef struct {

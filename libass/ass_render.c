@@ -1310,11 +1310,12 @@ static ASS_Image **render_furi_base_character_regions(
                 segment->end > segment->start) {
             double amount = (double) (now - segment->start) /
                             (segment->end - segment->start);
-            double frontier = region->start +
-                (region->end - region->start) * amount;
+            double frontier = region->rtl ?
+                region->end - (region->end - region->start) * amount :
+                region->start + (region->end - region->start) * amount;
             color2 = info->c[1];
             layer2 = 1;
-            if (info->furi_base_reverse) {
+            if (region->rtl ^ info->furi_base_reverse) {
                 uint32_t tmp = color;
                 color = color2;
                 color2 = tmp;
@@ -6148,6 +6149,7 @@ typedef struct {
     int segment;
     double left;
     double right;
+    bool rtl;
 } FuriVisualKaraokeRegion;
 
 static int compare_furi_karaoke_region(const void *a, const void *b)
@@ -6170,9 +6172,11 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
     int count = text_info->n_karaoke_segments;
     double *left = malloc(count * sizeof(*left));
     double *right = malloc(count * sizeof(*right));
-    if (!left || !right) {
+    uint8_t *direction = calloc(count, sizeof(*direction));
+    if (!left || !right || !direction) {
         free(left);
         free(right);
+        free(direction);
         return false;
     }
     for (int i = 0; i < count; i++) {
@@ -6185,6 +6189,8 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
         int segment = root->karaoke_segment;
         if (root->skip || segment < 0 || segment >= count)
             continue;
+        if (!(direction[segment] & 1))
+            direction[segment] = 1 | (root->karaoke_rtl ? 2 : 0);
 
         double x0 = d6_to_double(root->pos.x);
         double x1 = x0 + d6_to_double(root->cluster_advance.x -
@@ -6211,6 +6217,7 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
     if (!regions || total <= 0.0) {
         free(left);
         free(right);
+        free(direction);
         return true;
     }
 
@@ -6219,6 +6226,7 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
     if (!visual) {
         free(left);
         free(right);
+        free(direction);
         return false;
     }
     int visual_count = 0;
@@ -6229,6 +6237,7 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
             .segment = i,
             .left = left[i],
             .right = right[i],
+            .rtl = direction[i] & 2,
         };
     }
     // Segment ids are source-ordered; base ownership is visual after bidi.
@@ -6240,6 +6249,7 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
         free(visual);
         free(left);
         free(right);
+        free(direction);
         return false;
     }
 
@@ -6249,6 +6259,7 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
         FuriKaraokeRegion *region =
             &group->karaoke_regions[group->n_karaoke_regions++];
         region->segment = visual[i].segment;
+        region->rtl = visual[i].rtl;
         region->start = cursor;
         cursor += width;
         region->end = cursor;
@@ -6258,6 +6269,7 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
     free(visual);
     free(left);
     free(right);
+    free(direction);
     return true;
 }
 
@@ -6267,6 +6279,9 @@ static bool prepare_furi_groups(RenderContext *state)
     if (!text_info->n_furi_groups)
         return true;
 
+    /* A furigana reading is one bidi paragraph. Karaoke/style run boundaries
+     * still split shaping and rendering, but must not split bidi analysis. */
+    ass_shaper_set_whole_text_layout(state->furi_shaper, true);
     ass_shaper_set_base_direction(state->furi_shaper,
             ass_resolve_base_direction(state->font_encoding));
 
@@ -6282,6 +6297,12 @@ static bool prepare_furi_groups(RenderContext *state)
             return false;
 
         retrieve_glyphs_from_list(state, group->glyphs, group->length);
+        for (int j = 0; j < group->length; j++) {
+            bool rtl = ass_shaper_is_rtl(state->furi_shaper, j);
+            for (GlyphInfo *info = &group->glyphs[j]; info;
+                 info = info->next)
+                info->karaoke_rtl = rtl;
+        }
         // Position once before measuring visual overhangs for reservation.
         if (!reorder_furi_group(state, group))
             return false;
