@@ -473,6 +473,7 @@ static bool expect_equivalent_mangetsu_gradient(ASS_Library *lib,
     MangetsuGradientDebugState got, reference;
     if (!render_mangetsu_debug_case(lib, renderer, actual, &got) ||
             !render_mangetsu_debug_case(lib, renderer, expected, &reference) ||
+            got.n_segments != 1 || reference.n_segments != 1 ||
             got.n_segments != reference.n_segments) {
         fprintf(stderr, "%s\n", label);
         return false;
@@ -1292,6 +1293,10 @@ int main(void)
         ok &= expect_equivalent_mangetsu_gradient(
             lib, renderer, actual, expected, label);
     }
+    ok &= expect_mangetsu_segments(
+        lib, renderer,
+        "{\\1gra(0,256,&H00&)}OutOfRange",
+        0, "out-of-range decimal alpha did not reject the gradient");
 
     ok &= expect_one_mangetsu_segment(
         lib, renderer,

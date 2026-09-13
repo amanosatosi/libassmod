@@ -1014,17 +1014,17 @@ static uint32_t parse_color_tag(struct arg arg)
     return ass_bswap32((uint32_t) color);
 }
 
-static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out);
-static bool parse_ass_alpha_arg_strict(struct arg arg, uint32_t *out);
+static bool parse_ass_color_arg(struct arg arg, uint32_t *out);
+static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out);
 
 static bool parse_decoration_color_arg(struct arg arg, uint32_t *color)
 {
-    return parse_ass_color_arg_strict(arg, color);
+    return parse_ass_color_arg(arg, color);
 }
 
 static bool parse_decoration_alpha_arg(struct arg arg, uint32_t *alpha)
 {
-    return parse_ass_alpha_arg_strict(arg, alpha);
+    return parse_ass_alpha_arg(arg, alpha);
 }
 
 typedef struct {
@@ -1311,6 +1311,34 @@ static bool parse_hex_arg_strict(struct arg arg, uint32_t *out)
     return true;
 }
 
+static bool parse_ass_color_arg(struct arg arg, uint32_t *out)
+{
+    uint32_t value;
+    if (parse_named_ass_color_arg(arg, out))
+        return true;
+    if (!parse_hex_arg_strict(arg, &value))
+        return false;
+    *out = ass_bswap32(value);
+    return true;
+}
+
+static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out)
+{
+    int32_t decimal;
+    if (parse_plain_decimal_alpha_arg(arg, &decimal)) {
+        if (decimal < 0 || decimal > 0xFF)
+            return false;
+        *out = decimal;
+        return true;
+    }
+
+    uint32_t value;
+    if (!parse_hex_arg_strict(arg, &value))
+        return false;
+    *out = value;
+    return true;
+}
+
 static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out)
 {
     uint32_t value;
@@ -1324,19 +1352,7 @@ static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out)
 
 static bool parse_ass_alpha_arg_strict(struct arg arg, uint32_t *out)
 {
-    int32_t decimal;
-    if (parse_plain_decimal_alpha_arg(arg, &decimal)) {
-        if (decimal < 0 || decimal > 0xFF)
-            return false;
-        *out = decimal;
-        return true;
-    }
-
-    uint32_t value;
-    if (!parse_hex_arg_strict(arg, &value) || value > 0xFF)
-        return false;
-    *out = value;
-    return true;
+    return parse_ass_alpha_arg(arg, out) && *out <= 0xFF;
 }
 
 static bool parse_percentage_arg_strict(struct arg arg, double *out)
@@ -2348,7 +2364,7 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
         if (!arg.start) {
             border->has_color = false;
             border->color = (state->c[3] & 0xFFFFFF00u) | _a(border->color);
-        } else if (parse_ass_color_arg_strict(arg, &val)) {
+        } else if (parse_ass_color_arg(arg, &val)) {
             uint32_t alpha = border->has_alpha ? _a(border->color) :
                              _a(state->c[3]);
             border->color = (border->color & 0x000000FFu) |
@@ -2431,7 +2447,7 @@ static void apply_numbered_border_tag(RenderContext *state,
         uint32_t val;
         if (layer == 0) {
             if (arg.start) {
-                if (!parse_ass_color_arg_strict(arg, &val))
+                if (!parse_ass_color_arg(arg, &val))
                     return;
                 change_color(&state->c[2], val, pwr);
                 ass_gradient_disable_color(&state->gradient, 2,
@@ -2450,7 +2466,7 @@ static void apply_numbered_border_tag(RenderContext *state,
         } else {
             BorderLayerState *border = &state->border_layers[layer];
             if (arg.start) {
-                if (!parse_ass_color_arg_strict(arg, &val))
+                if (!parse_ass_color_arg(arg, &val))
                     return;
                 default_extra_border_color(state, layer);
                 change_color(&border->color, val, pwr);
