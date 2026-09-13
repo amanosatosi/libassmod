@@ -464,6 +464,40 @@ static bool expect_one_mangetsu_segment(ASS_Library *lib,
     return true;
 }
 
+static bool expect_equivalent_mangetsu_gradient(ASS_Library *lib,
+                                                ASS_Renderer *renderer,
+                                                const char *actual,
+                                                const char *expected,
+                                                const char *label)
+{
+    MangetsuGradientDebugState got, reference;
+    if (!render_mangetsu_debug_case(lib, renderer, actual, &got) ||
+            !render_mangetsu_debug_case(lib, renderer, expected, &reference) ||
+            got.n_segments != reference.n_segments) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+
+    for (int i = 0; i < got.n_segments; i++) {
+        const MangetsuGradientDebugSegment *a = &got.segments[i];
+        const MangetsuGradientDebugSegment *b = &reference.segments[i];
+        if (a->active != b->active || a->target != b->target ||
+                a->layer != b->layer || a->type != b->type ||
+                a->coordinate_mode != b->coordinate_mode ||
+                a->n_stops != b->n_stops || !close_double(a->angle, b->angle)) {
+            fprintf(stderr, "%s\n", label);
+            return false;
+        }
+        for (int j = 0; j < a->n_stops; j++)
+            if (a->stops[j].color != b->stops[j].color ||
+                    !close_double(a->stops[j].offset, b->stops[j].offset)) {
+                fprintf(stderr, "%s\n", label);
+                return false;
+            }
+    }
+    return true;
+}
+
 static bool expect_one_mangetsu_segment_at(ASS_Library *lib,
                                            ASS_Renderer *renderer,
                                            const char *dialogue,
@@ -1210,6 +1244,55 @@ int main(void)
     }
 
     MangetsuGradientDebugState mangetsu_debug;
+    static const struct {
+        const char *name;
+        const char *hex;
+    } named_colors[] = {
+        { "white", "&HFFFFFF&" },
+        { "siro", "&HFFFFFF&" },
+        { "shiro", "&HFFFFFF&" },
+        { "WHITE", "&HFFFFFF&" },
+        { "black", "&H000000&" },
+        { "kuro", "&H000000&" },
+        { "KURO", "&H000000&" },
+    };
+    for (int i = 0; i < (int) (sizeof(named_colors) / sizeof(named_colors[0])); i++) {
+        char actual[128], expected[128], label[160];
+        snprintf(actual, sizeof(actual), "{\\1grd(0,%s,&H123456&)}Named",
+                 named_colors[i].name);
+        snprintf(expected, sizeof(expected), "{\\1grd(0,%s,&H123456&)}Hex",
+                 named_colors[i].hex);
+        snprintf(label, sizeof(label), "named color %s did not match %s",
+                 named_colors[i].name, named_colors[i].hex);
+        ok &= expect_equivalent_mangetsu_gradient(
+            lib, renderer, actual, expected, label);
+    }
+
+    static const struct {
+        const char *decimal;
+        const char *hex;
+    } decimal_alphas[] = {
+        { "0", "&H00&" },
+        { "1", "&H01&" },
+        { "15", "&H0F&" },
+        { "16", "&H10&" },
+        { "127", "&H7F&" },
+        { "128", "&H80&" },
+        { "254", "&HFE&" },
+        { "255", "&HFF&" },
+    };
+    for (int i = 0; i < (int) (sizeof(decimal_alphas) / sizeof(decimal_alphas[0])); i++) {
+        char actual[128], expected[128], label[160];
+        snprintf(actual, sizeof(actual), "{\\1gra(0,%s,&H00&)}Decimal",
+                 decimal_alphas[i].decimal);
+        snprintf(expected, sizeof(expected), "{\\1gra(0,%s,&H00&)}Hex",
+                 decimal_alphas[i].hex);
+        snprintf(label, sizeof(label), "decimal alpha %s did not match %s",
+                 decimal_alphas[i].decimal, decimal_alphas[i].hex);
+        ok &= expect_equivalent_mangetsu_gradient(
+            lib, renderer, actual, expected, label);
+    }
+
     ok &= expect_one_mangetsu_segment(
         lib, renderer,
         "{\\1grd(0,&H000000&,&HFFFFFF&)}Simple",
