@@ -125,6 +125,19 @@ ass_free_images_rgba(rgba);
 - If your app already calls `ass_render_frame`, use `ass_frame_needs_rgba(renderer)` or the new `ASS_RenderResult` wrapper to decide whether to render again with `ass_render_frame_rgba`.
 - For a single-call path, use `ass_render_frame_compat()` and then `ass_render_result_free()` to free any RGBA list. This keeps legacy output intact while enabling gradients when needed.
 
+## Mangetsu color and alpha values
+
+Mangetsu color-valued arguments continue to accept ASS BGR hexadecimal values
+such as `&HFFFFFF&` and `&H000000&`. They also accept these case-insensitive
+shortcuts: `white`, `siro`, and `shiro` mean `&HFFFFFF&`; `black` and `kuro`
+mean `&H000000&`.
+
+Alpha-valued arguments continue to accept hexadecimal bytes such as `&H00&`
+and `&HFF&`. A bare ASCII decimal integer from `0` through `255` is also
+accepted and represents the same byte: `15` is `&H0F&`, `128` is `&H80&`, and
+`255` is `&HFF&`. Bare digit-only alpha values are decimal, not hexadecimal;
+out-of-range decimal values follow the parser's existing invalid-value handling.
+
 ## Gradient tags at a glance
 
 - `\1vc(&HBBGGRR&, &HBBGGRR&, &HBBGGRR&, &HBBGGRR&)` - four corner colors for primary fill.

@@ -21,9 +21,10 @@ shadow, decoration, box, or native-border variants.
 The first four values are finite decimal ASS script coordinates. `angle` is a
 finite decimal and appears before the first stop. Negative and off-frame
 coordinates are valid. The stop section is exactly the existing `\1grd`
-grammar: ASS BGR colors (`&HBBGGRR&`), an optional `position%, color` pair
-between the first and final colors, sorted positions, duplicate positions, and
-the existing maximum stop count. For example:
+grammar: ASS BGR colors (`&HBBGGRR&`) or the shared named-color shortcuts
+(`white`/`siro`/`shiro` and `black`/`kuro`), an optional `position%, color`
+pair between the first and final colors, sorted positions, duplicate positions,
+and the existing maximum stop count. For example:
 
 ```ass
 {\1c&HFFFFFF&\pgrd(100,200,700,500,45,&H0000FF&,50%,&H00FF00&,&HFF0000&)}Text
