@@ -147,6 +147,12 @@ static bool same_mask(const Mask *a, const Mask *b)
         !memcmp(a->pixels, b->pixels, sizeof(a->pixels));
 }
 
+static bool same_bounds(const Mask *a, const Mask *b)
+{
+    return a->min_x == b->min_x && a->min_y == b->min_y &&
+        a->max_x == b->max_x && a->max_y == b->max_y;
+}
+
 static bool outside_rect_is_empty(const Mask *mask, int x0, int y0,
                                   int x1, int y1)
 {
@@ -216,12 +222,89 @@ int main(void)
     const char *base =
         "{\\an5\\pos(320,180)\\bs4\\boxp20\\4c&H0000FF&\\4a&H00&"
         "\\1a&HFF&\\3a&HFF&}BOX";
-    static Mask flat, rotated, clipped, inverse, vector_clip, perspective, distorted;
+    static Mask flat, rounded, radius_zero, radius_negative, radius_large;
+    static Mask radius_larger, rectangular, rectangular_rounded, rounded_clip;
+    static Mask bare_reset, reset, named_reset;
+    static Mask rotated, clipped, inverse, vector_clip, perspective, distorted;
     static Mask anim_start, anim_mid, anim_end, anim_again, rgba;
     static Mask style_box, line_box, box_on, box_off, rings, canonical, expected;
     bool ok = true;
 
     ok &= render_legacy(lib, renderer, base, 1, 0, &flat);
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr10\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &rounded);
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr0\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &radius_zero);
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr-10\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &radius_negative);
+    if (!has_coverage(&rounded) || !same_bounds(&flat, &rounded) ||
+        same_mask(&flat, &rounded) || !corner_is_empty(&rounded) ||
+        !same_mask(&flat, &radius_zero) ||
+        !same_mask(&flat, &radius_negative)) {
+        fprintf(stderr, "BS4 box radius zero/negative/positive behavior regressed\n");
+        ok = false;
+    }
+
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr1000000\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &radius_large);
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr999999\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &radius_larger);
+    if (!has_coverage(&radius_large) || !corner_is_empty(&radius_large) ||
+        !same_mask(&radius_large, &radius_larger)) {
+        fprintf(stderr, "BS4 oversized box radius did not clamp safely\n");
+        ok = false;
+    }
+
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr10\\boxr\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &bare_reset);
+    if (!same_mask(&flat, &bare_reset)) {
+        fprintf(stderr, "bare BS4 box radius did not restore square corners\n");
+        ok = false;
+    }
+
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxpx40\\boxpy5\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &rectangular);
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxpx40\\boxpy5\\boxr10\\4c&H0000FF&\\4a&H00&"
+        "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &rectangular_rounded);
+    if (!has_coverage(&rectangular_rounded) ||
+        !same_bounds(&rectangular, &rectangular_rounded) ||
+        same_mask(&rectangular, &rectangular_rounded) ||
+        rectangular.max_x - rectangular.min_x <= flat.max_x - flat.min_x ||
+        rectangular.max_y - rectangular.min_y >= flat.max_y - flat.min_y) {
+        fprintf(stderr, "BS4 box radius/padding rectangle behavior regressed\n");
+        ok = false;
+    }
+
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr10\\clip(300,0,640,360)"
+        "\\4c&H0000FF&\\4a&H00&\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &rounded_clip);
+    if (!has_coverage(&rounded_clip) ||
+        !outside_rect_is_empty(&rounded_clip, 300, 0, 640, 360)) {
+        fprintf(stderr, "rounded BS4 box clipping leaked\n");
+        ok = false;
+    }
+
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr10\\r\\an5\\pos(320,180)"
+        "\\box1\\boxp20\\4c&H0000FF&\\4a&H00&\\1a&HFF&\\3a&HFF&}BOX",
+        1, 0, &reset);
+    ok &= render_legacy(lib, renderer,
+        "{\\an5\\pos(320,180)\\bs4\\boxp20\\boxr10\\rDefault\\an5\\pos(320,180)"
+        "\\box1\\boxp20\\4c&H0000FF&\\4a&H00&\\1a&HFF&\\3a&HFF&}BOX",
+        1, 0, &named_reset);
+    if (!same_mask(&flat, &reset) || !same_mask(&flat, &named_reset)) {
+        fprintf(stderr, "BS4 box radius reset did not restore square corners\n");
+        ok = false;
+    }
+
     ok &= render_legacy(lib, renderer,
         "{\\an5\\pos(320,180)\\bs4\\boxp20\\frz35\\4c&H0000FF&\\4a&H00&"
         "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &rotated);
@@ -308,10 +391,10 @@ int main(void)
         "\\1a&HFF&\\3a&HFF&}BOX", 4, 0, &style_box);
     ok &= render_legacy(lib, renderer, base, 1, 0, &line_box);
     ok &= render_legacy(lib, renderer,
-        "{\\an5\\pos(320,180)\\box1\\boxp20\\4c&H0000FF&\\4a&H00&"
+        "{\\an5\\pos(320,180)\\box1\\boxp20\\boxr10\\4c&H0000FF&\\4a&H00&"
         "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &box_on);
     ok &= render_legacy(lib, renderer,
-        "{\\an5\\pos(320,180)\\bs4\\box0\\boxp20\\4c&H0000FF&\\4a&H00&"
+        "{\\an5\\pos(320,180)\\bs4\\box0\\boxp20\\boxr10\\4c&H0000FF&\\4a&H00&"
         "\\1a&HFF&\\3a&HFF&}BOX", 1, 0, &box_off);
     if (!same_mask(&style_box, &line_box) || !has_coverage(&box_on) ||
         has_coverage(&box_off)) {

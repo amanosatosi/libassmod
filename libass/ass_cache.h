@@ -76,11 +76,16 @@ typedef struct outline_hash_key {
         OUTLINE_DRAWING,
         OUTLINE_BORDER,
         OUTLINE_BOX,
+        OUTLINE_ROUNDED_BOX,
     } type;
     union {
         GlyphHashKey glyph;
         DrawingHashKey drawing;
         BorderHashKey border;
+        struct {
+            int32_t radius_x;
+            int32_t radius_y;
+        } rounded_box;
     } u;
 } OutlineHashKey;
 

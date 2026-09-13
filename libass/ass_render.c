@@ -58,6 +58,8 @@ static double glyph_border_max_x(const GlyphInfo *info);
 static double glyph_border_max_y(const GlyphInfo *info);
 static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer);
 static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer);
+
+#define BS4_ROUNDED_BOX_SCALE 4096
 static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer);
 static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 
@@ -2928,6 +2930,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->bs4_box_mode = state->border_style == 4;
     state->box_extra_x = 0;
     state->box_extra_y = 0;
+    state->box_corner_radius = 0;
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
         state->box_border_layers[i] = (BorderLayerState) {
             .enabled = false,
@@ -3684,6 +3687,43 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
             ol->segments[2] = OUTLINE_LINE_SEGMENT;
             ol->segments[3] = OUTLINE_LINE_SEGMENT | OUTLINE_CONTOUR_END;
             ol->n_points = ol->n_segments = 4;
+            break;
+        }
+    case OUTLINE_ROUNDED_BOX:
+        {
+            int32_t rx = outline_key->u.rounded_box.radius_x;
+            int32_t ry = outline_key->u.rounded_box.radius_y;
+            if (rx <= 0 || ry <= 0 ||
+                rx > BS4_ROUNDED_BOX_SCALE / 2 ||
+                ry > BS4_ROUNDED_BOX_SCALE / 2)
+                return 1;
+
+            ASS_Outline *ol = &v->outline[0];
+            if (!ass_outline_alloc(ol, 16, 8))
+                return 1;
+
+            const int32_t size = BS4_ROUNDED_BOX_SCALE;
+            const int32_t kx = ass_lrint(rx * 0.5522847498307936);
+            const int32_t ky = ass_lrint(ry * 0.5522847498307936);
+            ASS_Vector points[16] = {
+                {rx, 0}, {size - rx, 0}, {size - rx + kx, 0},
+                {size, ry - ky}, {size, ry}, {size, size - ry},
+                {size, size - ry + ky}, {size - rx + kx, size},
+                {size - rx, size}, {rx, size}, {rx - kx, size},
+                {0, size - ry + ky}, {0, size - ry}, {0, ry},
+                {0, ry - ky}, {rx - kx, 0},
+            };
+            char segments[8] = {
+                OUTLINE_LINE_SEGMENT, OUTLINE_CUBIC_SPLINE,
+                OUTLINE_LINE_SEGMENT, OUTLINE_CUBIC_SPLINE,
+                OUTLINE_LINE_SEGMENT, OUTLINE_CUBIC_SPLINE,
+                OUTLINE_LINE_SEGMENT,
+                OUTLINE_CUBIC_SPLINE | OUTLINE_CONTOUR_END,
+            };
+            memcpy(ol->points, points, sizeof(points));
+            memcpy(ol->segments, segments, sizeof(segments));
+            ol->n_points = 16;
+            ol->n_segments = 8;
             break;
         }
     default:
@@ -8358,6 +8398,12 @@ typedef struct {
     uint32_t color;
 } BoxBorderRenderLayer;
 
+typedef struct {
+    int32_t source_size;
+    int32_t radius_x;
+    int32_t radius_y;
+} BS4BoxShape;
+
 /*
  * BorderStyle=4 is one event-level object even though normal rendering keeps
  * geometry on individual glyphs.  Keep a snapshot of one glyph's evaluated
@@ -8531,6 +8577,43 @@ static bool bs4_effective_scales(const BS4BoxGeometry *box,
     return true;
 }
 
+static double bs4_clamp_box_radius(double radius, double left, double top,
+                                   double right, double bottom)
+{
+    if (!isfinite(radius) || radius <= 0.0 ||
+        !(left < right) || !(top < bottom))
+        return 0.0;
+
+    double limit = 0.5 * FFMIN(right - left, bottom - top);
+    return isfinite(limit) && limit > 0.0 ? FFMIN(radius, limit) : 0.0;
+}
+
+/*
+ * The original square outline spans 0..64.  A larger source square gives
+ * rounded corners enough fixed-point precision without changing radius-zero
+ * boxes or their cached transform path.
+ */
+static BS4BoxShape bs4_box_shape(double left, double top,
+                                 double right, double bottom, double radius)
+{
+    BS4BoxShape shape = { .source_size = 64 };
+    radius = bs4_clamp_box_radius(radius, left, top, right, bottom);
+    if (radius <= 0.0)
+        return shape;
+
+    double width = right - left;
+    double height = bottom - top;
+    int32_t radius_x = ass_lrint(radius / width * BS4_ROUNDED_BOX_SCALE);
+    int32_t radius_y = ass_lrint(radius / height * BS4_ROUNDED_BOX_SCALE);
+    if (radius_x <= 0 || radius_y <= 0)
+        return shape;
+
+    shape.source_size = BS4_ROUNDED_BOX_SCALE;
+    shape.radius_x = FFMIN(radius_x, BS4_ROUNDED_BOX_SCALE / 2);
+    shape.radius_y = FFMIN(radius_y, BS4_ROUNDED_BOX_SCALE / 2);
+    return shape;
+}
+
 /* Build the m1 glyph matrix in the event-local layout coordinate plane. */
 static bool bs4_event_transform_matrix(RenderContext *state,
                                        const BS4BoxGeometry *box,
@@ -8592,8 +8675,11 @@ static bool bs4_multiply_matrix(double result[3][3],
  * rectangle a real four-sided path through rotation and projection.
  */
 static bool bs4_unit_square_to_quad(const ASS_DVector points[4],
+                                    int32_t source_size,
                                     double matrix[3][3])
 {
+    if (source_size <= 0)
+        return false;
     const double x0 = points[0].x, y0 = points[0].y;
     const double x1 = points[1].x, y1 = points[1].y;
     const double x2 = points[2].x, y2 = points[2].y;
@@ -8623,14 +8709,14 @@ static bool bs4_unit_square_to_quad(const ASS_DVector points[4],
         if (!isfinite(values[i]))
             return false;
 
-    matrix[0][0] = a / 64.0;
-    matrix[0][1] = b / 64.0;
+    matrix[0][0] = a / source_size;
+    matrix[0][1] = b / source_size;
     matrix[0][2] = x0;
-    matrix[1][0] = d / 64.0;
-    matrix[1][1] = e / 64.0;
+    matrix[1][0] = d / source_size;
+    matrix[1][1] = e / source_size;
     matrix[1][2] = y0;
-    matrix[2][0] = g / 64.0;
-    matrix[2][1] = h / 64.0;
+    matrix[2][0] = g / source_size;
+    matrix[2][1] = h / source_size;
     matrix[2][2] = 1.0;
     return true;
 }
@@ -8645,9 +8731,10 @@ static bool bs4_box_matrix(RenderContext *state, const BS4BoxGeometry *box,
                            double left, double top, double right, double bottom,
                            double domain_left, double domain_top,
                            double domain_right, double domain_bottom,
+                           const BS4BoxShape *shape,
                            double matrix[3][3])
 {
-    if (!(left < right) || !(top < bottom) ||
+    if (!shape || !(left < right) || !(top < bottom) ||
         !(domain_left < domain_right) || !(domain_top < domain_bottom))
         return false;
 
@@ -8669,20 +8756,23 @@ static bool bs4_box_matrix(RenderContext *state, const BS4BoxGeometry *box,
 
     double local_matrix[3][3];
     double event_matrix[3][3];
-    return bs4_unit_square_to_quad(points, local_matrix) &&
+    return bs4_unit_square_to_quad(points, shape->source_size, local_matrix) &&
         bs4_event_transform_matrix(state, box, event_matrix) &&
         bs4_multiply_matrix(matrix, event_matrix, local_matrix);
 }
 
 /* Avoid rasterizing a completely off-frame box before normal clipping. */
 static bool bs4_bitmap_may_be_visible(RenderContext *state,
-                                      const double matrix[3][3])
+                                      const double matrix[3][3],
+                                      int32_t source_size)
 {
+    if (source_size <= 0)
+        return false;
     ASS_Renderer *render_priv = state->renderer;
     double x_min = DBL_MAX, y_min = DBL_MAX;
     double x_max = -DBL_MAX, y_max = -DBL_MAX;
-    for (int y = 0; y <= 64; y += 64) {
-        for (int x = 0; x <= 64; x += 64) {
+    for (int y = 0; y <= source_size; y += source_size) {
+        for (int x = 0; x <= source_size; x += source_size) {
             double z = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2];
             if (!isfinite(z) || z <= 0.0)
                 return true;
@@ -8716,14 +8806,23 @@ static bool bs4_bitmap_may_be_visible(RenderContext *state,
 }
 
 static bool bs4_get_bitmap(RenderContext *state, const double matrix[3][3],
+                           const BS4BoxShape *shape,
                            ASS_Vector *pos, Bitmap **bitmap)
 {
-    if (!bs4_bitmap_may_be_visible(state, matrix))
+    if (!shape || !bs4_bitmap_may_be_visible(state, matrix,
+                                              shape->source_size))
         return false;
 
     ASS_Renderer *render_priv = state->renderer;
     OutlineHashKey outline_key = {0};
-    outline_key.type = OUTLINE_BOX;
+    if (shape->radius_x > 0 && shape->radius_y > 0) {
+        outline_key.type = OUTLINE_ROUNDED_BOX;
+        outline_key.u.rounded_box.radius_x = shape->radius_x;
+        outline_key.u.rounded_box.radius_y = shape->radius_y;
+    } else {
+        /* Preserve the exact pre-\boxr cached square and matrix path. */
+        outline_key.type = OUTLINE_BOX;
+    }
     OutlineHashValue *outline = ass_cache_get(render_priv->cache.outline_cache,
                                               &outline_key, render_priv);
     if (!outline || !outline->valid)
@@ -8888,6 +8987,9 @@ static void add_background(RenderContext *state, EventImages *event_images,
         !isfinite(fill_right) || !isfinite(fill_bottom) ||
         !(fill_left < fill_right) || !(fill_top < fill_bottom))
         return;
+    double fill_radius = bs4_clamp_box_radius(state->box_corner_radius,
+                                              fill_left, fill_top,
+                                              fill_right, fill_bottom);
 
     ASS_Image *box_head = NULL;
     ASS_Image **box_tail = &box_head;
@@ -8906,23 +9008,36 @@ static void add_background(RenderContext *state, EventImages *event_images,
         double outer_matrix[3][3], inner_matrix[3][3];
         ASS_Vector outer_pos, inner_pos;
         Bitmap *outer = NULL, *inner = NULL;
+        BS4BoxShape outer_shape = bs4_box_shape(
+            fill_left - outer_x, fill_top - outer_y,
+            fill_right + outer_x, fill_bottom + outer_y,
+            fill_radius + FFMIN(outer_x, outer_y));
+        BS4BoxShape inner_shape = bs4_box_shape(
+            fill_left - inner_x, fill_top - inner_y,
+            fill_right + inner_x, fill_bottom + inner_y,
+            fill_radius + FFMIN(inner_x, inner_y));
         if (!bs4_box_matrix(state, geometry,
                             fill_left - outer_x, fill_top - outer_y,
                             fill_right + outer_x, fill_bottom + outer_y,
                             fill_left, fill_top, fill_right, fill_bottom,
+                            &outer_shape,
                             outer_matrix) ||
             !bs4_box_matrix(state, geometry,
                             fill_left - inner_x, fill_top - inner_y,
                             fill_right + inner_x, fill_bottom + inner_y,
                             fill_left, fill_top, fill_right, fill_bottom,
+                            &inner_shape,
                             inner_matrix) ||
-            !bs4_get_bitmap(state, outer_matrix, &outer_pos, &outer))
+            !bs4_get_bitmap(state, outer_matrix, &outer_shape,
+                            &outer_pos, &outer))
             continue;
 
         /* An off-frame inner box is an empty hole, not a reason to drop
          * the visible outward ring. */
-        if (bs4_bitmap_may_be_visible(state, inner_matrix) &&
-            !bs4_get_bitmap(state, inner_matrix, &inner_pos, &inner))
+        if (bs4_bitmap_may_be_visible(state, inner_matrix,
+                                      inner_shape.source_size) &&
+            !bs4_get_bitmap(state, inner_matrix, &inner_shape,
+                            &inner_pos, &inner))
             continue;
 
         uint8_t *mask = bs4_copy_bitmap_mask(outer);
@@ -8952,11 +9067,15 @@ static void add_background(RenderContext *state, EventImages *event_images,
     double fill_matrix[3][3];
     ASS_Vector fill_pos;
     Bitmap *fill = NULL;
+    BS4BoxShape fill_shape = bs4_box_shape(fill_left, fill_top,
+                                            fill_right, fill_bottom,
+                                            fill_radius);
     if (bs4_box_matrix(state, geometry, fill_left, fill_top,
                        fill_right, fill_bottom,
                        fill_left, fill_top, fill_right, fill_bottom,
+                       &fill_shape,
                        fill_matrix) &&
-        bs4_get_bitmap(state, fill_matrix, &fill_pos, &fill)) {
+        bs4_get_bitmap(state, fill_matrix, &fill_shape, &fill_pos, &fill)) {
         uint32_t color = state->c[3];
         ass_apply_fades(&color, state->fade, state->fade_color);
         box_tail = append_bs4_bitmap(state, fill, fill_pos, color,

@@ -25,6 +25,31 @@ documented in `docs/borderstyle-tags.md`.
 - `\4c` remains the box color.
 - `\4a` and the existing shadow alpha behavior remain the box alpha behavior.
 
+## Corner Radius
+
+```ass
+\boxr<N>
+```
+
+- `\boxr<N>` sets the box corner radius to `N` pixels in the box's local
+  coordinate system.
+- The default radius is `0`, which keeps the existing square-cornered box
+  geometry exactly unchanged.
+- A bare `\boxr` resets the radius to `0`; `\r` and `\rStyleName` do the same.
+- Negative values clamp to `0`. Values larger than half the padded box's
+  smaller dimension clamp to that half-dimension, producing a capsule or
+  circle rather than invalid geometry.
+- The radius applies to the complete padded box, not individual glyphs or
+  fragments.
+
+Examples:
+
+```ass
+{\box1\boxr0}Square box
+{\box1\boxr10}Rounded box
+{\box1\boxr30}More rounded box
+```
+
 ## Extra Padding
 
 ```ass
@@ -50,7 +75,7 @@ The renderer first finds the event's untransformed local layout bounds. This
 preserves the existing one-box behavior for shaped runs, wrapping, explicit
 `\N`, and supported drawings. The normal BS4 extent allowance and `\boxp`,
 `\boxpx`, or `\boxpy` padding are applied to those local bounds before the
-box is made into a closed rectangle.
+box is made into a closed rectangle with the active `\boxr` corner radius.
 
 That rectangle is sent through the same applicable event geometry as the
 content. Positioning and motion keep the box attached to the event; rotation
@@ -61,9 +86,9 @@ current Mangetsu `\distort` state transform the box as well. Animated values
 in `\t` are evaluated for the current frame, so the box updates with an
 animated transform or movement.
 
-Consequently, padding is local geometry too: it rotates, scales, shears,
-projects, and distorts with the box. It is not added by expanding an
-axis-aligned rectangle after the event has been transformed.
+Consequently, padding and corner radius are local geometry too: they rotate,
+scale, shear, project, and distort with the box. They are not added by
+expanding an axis-aligned rectangle after the event has been transformed.
 
 The transformed box is rasterized and then masked by the normal active clip.
 This applies to rectangular and inverse clips (`\clip`/`\iclip`) as well as

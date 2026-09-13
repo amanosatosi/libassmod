@@ -4157,6 +4157,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     state->box_extra_y = FFMAX(y, 0);
                 }
             }
+        } else if (tag("boxr")) {
+            double val = 0;
+            if (nargs && !numeric_arg_strict(*args, state->box_corner_radius,
+                                             NUM_NONNEGATIVE, &val))
+                continue;
+            state->box_corner_radius = FFMAX(val, 0);
         } else if (tag("box")) {
             if (nargs) {
                 int32_t val = argtoi32(*args);

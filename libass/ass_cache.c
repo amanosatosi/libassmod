@@ -228,6 +228,8 @@ static ass_hashcode outline_hash(void *key, ass_hashcode hval)
         return drawing_hash(&k->u, hval);
     case OUTLINE_BORDER:
         return border_hash(&k->u, hval);
+    case OUTLINE_ROUNDED_BOX:
+        return ass_hash_buf(&k->u.rounded_box, sizeof(k->u.rounded_box), hval);
     default:  // OUTLINE_BOX
         return hval;
     }
@@ -246,6 +248,9 @@ static bool outline_compare(void *a, void *b)
         return drawing_compare(&ak->u, &bk->u);
     case OUTLINE_BORDER:
         return border_compare(&ak->u, &bk->u);
+    case OUTLINE_ROUNDED_BOX:
+        return ak->u.rounded_box.radius_x == bk->u.rounded_box.radius_x &&
+               ak->u.rounded_box.radius_y == bk->u.rounded_box.radius_y;
     default:  // OUTLINE_BOX
         return true;
     }
