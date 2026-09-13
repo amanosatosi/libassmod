@@ -1101,16 +1101,38 @@ int main(void)
         fail |= expect_karaoke_same_at(basic_karaoke, basic_karaoke,
                                        basic_steps[i]);
     const long long seek_order[] = {560, 0, 300, 300, 560};
-    KaraokeCounts seek_counts[5];
-    KaraokeCounts direct_zero, direct_mid;
-    if (render_karaoke_sequence(basic_karaoke, seek_order, 5, seek_counts) ||
-            render_karaoke_counts(basic_karaoke, 0, &direct_zero) ||
-            render_karaoke_counts(basic_karaoke, 300, &direct_mid) ||
+    KaraokeCounts seek_counts[5] = {0};
+    KaraokeCounts direct_zero = {0}, direct_mid = {0};
+    int seek_err = render_karaoke_sequence(
+        basic_karaoke, seek_order, 5, seek_counts);
+    int zero_err = render_karaoke_counts(basic_karaoke, 0, &direct_zero);
+    int mid_err = render_karaoke_counts(basic_karaoke, 300, &direct_mid);
+    if (seek_err || zero_err || mid_err ||
             !same_counts(seek_counts[0], seek_counts[4]) ||
             !same_counts(seek_counts[1], direct_zero) ||
             !same_counts(seek_counts[2], direct_mid) ||
             !same_counts(seek_counts[2], seek_counts[3])) {
-        fprintf(stderr, "furigana karaoke depends on render history\n");
+        fprintf(stderr,
+                "::error title=furigana seek history::furigana karaoke depends on render history: errors(sequence=%d zero=%d mid=%d) sequence=[(%llu,%llu),(%llu,%llu),(%llu,%llu),(%llu,%llu),(%llu,%llu)] direct_zero=(%llu,%llu) direct_mid=(%llu,%llu) equal(final=%d zero=%d mid=%d repeat=%d)\n",
+                seek_err, zero_err, mid_err,
+                (unsigned long long) seek_counts[0].primary,
+                (unsigned long long) seek_counts[0].secondary,
+                (unsigned long long) seek_counts[1].primary,
+                (unsigned long long) seek_counts[1].secondary,
+                (unsigned long long) seek_counts[2].primary,
+                (unsigned long long) seek_counts[2].secondary,
+                (unsigned long long) seek_counts[3].primary,
+                (unsigned long long) seek_counts[3].secondary,
+                (unsigned long long) seek_counts[4].primary,
+                (unsigned long long) seek_counts[4].secondary,
+                (unsigned long long) direct_zero.primary,
+                (unsigned long long) direct_zero.secondary,
+                (unsigned long long) direct_mid.primary,
+                (unsigned long long) direct_mid.secondary,
+                same_counts(seek_counts[0], seek_counts[4]),
+                same_counts(seek_counts[1], direct_zero),
+                same_counts(seek_counts[2], direct_mid),
+                same_counts(seek_counts[2], seek_counts[3]));
         fail = 1;
     }
 
