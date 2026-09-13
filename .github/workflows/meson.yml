@@ -180,7 +180,15 @@ jobs:
         if: matrix.config.skip_tests != 'yes' && runner.os != 'Windows'
         continue-on-error: true
         run: |
-          build/test/furi_unit
+          set +e
+          build/test/furi_unit >furi-direct.log 2>&1
+          status=$?
+          cat furi-direct.log
+          if [ "$status" -ne 0 ]; then
+            failure="$(grep -v '^\[ass\]' furi-direct.log | grep -v '^$' | tail -n 20 | tr '\n' ';' | sed 's/%/%25/g')"
+            printf '::error title=furi direct failure::%s\n' "$failure"
+          fi
+          exit "$status"
 
       - name: Run tests
         id: run-tests
