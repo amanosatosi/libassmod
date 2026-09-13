@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,6 +26,50 @@ typedef struct {
     uint32_t *secondary;
     uint32_t *outline;
 } KaraokeFrame;
+
+static unsigned char *test_font_data;
+static int test_font_size;
+
+static bool load_test_font(void)
+{
+    const char *env = getenv("FURI_TEST_FONT");
+    const char *paths[] = {
+        env,
+        "compare/test/font1.ttf",
+        "../compare/test/font1.ttf",
+        "../../compare/test/font1.ttf",
+    };
+    FILE *file = NULL;
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        if (!paths[i])
+            continue;
+        file = fopen(paths[i], "rb");
+        if (file)
+            break;
+    }
+    if (!file)
+        return false;
+
+    bool ok = fseek(file, 0, SEEK_END) == 0;
+    long size = ok ? ftell(file) : -1;
+    ok = size > 0 && size <= INT_MAX && fseek(file, 0, SEEK_SET) == 0;
+    unsigned char *data = ok ? malloc(size) : NULL;
+    ok = data && fread(data, 1, size, file) == (size_t) size;
+    fclose(file);
+    if (!ok) {
+        free(data);
+        return false;
+    }
+    test_font_data = data;
+    test_font_size = size;
+    return true;
+}
+
+static void add_test_font(ASS_Library *lib)
+{
+    ass_add_font(lib, "font1.ttf", (const char *) test_font_data,
+                 test_font_size);
+}
 
 static char *make_script(const char *text)
 {
@@ -128,6 +173,7 @@ static int render_karaoke_frame(const char *text, long long now,
     int ret = 1;
     if (!lib)
         goto done;
+    add_test_font(lib);
     renderer = ass_renderer_init(lib);
     if (!renderer)
         goto done;
@@ -288,6 +334,7 @@ static int render_karaoke_counts(const char *text, long long now,
 
     if (!lib)
         goto done;
+    add_test_font(lib);
     renderer = ass_renderer_init(lib);
     if (!renderer)
         goto done;
@@ -328,6 +375,7 @@ static int render_karaoke_sequence(const char *text, const long long *times,
     int ret = 1;
     if (!lib)
         goto done;
+    add_test_font(lib);
     renderer = ass_renderer_init(lib);
     if (!renderer)
         goto done;
@@ -416,6 +464,7 @@ static int render_mask(const char *text, Mask *mask)
 
     if (!lib)
         goto done;
+    add_test_font(lib);
     renderer = ass_renderer_init(lib);
     if (!renderer)
         goto done;
@@ -902,10 +951,14 @@ static int expect_three_segment_bidi_order(void)
 
 static int expect_bidi_kf_direction(void)
 {
+    // Use the bundled monospaced test font so each quarter-frontier crosses
+    // visible ink. RLO/PDF exercise the same RTL shaping and karaoke mapping
+    // without depending on a platform's particular Hebrew glyph sidebearings.
     const char *text =
-        "{\\an1\\pos(40,180)}<WW|{\\kf100}\xD7\x90"
-        "{\\kf100}\xD7\x91>";
-    const char *base = "{\\an1\\pos(40,180)}WW";
+        "{\\an1\\pos(40,180)\\fnPixel Operator Mono}"
+        "<MMMMMM|\xE2\x80\xAE{\\kf100}WWW{\\kf100}WWW\xE2\x80\xAC>";
+    const char *base =
+        "{\\an1\\pos(40,180)\\fnPixel Operator Mono}MMMMMM";
     const long long times[] = {250, 500, 750, 1000, 1250, 1500, 1750};
     KaraokeFrame frame[7] = {0};
     Mask base_mask = {0};
@@ -1064,6 +1117,12 @@ int main(void)
 {
     int fail = 0;
 
+    if (!load_test_font()) {
+        fprintf(stderr,
+                "could not load bundled compare/test/font1.ttf test font\n");
+        return 1;
+    }
+
     const char *basic_karaoke =
         "<\xE7\x97\x85|{\\k30}\xE3\x82\x84{\\k26}"
         "\xE3\x81\xBE{\\k10}\xE3\x81\x84>";
@@ -1077,6 +1136,8 @@ int main(void)
         "<\xE6\x8E\xB4|{\\k40}\xE3\x81\xA4{\\k60}"
         "\xE3\x81\x8B>\xE3\x82\x93\xE3\x81\xA7\xE3\x81\x84"
         "\xE3\x82\x8B{\\k70}\xE3\x81\x9E";
+    const char *seek_karaoke =
+        "{\\fnPixel Operator Mono}<ABC|{\\k30}a{\\k26}b{\\k10}c>";
     const long long ordinary_steps[] = {0, 300, 700};
     const long long basic_steps[] = {0, 300, 560};
     const long long cross_steps[] = {0, 400, 1000};
@@ -1104,9 +1165,9 @@ int main(void)
     KaraokeCounts seek_counts[5] = {0};
     KaraokeCounts direct_zero = {0}, direct_mid = {0};
     int seek_err = render_karaoke_sequence(
-        basic_karaoke, seek_order, 5, seek_counts);
-    int zero_err = render_karaoke_counts(basic_karaoke, 0, &direct_zero);
-    int mid_err = render_karaoke_counts(basic_karaoke, 300, &direct_mid);
+        seek_karaoke, seek_order, 5, seek_counts);
+    int zero_err = render_karaoke_counts(seek_karaoke, 0, &direct_zero);
+    int mid_err = render_karaoke_counts(seek_karaoke, 300, &direct_mid);
     if (seek_err || zero_err || mid_err ||
             !same_counts(seek_counts[0], seek_counts[4]) ||
             !same_counts(seek_counts[1], direct_zero) ||
@@ -1323,5 +1384,6 @@ int main(void)
     fail |= expect_bottom_anchor_with_taller_block(
         "{\\an2}<A|BBBB>", "{\\an2\\furiap0}<A|BBBB>");
 
+    free(test_font_data);
     return fail ? 1 : 0;
 }

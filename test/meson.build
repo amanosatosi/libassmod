@@ -180,7 +180,11 @@ test('distortion-render', distort_render_unit)
 test('relative-numbers', relative_numbers_unit, timeout: 120)
 test('override-annotations', override_annotations_unit, timeout: 120)
 test('clip-regression', clip_unit)
-test('furi-extension', furi_unit, timeout: 120)
+test('furi-extension', furi_unit,
+    env: {'FURI_TEST_FONT': join_paths(
+        meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    timeout: 120,
+)
 test('karaoke-paint-extension', karaoke_paint_unit, timeout: 120)
 test('multi-border-extension', multiborder_unit)
 test('actor-colorcoding', colorcoding_unit)
