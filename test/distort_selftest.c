@@ -1,5 +1,6 @@
 /* Renderer-level distortion regressions, using the public API and pixel-mask
- * comparisons as in bs4_geometry_selftest.c. Drawings avoid font dependence. */
+ * comparisons as in bs4_geometry_selftest.c. Most cases use drawings to avoid
+ * font dependence; text-run grouping is checked with same-font relative masks. */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -50,6 +51,30 @@ static ASS_Track *read_track(ASS_Library *lib, const char *tags)
     return ass_read_memory(lib, script, strlen(script), NULL);
 }
 
+static ASS_Track *read_text_track(ASS_Library *lib, const char *text)
+{
+    char script[8192];
+    int n = snprintf(script, sizeof(script),
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 640\n"
+        "PlayResY: 360\n"
+        "ScaledBorderAndShadow: yes\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:03.00,Default,,0,0,0,,%s\n", text);
+    if (n < 0 || n >= (int) sizeof(script))
+        return NULL;
+    ASS_Track *track = ass_read_memory(lib, script, strlen(script), NULL);
+    return track;
+}
+
 static bool capture(ASS_Renderer *renderer, ASS_Track *track,
                     long long now, Mask *mask)
 {
@@ -94,6 +119,40 @@ static bool check_pair(ASS_Library *lib, ASS_Renderer *renderer,
         fprintf(stderr, "%s: pixel comparison failed at %lld ms\n", label, now);
     if (ta) ass_free_track(ta);
     if (tb) ass_free_track(tb);
+    return ok;
+}
+
+static bool test_text_run_grouping(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    static Mask joined, same_style, split_style;
+    const char *joined_text =
+        "{\\an7\\pos(80,120)\\distort(1.35,-0.15,1.45,1.15,-0.15,1)}"
+        "Testing My Text";
+    const char *same_style_text =
+        "{\\an7\\pos(80,120)\\distort(1.35,-0.15,1.45,1.15,-0.15,1)}"
+        "Testing{\\1c&HFFFFFF&} My Text";
+    const char *split_style_text =
+        "{\\an7\\pos(80,120)\\distort(1.35,-0.15,1.45,1.15,-0.15,1)}"
+        "Testing{\\1c&HFEFEFE&} My Text";
+
+    ASS_Track *joined_track = read_text_track(lib, joined_text);
+    ASS_Track *same_style_track = read_text_track(lib, same_style_text);
+    ASS_Track *split_style_track = read_text_track(lib, split_style_text);
+    bool ok = joined_track && same_style_track && split_style_track &&
+        capture(renderer, joined_track, 0, &joined) &&
+        capture(renderer, same_style_track, 0, &same_style) &&
+        capture(renderer, split_style_track, 0, &split_style);
+
+    if (ok) {
+        ok = !memcmp(joined.pixels, same_style.pixels, sizeof(joined.pixels)) &&
+             memcmp(joined.pixels, split_style.pixels, sizeof(joined.pixels));
+    }
+    if (!ok)
+        fprintf(stderr, "distort text-run grouping across whitespace/style boundary failed\n");
+
+    if (joined_track) ass_free_track(joined_track);
+    if (same_style_track) ass_free_track(same_style_track);
+    if (split_style_track) ass_free_track(split_style_track);
     return ok;
 }
 
@@ -270,6 +329,7 @@ int main(void)
                      "\\t(0,1000,\\distort(1,0,1,1,0,1))",
                      "\\bord3\\shad4\\distort(1,0,1,1,0,1,.125,.0625)",
                      500, true, "animated fill border and shadow");
+    ok &= test_text_run_grouping(lib, renderer);
     ok &= test_p0_axes(lib, renderer);
     ok &= test_animation(lib, renderer);
 

@@ -6677,11 +6677,6 @@ static bool expand_furi_line_metrics(RenderContext *state)
     return true;
 }
 
-static bool glyph_is_separator(const GlyphInfo *info)
-{
-    return info->symbol == ' ' || info->symbol == NBSP || info->symbol == '\n';
-}
-
 static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
 {
     if (!a->distort_enabled || !b->distort_enabled)
@@ -6690,6 +6685,35 @@ static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
            a->distort.u2 == b->distort.u2 && a->distort.v2 == b->distort.v2 &&
            a->distort.u3 == b->distort.u3 && a->distort.v3 == b->distort.v3 &&
            a->distort.u0 == b->distort.u0 && a->distort.v0 == b->distort.v0;
+}
+
+static bool distort_accumulate_bbox(const GlyphInfo *info,
+                                    double *min_x, double *min_y,
+                                    double *max_x, double *max_y)
+{
+    if (!info->outline)
+        return false;
+
+    const ASS_Outline *ol = &info->outline->outline[0];
+    if (!ol->n_points)
+        return false;
+
+    double pos_x = info->pos.x;
+    double pos_y = info->pos.y;
+    double scale_x = info->transform.scale.x;
+    double scale_y = info->transform.scale.y;
+    double off_x = info->transform.offset.x;
+    double off_y = info->transform.offset.y;
+
+    for (size_t i = 0; i < ol->n_points; i++) {
+        double x = ol->points[i].x * scale_x + off_x + pos_x;
+        double y = ol->points[i].y * scale_y + off_y + pos_y;
+        *min_x = FFMIN(*min_x, x);
+        *max_x = FFMAX(*max_x, x);
+        *min_y = FFMIN(*min_y, y);
+        *max_y = FFMAX(*max_y, y);
+    }
+    return true;
 }
 
 static bool clone_outline(ASS_Outline *dst, const ASS_Outline *src)
@@ -6792,13 +6816,41 @@ static void apply_distortion(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
     FriBidiStrIndex *cmap = ass_shaper_get_reorder_map(state->shaper);
-    if (!cmap)
+    if (!cmap || text_info->length <= 0)
         return;
 
+    bool has_distortion = false;
     for (int i = 0; i < text_info->length; i++) {
-        GlyphInfo *root = text_info->glyphs + cmap[i];
-        if (glyph_is_separator(root) || !root->distort_enabled)
+        if (text_info->glyphs[i].distort_enabled) {
+            has_distortion = true;
+            break;
+        }
+    }
+    if (!has_distortion)
+        return;
+
+    /*
+     * VSFilterMod compacts adjacent CText objects only while their effective
+     * style matches. starts_new_run is recorded in logical order before bidi
+     * reordering, so preserve those boundaries with stable logical run ids
+     * while walking cmap in visual order.
+     */
+    int *style_run_ids = malloc(text_info->length * sizeof(*style_run_ids));
+    if (!style_run_ids)
+        return;
+    int run_id = 0;
+    for (int i = 0; i < text_info->length; i++) {
+        if (i && text_info->glyphs[i].starts_new_run)
+            run_id++;
+        style_run_ids[i] = run_id;
+    }
+
+    for (int i = 0; i < text_info->length; i++) {
+        int root_index = cmap[i];
+        GlyphInfo *root = text_info->glyphs + root_index;
+        if (root->symbol == '\n' || !root->distort_enabled)
             continue;
+        int root_run_id = style_run_ids[root_index];
 
         double min_x = DBL_MAX, min_y = DBL_MAX;
         double max_x = -DBL_MAX, max_y = -DBL_MAX;
@@ -6806,37 +6858,24 @@ static void apply_distortion(RenderContext *state)
 
         int end = i;
         while (end < text_info->length) {
-            GlyphInfo *cur = text_info->glyphs + cmap[end];
-            if (cur->linebreak && end != i)
+            int cur_index = cmap[end];
+            GlyphInfo *cur = text_info->glyphs + cur_index;
+            if ((text_info->glyphs[end].linebreak && end != i) ||
+                    cur->symbol == '\n')
                 break;
-            if (glyph_is_separator(cur))
+            if (style_run_ids[cur_index] != root_run_id)
                 break;
             if (!distort_params_match(root, cur))
                 break;
 
-            for (GlyphInfo *g = cur; g; g = g->next) {
-                if (!g->outline || !g->outline->outline[0].n_points)
-                    continue;
-                double pen_x = g->pos.x;
-                double pen_y = g->pos.y;
-                double gminx = (double) g->bbox.x_min + pen_x;
-                double gmaxx = (double) g->bbox.x_max + pen_x;
-                double gminy = (double) g->bbox.y_min + pen_y;
-                double gmaxy = (double) g->bbox.y_max + pen_y;
-                // Include advance span so bounding box covers inter-glyph spacing,
-                // matching VSFilter's broader per-word box.
-                double adv_x = pen_x + g->advance.x;
-                double adv_y = pen_y + g->advance.y;
-                gminx = FFMIN(gminx, adv_x);
-                gmaxx = FFMAX(gmaxx, adv_x);
-                gminy = FFMIN(gminy, adv_y);
-                gmaxy = FFMAX(gmaxy, adv_y);
-                min_x = FFMIN(min_x, gminx);
-                max_x = FFMAX(max_x, gmaxx);
-                min_y = FFMIN(min_y, gminy);
-                max_y = FFMAX(max_y, gmaxy);
-                has_bbox = true;
-            }
+            /*
+             * Match VSFilterMod's path-point bounds. Whitespace has no path
+             * points, but it stays in the unit and its advance is already
+             * reflected in the positions of following glyphs.
+             */
+            for (GlyphInfo *g = cur; g; g = g->next)
+                has_bbox |= distort_accumulate_bbox(g, &min_x, &min_y,
+                                                    &max_x, &max_y);
 
             end++;
             if (cur->drawing_text.str)
@@ -6850,13 +6889,22 @@ static void apply_distortion(RenderContext *state)
 
         for (int j = i; j < end; j++) {
             GlyphInfo *cur = text_info->glyphs + cmap[j];
-            if (cur->skip || !cur->outline)
+            if (cur->skip)
                 continue;
-            distort_warp_glyph(cur, min_x, min_y, max_x, max_y);
+            /*
+             * HarfBuzz can emit several positioned glyphs for one logical
+             * cluster. They live on GlyphInfo::next and must all receive the
+             * same unit warp.
+             */
+            for (GlyphInfo *g = cur; g; g = g->next) {
+                if (g->outline)
+                    distort_warp_glyph(g, min_x, min_y, max_x, max_y);
+            }
         }
 
         i = end - 1;
     }
+    free(style_run_ids);
 }
 
 static void apply_baseline_shear(RenderContext *state)

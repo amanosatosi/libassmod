@@ -16,7 +16,7 @@ Mangetsu implements VSFilterMod’s six-argument `\distort` override tag and an 
   See [relative numeric values](relative-numbers.md).
 - **Defaults / enable:** The tag is disabled until first used. Defaults are identity: P0 `(0,0)`, P1 `(1,0)`, P2 `(1,1)`, P3 `(0,1)`. `\r` resets to disabled and the default corners. A six-argument tag after an eight-argument tag restores P0 to `(0,0)`.
 - **Animation:** Fully animatable with `\t`; each component, including `u0,v0`, interpolates independently toward its target with the same timing and acceleration. Six-argument transform targets interpolate P0 toward `(0,0)`. All transitions between six- and eight-argument states are supported.
-- **Scope:** Applied per word-like unit (runs split at spaces/NBSP/newlines and when `\distort` parameters change). Vector drawings (`\p`) are warped per drawing chunk. All layers (fill, border, shadow) share the same warp.
+- **Scope:** Applied per compactable same-style text run on each visual line. Internal spaces/NBSP stay inside the run; hard line breaks, effective style changes, `\distort` parameter changes, and vector-drawing chunks split units. Every glyph emitted for a shaped cluster receives the same warp, and all layers (fill, border, shadow) stay aligned.
 - **Examples:**
   - Identity / on-switch: `{\distort(1,0,1,1,0,1)}Text` (looks unchanged, enables distortion)
   - Extreme shear: `{\distort(1.6,-0.2,1.6,1.2,0,1)}Text`
@@ -77,20 +77,21 @@ point, including Bezier control points. It remains a bilinear warp, not a new
 projective homography. Existing later projection stages are unchanged.
 
 `ASS_DistortParams` carries P0/P1/P2/P3 together through render and glyph state;
-only the parser uses the historical syntax order. Word grouping compares all
-four corners. BorderStyle=4 boxes use the same mapping before their existing
-projective transform.
+only the parser uses the historical syntax order. Distortion-run grouping
+compares all four corners in addition to normal style-run boundaries.
+BorderStyle=4 boxes use the same mapping before their existing projective
+transform.
 
 ### Placement in the pipeline
 
-1. Units are detected in `apply_distortion`: consecutive glyphs with identical distortion state, split on whitespace/newline and on drawing-run boundaries. The unit’s bounding box is taken over outlines plus advance to match VSFilterMod’s per-word behavior.
+1. Units are detected in `apply_distortion`: consecutive glyphs in the same effective style run with identical distortion state. Internal whitespace does not split a unit; hard line breaks and drawing-run boundaries do. The unit bounding box is taken only over actual transformed outline path points. Whitespace contributes positioning through the following glyph positions but adds no bbox points.
 2. Warp is applied immediately after layout/reorder/line alignment, before baseline shear/rotation and before any glyph transform (shear/scale/3D) inside `get_bitmap_glyph`.
-3. Borders and shadows reuse the warped outline, so all layers stay aligned.
+3. Borders and shadows reuse the warped outline, so all layers stay aligned. Every glyph linked through a shaped cluster’s `GlyphInfo::next` chain receives the same unit warp.
 
 ### Edge cases
 
 - Degenerate boxes (`w==0` or `h==0`) are skipped.
-- Empty/degenerate outlines are skipped from the unit bbox; distortion stays disabled for those glyphs.
+- Empty outlines, including whitespace, contribute no bbox points but may remain inside an otherwise valid distortion unit.
 - Parameters are doubles; negative and >1 values are accepted.
 - Empty coordinate slots retain their corresponding current values. The
   six-slot form still implies P0 `(0,0)`, even with empty slots.
@@ -104,12 +105,13 @@ projective transform.
 ### Differences vs upstream libass
 
 - This tag is VSFilterMod-specific; upstream libass does not support it.
-- The six-argument form retains VSFilterMod’s per-word bilinear warp (including corners in normalized bbox space and identical warping of fill/outline/shadow). Known VSFilterMod quirks, such as allowing out-of-range pins and animating each component separately, are preserved. The optional P0 pair is a Mangetsu extension.
+- The six-argument form retains VSFilterMod’s bilinear warp over compacted same-style text runs (including corners in normalized path-point bbox space and identical warping of fill/outline/shadow). Known VSFilterMod quirks, such as allowing out-of-range pins and animating each component separately, are preserved. The optional P0 pair is a Mangetsu extension.
 
 ### Regression tests
 
 `distortion-warp` checks the legacy formula bit for bit, all four corners, and
 interior P0 weights. `distortion-render` compares pixel masks for identity and
 nontrivial legacy forms, P0 movement and numeric syntax, resets, malformed
-counts, fill/border/shadow and BS4 geometry, and animated six/eight-argument
-transitions (including acceleration and seeking).
+counts, fill/border/shadow and BS4 geometry, text-run grouping across internal
+whitespace and style boundaries, and animated six/eight-argument transitions
+(including acceleration and seeking).
