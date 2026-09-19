@@ -604,7 +604,8 @@ static int expect_same_base_span(const char *a, const char *b)
     bool ok = !err && wa > 0 && wb > 0 && abs(wa - wb) <= 1;
     if (!ok)
         fprintf(stderr,
-                "expected same furigana base span: `%s` (%d) vs `%s` (%d)\n",
+                "::error title=furigana base advance::expected same base "
+                "span: `%s` (%d) vs `%s` (%d)\n",
                 a, wa, b, wb);
     free_mask(&ma);
     free_mask(&mb);
@@ -629,8 +630,8 @@ static int expect_overlap_spacing_bounded(const char *short_furi,
         added > 0 && added < single_furi;
     if (!ok)
         fprintf(stderr,
-                "expected bounded ruby-overlap spacing: short=%d long=%d "
-                "added=%d single-ruby=%d\n",
+                "::error title=furigana collision spacing::expected bounded "
+                "spacing: short=%d long=%d added=%d single-ruby=%d\n",
                 short_base, long_base, added, single_furi);
     free_mask(&short_mask);
     free_mask(&long_mask);
@@ -652,10 +653,14 @@ static int expect_colored_furi_separate(const char *text)
             err = render_mask_color(text, colors[i], &masks[i]);
         ok = ok && !err && furi_top_bounds(&masks[i], &left[i], &right[i]);
     }
-    ok = ok && right[0] <= left[1] && right[1] <= left[2];
+    /* Layout uses exact 26.6 glyph bounds and intentionally adds no safety
+     * gap.  Rasterizing two touching bounds can cover the same device-pixel
+     * column through rounding/antialiasing without a geometric overlap. */
+    ok = ok && right[0] <= left[1] + 1 && right[1] <= left[2] + 1;
     if (!ok)
         fprintf(stderr,
-                "expected separated colored furigana: err=%d "
+                "::error title=furigana collision chain::expected separated "
+                "ruby: err=%d "
                 "red=[%d,%d) green=[%d,%d) blue=[%d,%d): `%s`\n",
                 err, left[0], right[0], left[1], right[1],
                 left[2], right[2], text);
