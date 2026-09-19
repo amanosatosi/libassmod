@@ -449,7 +449,7 @@ static int expect_karaoke_steps(const char *text, const long long *times,
     return 0;
 }
 
-static int render_mask(const char *text, Mask *mask)
+static int render_mask_color(const char *text, uint32_t color, Mask *mask)
 {
     memset(mask, 0, sizeof(*mask));
     mask->alpha = calloc(FRAME_W * FRAME_H, 1);
@@ -483,6 +483,11 @@ static int render_mask(const char *text, Mask *mask)
     int change = 0;
     ASS_Image *img = ass_render_frame(renderer, track, 0, &change);
     while (img) {
+        if (color != UINT32_MAX &&
+                (img->color & 0xFFFFFF00u) != color) {
+            img = img->next;
+            continue;
+        }
         int a = 255 - (int) (img->color & 0xFF);
         for (int y = 0; y < img->h; y++) {
             int yy = img->dst_y + y;
@@ -530,6 +535,11 @@ done:
     return ret;
 }
 
+static int render_mask(const char *text, Mask *mask)
+{
+    return render_mask_color(text, UINT32_MAX, mask);
+}
+
 static void free_mask(Mask *mask)
 {
     free(mask->alpha);
@@ -539,6 +549,119 @@ static void free_mask(Mask *mask)
 static bool same_mask(const Mask *a, const Mask *b)
 {
     return !memcmp(a->alpha, b->alpha, FRAME_W * FRAME_H);
+}
+
+static bool mask_horizontal_bounds(const Mask *mask, int y0, int y1,
+                                   int *left, int *right)
+{
+    *left = FRAME_W;
+    *right = 0;
+    y0 = y0 < 0 ? 0 : y0;
+    y1 = y1 > FRAME_H ? FRAME_H : y1;
+    for (int y = y0; y < y1; y++) {
+        for (int x = 0; x < FRAME_W; x++) {
+            if (!mask->alpha[y * FRAME_W + x])
+                continue;
+            *left = x < *left ? x : *left;
+            *right = x + 1 > *right ? x + 1 : *right;
+        }
+    }
+    return *right > *left;
+}
+
+/* Test cases use an upward manual offset to leave distinct ruby and base
+ * bands.  Comparing band widths makes the assertions independent of the
+ * event's final screen translation. */
+static int furi_band_span(const Mask *mask, bool base)
+{
+    if (mask->empty)
+        return 0;
+    int y0 = base && mask->y1 - 12 > mask->y0 ?
+        mask->y1 - 12 : mask->y0;
+    int y1 = !base && mask->y0 + 12 < mask->y1 ?
+        mask->y0 + 12 : mask->y1;
+    int left, right;
+    return mask_horizontal_bounds(mask, y0, y1, &left, &right) ?
+        right - left : 0;
+}
+
+static bool furi_top_bounds(const Mask *mask, int *left, int *right)
+{
+    if (mask->empty)
+        return false;
+    int y1 = mask->y0 + 12 < mask->y1 ? mask->y0 + 12 : mask->y1;
+    return mask_horizontal_bounds(mask, mask->y0, y1, left, right);
+}
+
+static int expect_same_base_span(const char *a, const char *b)
+{
+    Mask ma = {0}, mb = {0};
+    int err = render_mask(a, &ma);
+    if (!err)
+        err = render_mask(b, &mb);
+    int wa = !err ? furi_band_span(&ma, true) : 0;
+    int wb = !err ? furi_band_span(&mb, true) : 0;
+    bool ok = !err && wa > 0 && wb > 0 && abs(wa - wb) <= 1;
+    if (!ok)
+        fprintf(stderr,
+                "expected same furigana base span: `%s` (%d) vs `%s` (%d)\n",
+                a, wa, b, wb);
+    free_mask(&ma);
+    free_mask(&mb);
+    return ok ? 0 : 1;
+}
+
+static int expect_overlap_spacing_bounded(const char *short_furi,
+                                          const char *long_furi,
+                                          const char *single_long_furi)
+{
+    Mask short_mask = {0}, long_mask = {0}, single_mask = {0};
+    int err = render_mask(short_furi, &short_mask);
+    if (!err)
+        err = render_mask(long_furi, &long_mask);
+    if (!err)
+        err = render_mask(single_long_furi, &single_mask);
+    int short_base = !err ? furi_band_span(&short_mask, true) : 0;
+    int long_base = !err ? furi_band_span(&long_mask, true) : 0;
+    int single_furi = !err ? furi_band_span(&single_mask, false) : 0;
+    int added = long_base - short_base;
+    bool ok = !err && short_base > 0 && single_furi > 0 &&
+        added > 0 && added < single_furi;
+    if (!ok)
+        fprintf(stderr,
+                "expected bounded ruby-overlap spacing: short=%d long=%d "
+                "added=%d single-ruby=%d\n",
+                short_base, long_base, added, single_furi);
+    free_mask(&short_mask);
+    free_mask(&long_mask);
+    free_mask(&single_mask);
+    return ok ? 0 : 1;
+}
+
+static int expect_colored_furi_separate(const char *text)
+{
+    static const uint32_t colors[] = {
+        0xFF000000u, 0x00FF0000u, 0x0000FF00u,
+    };
+    Mask masks[3] = {{0}};
+    int left[3] = {0}, right[3] = {0};
+    int err = 0;
+    bool ok = true;
+    for (int i = 0; i < 3; i++) {
+        if (!err)
+            err = render_mask_color(text, colors[i], &masks[i]);
+        ok = ok && !err && furi_top_bounds(&masks[i], &left[i], &right[i]);
+    }
+    ok = ok && right[0] <= left[1] && right[1] <= left[2];
+    if (!ok)
+        fprintf(stderr,
+                "expected separated colored furigana: err=%d "
+                "red=[%d,%d) green=[%d,%d) blue=[%d,%d): `%s`\n",
+                err, left[0], right[0], left[1], right[1],
+                left[2], right[2], text);
+    for (int i = 0; i < 3; i++)
+        free_mask(&masks[i]);
+    return ok ? 0 : 1;
 }
 
 static int expect_same(const char *a, const char *b)
@@ -1329,6 +1452,70 @@ int main(void)
                         "{\\furistyle2}<A|BBBB>");
     fail |= expect_different("{\\furistyle0}<A|BBBB> {\\furistyle2}<A|BBBB>",
                              "{\\furistyle0}<A|BBBB> <A|BBBB>");
+
+    /* Keep ruby and base in separate vertical bands for width assertions.
+     * Latin stand-ins make the geometry independent of system CJK fonts. */
+    const char *layout_prefix =
+        "{\\an7\\pos(20,70)\\bord0\\furipos(0,20)}";
+    char one_short[128], one_two[128], one_three[128];
+    char surrounded_short[128], surrounded_long[128];
+    char adjacent_short[128], adjacent_clear[128];
+    char overlap_short[128], overlap_long[128], overlap_single[128];
+    char chain_short[128], chain_long0[128], chain_long1[128];
+    char chain_colored[256];
+    char fit_short[128], fit_long[128];
+    snprintf(one_short, sizeof(one_short), "%sLH<A|I>RH", layout_prefix);
+    snprintf(one_two, sizeof(one_two), "%sLH<A|WW>RH", layout_prefix);
+    snprintf(one_three, sizeof(one_three), "%sLH<A|WWW>RH", layout_prefix);
+    snprintf(surrounded_short, sizeof(surrounded_short),
+             "%sABC<A|I>DEF", layout_prefix);
+    snprintf(surrounded_long, sizeof(surrounded_long),
+             "%sABC<A|WWW>DEF", layout_prefix);
+    snprintf(adjacent_short, sizeof(adjacent_short),
+             "%sLH<WW|I><WW|I>RH", layout_prefix);
+    snprintf(adjacent_clear, sizeof(adjacent_clear),
+             "%sLH<WW|l><WW|l>RH", layout_prefix);
+    snprintf(overlap_short, sizeof(overlap_short),
+             "%sLH<A|I><B|I>RH", layout_prefix);
+    snprintf(overlap_long, sizeof(overlap_long),
+             "%sLH<A|WWWW><B|MMMM>RH", layout_prefix);
+    snprintf(overlap_single, sizeof(overlap_single),
+             "%s<A|WWWW>", layout_prefix);
+    snprintf(chain_short, sizeof(chain_short),
+             "%sLH<A|I><B|I><C|I>RH", layout_prefix);
+    snprintf(chain_long0, sizeof(chain_long0),
+             "%s{\\furistyle0}LH<A|WWW><B|MMM><C|WWW>RH",
+             layout_prefix);
+    snprintf(chain_long1, sizeof(chain_long1),
+             "%s{\\furistyle1}LH<A|WWW><B|MMM><C|WWW>RH",
+             layout_prefix);
+    snprintf(chain_colored, sizeof(chain_colored),
+             "%s{\\furistyle0}LH{\\c&H0000FF&}<A|WWW>"
+             "{\\c&H00FF00&}<B|MMM>{\\c&HFF0000&}<C|WWW>RH",
+             layout_prefix);
+    snprintf(fit_short, sizeof(fit_short),
+             "%s{\\furistyle2}LH<A|I>RH", layout_prefix);
+    snprintf(fit_long, sizeof(fit_long),
+             "%s{\\furistyle2}LH<A|WWWW>RH", layout_prefix);
+
+    // Cases A/B: two- and three-glyph ruby keep a one-glyph base advance.
+    fail |= expect_same_base_span(one_short, one_two);
+    fail |= expect_same_base_span(one_short, one_three);
+    // Case C: adjacent ruby whose ink is already separate adds no spacing.
+    fail |= expect_same_base_span(adjacent_short, adjacent_clear);
+    // Case D: actual ruby/ruby overlap adds less than a full ruby width.
+    fail |= expect_overlap_spacing_bounded(
+        overlap_short, overlap_long, overlap_single);
+    // Case E: ordinary neighboring text does not reserve ruby overhang.
+    fail |= expect_same_base_span(surrounded_short, surrounded_long);
+    // Case F: a collision chain converges identically for styles 0 and 1.
+    fail |= expect_same(chain_long0, chain_long1);
+    fail |= expect_overlap_spacing_bounded(
+        chain_short, chain_long0, overlap_single);
+    fail |= expect_colored_furi_separate(chain_colored);
+    // Case G: style 2 still fits long ruby without changing base advance.
+    fail |= expect_same_base_span(fit_short, fit_long);
+
     fail |= expect_same(
         "\xE3\x82\x82\xE3\x81\x86<\xE4\xB8\x80|test>"
         "\xE4\xBA\xBA\xE3\x81\x98\xE3\x82\x83\xE3\x81\xAA"

@@ -107,16 +107,16 @@ same manual placement. A parameterless `\furipos` clears the manual offset and
 returns subsequent groups to the active automatic-placement setting.
 
 `\furistyle<N>` controls horizontal group layout. The default is
-`\furistyle0`. `\furistyle0` and `\furistyle1` both use Aegisub-style group
-spacing: the group advance is the larger of the shaped base width and furi
-width (including visible furi overhang), and both base and furi are centered
-by their rendered glyph bounds inside that reservation. This retains the
-font's shaped advances, side bearings, and inter-glyph spacing while keeping a
-short base glyph visually under the middle of a longer ruby. After
-shaping, overlapping adjacent ruby groups add space before the right-hand base
-group, then use normal line alignment. `\furistyle2` uses manga-style
-X-fit: furi wider than its base is horizontally shrunk to the base width, while
-shorter furi keeps its normal width. The base advance is kept unchanged.
+`\furistyle0`. `\furistyle0` and `\furistyle1` preserve the base text's normal
+shaped advance. Furigana is centered over the base by rendered glyph bounds
+and may freely overhang it horizontally; being wider than the base does not by
+itself add main-line spacing. Ordinary non-furigana text does not participate
+in ruby collision avoidance. If separately annotated furigana groups visually
+overlap, Mangetsu measures their positioned ink bounds and inserts only the
+additional space required between their base groups, repeating layout until
+the overlap is resolved. `\furistyle2` retains its manga-style X-fit: furigana
+wider than its base is horizontally shrunk to the base width, while shorter
+furigana keeps its normal width. The base advance is kept unchanged.
 
 ## Examples
 
@@ -140,5 +140,5 @@ After visual lines are resolved, furigana overhang above or below its base text
 is included in that line's vertical metrics. Multiple furigana groups on the
 same line use the maximum above and below extent, not the sum. Furigana may
 overhang its base text horizontally and is included in rendered event bounds,
-while Aegisub-style groups can increase the line advance to fit their shaped
-ruby or to prevent adjacent ruby from overlapping.
+while styles 0 and 1 increase line advance only as needed to prevent separate
+furigana groups from visually overlapping.

@@ -6035,56 +6035,23 @@ static void scale_furi_group_x(FuriGroup *group, double scale)
     }
 }
 
-static void shift_furi_base(RenderContext *state, FuriGroup *group,
-                            int32_t shift)
-{
-    TextInfo *text_info = &state->text_info;
-    if (!shift)
-        return;
-
-    for (int i = 0; i < group->base_len; i++) {
-        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
-        for (GlyphInfo *info = root; info; info = info->next)
-            info->offset.x += shift;
-    }
-}
-
 static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
 {
-    TextInfo *text_info = &state->text_info;
     int32_t base_width = furi_base_advance_width(state, group);
-    // Preserve the shaped advance (and its font-provided spacing), while
-    // also reserving enough room for ink that overhangs its advance box.
-    int32_t furi_width = furi_text_reserved_width(group);
     group->base_width = base_width;
     group->layout_width = base_width;
     group->base_shift = 0;
 
-    if (group->style == 2) {
-        if (base_width > 0 && furi_width > base_width) {
-            double scale = (double) base_width / furi_width;
-            scale_furi_group_x(group, scale);
-        }
+    // Styles 0 and 1 keep the base's normal shaped advance.  Ruby may
+    // overhang ordinary text; only ruby/ruby overlap is resolved later.
+    if (group->style != 2)
         return;
+
+    int32_t furi_width = furi_text_reserved_width(group);
+    if (base_width > 0 && furi_width > base_width) {
+        double scale = (double) base_width / furi_width;
+        scale_furi_group_x(group, scale);
     }
-
-    int32_t group_width = FFMAX(base_width, furi_width);
-    int32_t extra = group_width - base_width;
-    if (extra <= 0)
-        return;
-
-    int last = group->base_start + group->base_len - 1;
-    for (; last >= group->base_start; last--) {
-        if (!text_info->glyphs[last].skip)
-            break;
-    }
-    if (last < group->base_start)
-        return;
-
-    group->layout_width = group_width;
-    group->base_shift = extra / 2;
-    shift_furi_base(state, group, group->base_shift);
-    text_info->glyphs[last].cluster_advance.x += extra;
 }
 
 static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
@@ -6168,8 +6135,8 @@ static bool furi_text_metrics(FuriGroup *group, double *left,
 /*
  * Advances define the space a run occupies, but are not necessarily centred
  * on its visible ink.  This is particularly noticeable with narrow CJK
- * glyphs whose font bearings can be asymmetric.  Keep the advance-based
- * reservation above, then use these bounds for the final visual alignment.
+ * glyphs whose font bearings can be asymmetric.  Use these bounds for final
+ * visual alignment without changing the base run's shaped advance.
  */
 static bool furi_base_visual_x_bounds(RenderContext *state, FuriGroup *group,
                                       double *left, double *right)
@@ -6292,11 +6259,11 @@ static bool add_furi_spacing_before_group(RenderContext *state,
 }
 
 /*
- * Aegisub-style groups reserve their shaped advance individually. Font
- * bearings and outlines can still make adjacent ruby ink overlap, though.
- * Add space before the right-hand base group and redo the ordinary line
- * layout, so existing font spacing is preserved and line alignment remains
- * correct. \\furistyle2 deliberately opts into compact manga-style layout.
+ * Styles 0 and 1 initially keep each base run's normal shaped advance.  If
+ * positioned ruby ink overlaps, add exactly that overlap before the
+ * right-hand base group and redo the ordinary line layout.  Iterating keeps
+ * chains of groups stable while preserving existing font spacing and line
+ * alignment.  \\furistyle2 deliberately opts into compact manga-style layout.
  */
 static void resolve_furi_group_collisions(RenderContext *state)
 {
