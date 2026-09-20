@@ -36,6 +36,15 @@ override_annotations_unit = executable(
     link_with: libass_for_tools,
 )
 
+curved_text_unit = executable(
+    'curved_text_unit',
+    files('curved_text_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 relative_numbers_unit = executable(
     'relative_numbers_unit',
     files('relative_numbers_selftest.c'),
@@ -177,6 +186,7 @@ endif
 
 test('distortion-warp', distort_unit)
 test('distortion-render', distort_render_unit)
+test('curved-text-render', curved_text_unit, timeout: 120)
 test('relative-numbers', relative_numbers_unit, timeout: 120)
 test('override-annotations', override_annotations_unit, timeout: 120)
 test('clip-regression', clip_unit)

@@ -3083,6 +3083,10 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->distort = (ASS_DistortParams) {
         .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
     };
+    state->curved_path_outline = NULL;
+    state->curved_text_align = 0;
+    state->curved_text_x = 0.0;
+    state->curved_text_y = 0.0;
     state->line_border_style_set = false;
     state->line_border_style = 0;
 
@@ -3530,6 +3534,7 @@ static void free_render_context(RenderContext *state)
     state->family.len = 0;
     state->clip_drawing_text.str = NULL;
     state->clip_drawing_text.len = 0;
+    state->curved_path_outline = NULL;
     state->text_info.length = 0;
     state->column_event = false;
     state->column_active = false;
@@ -3641,6 +3646,13 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
             const char *text = outline_key->u.drawing.text.str;  // always zero-terminated
             if (!ass_drawing_parse(&v->outline[0], &bbox, text, render_priv->library))
                 return 1;
+            if (!v->outline[0].n_points || !v->outline[0].n_segments ||
+                    bbox.x_min > bbox.x_max || bbox.y_min > bbox.y_max ||
+                    (int64_t) bbox.x_max - bbox.x_min > INT_MAX ||
+                    (int64_t) bbox.y_max - bbox.y_min > INT_MAX) {
+                ass_outline_free(&v->outline[0]);
+                return 1;
+            }
 
             v->advance = bbox.x_max - bbox.x_min;
             v->asc = bbox.y_max - bbox.y_min;
@@ -3771,6 +3783,23 @@ static void calc_transform_matrix(RenderContext *state,
     double x1[3] = { 1, fax, info->shift.x + info->asc * fax };
     double y1[3] = { fay, 1, info->shift.y };
     double z1[3] = { 0, 0, z_shift };
+
+    /* Curved text rotates each shaped cluster in its own local frame.  Keep
+     * the cluster's already-positioned translation fixed here; the ordinary
+     * frz/frx/fry pass below still rotates the complete event around \org or
+     * the ASS anchor. */
+    if (info->curved_angle != 0.0) {
+        double angle = ASS_PI / 180 * info->curved_angle;
+        double local_s = -sin(angle), local_c = cos(angle);
+        for (int i = 0; i < 3; i++) {
+            double tx = i == 2 ? info->shift.x : 0.0;
+            double ty = i == 2 ? info->shift.y : 0.0;
+            double lx = x1[i] - tx;
+            double ly = y1[i] - ty;
+            x1[i] = lx * local_c - ly * local_s + tx;
+            y1[i] = lx * local_s + ly * local_c + ty;
+        }
+    }
 
     double x2[3], y2[3], z2[3];
     for (int i = 0; i < 3; i++) {
@@ -7150,11 +7179,29 @@ static void calculate_rotation_params_list(RenderContext *state,
         while (info) {
             double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
             double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
-            info->shift.x = info->pos.x + double_to_d6(device_x + jitter_dx - center.x +
+            if (info->curved_angle == 0.0) {
+                /* Preserve the ordinary-rendering expression exactly. */
+                info->shift.x = info->pos.x + double_to_d6(
+                    device_x + jitter_dx - center.x +
                     info->shadow_x * state->border_scale_x /
                     render_priv->par_scale_x);
-            info->shift.y = info->pos.y + double_to_d6(device_y + jitter_dy - center.y +
+                info->shift.y = info->pos.y + double_to_d6(
+                    device_y + jitter_dy - center.y +
                     info->shadow_y * state->border_scale_y);
+            } else {
+                double shadow_x = info->shadow_x * state->border_scale_x /
+                                  render_priv->par_scale_x;
+                double shadow_y = info->shadow_y * state->border_scale_y;
+                double angle = -info->curved_angle * ASS_PI / 180.0;
+                double c = cos(angle), s = sin(angle);
+                double x = shadow_x;
+                shadow_x = x * c - shadow_y * s;
+                shadow_y = x * s + shadow_y * c;
+                info->shift.x = info->pos.x + double_to_d6(
+                    device_x + jitter_dx - center.x + shadow_x);
+                info->shift.y = info->pos.y + double_to_d6(
+                    device_y + jitter_dy - center.y + shadow_y);
+            }
             info = info->next;
         }
     }
@@ -7471,6 +7518,181 @@ static void compute_mangetsu_gradient_rects(RenderContext *state)
                 update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
         }
         layer->rect = rect;
+    }
+}
+
+static bool curved_d6_value(double value)
+{
+    return isfinite(value) && value >= INT32_MIN / 64.0 &&
+           value <= INT32_MAX / 64.0;
+}
+
+static bool transform_curved_cluster(GlyphInfo *root,
+                                     ASS_DVector point,
+                                     ASS_DVector tangent,
+                                     bool apply)
+{
+    if (!root)
+        return false;
+
+    double length = hypot(tangent.x, tangent.y);
+    if (!(length > 0) || !isfinite(length))
+        return false;
+    double c = tangent.x / length;
+    double s = tangent.y / length;
+    double baseline_x = d6_to_double(root->pos.x) -
+                        d6_to_double(root->offset.x);
+    double baseline_y = d6_to_double(root->pos.y) -
+                        d6_to_double(root->offset.y) -
+                        d6_to_double(root->vshift);
+    double ass_angle = -atan2(s, c) * 180.0 / ASS_PI;
+
+    for (GlyphInfo *info = root; info; info = info->next) {
+        double local_x = d6_to_double(info->pos.x) - baseline_x;
+        double local_y = d6_to_double(info->pos.y) - baseline_y;
+        double advance_x = d6_to_double(info->advance.x);
+        double advance_y = d6_to_double(info->advance.y);
+        double x = point.x + local_x * c - local_y * s;
+        double y = point.y + local_x * s + local_y * c;
+        double ax = advance_x * c - advance_y * s;
+        double ay = advance_x * s + advance_y * c;
+        if (!curved_d6_value(x) || !curved_d6_value(y) ||
+                !curved_d6_value(ax) || !curved_d6_value(ay))
+            return false;
+        if (apply) {
+            info->pos.x = double_to_d6(x);
+            info->pos.y = double_to_d6(y);
+            info->curved_angle = ass_angle;
+            info->advance.x = double_to_d6(ax);
+            info->advance.y = double_to_d6(ay);
+        }
+    }
+    return true;
+}
+
+bool ass_curved_text_transform_cluster(GlyphInfo *root,
+                                       ASS_DVector point,
+                                       ASS_DVector tangent)
+{
+    return transform_curved_cluster(root, point, tangent, false) &&
+           transform_curved_cluster(root, point, tangent, true);
+}
+
+static bool apply_curved_text(RenderContext *state)
+{
+    TextInfo *text_info = &state->text_info;
+    if (!state->curved_path_outline || text_info->n_lines != 1 ||
+            text_info->n_furi_groups || state->column_event ||
+            (state->evt_type & (EVENT_HSCROLL | EVENT_VSCROLL)))
+        return false;
+
+    double object_scale = state->object_scale;
+    ASS_CurvedPath path;
+    if (!ass_curved_path_flatten(&path,
+            &state->curved_path_outline->outline[0],
+            x2scr_offset(state, object_scale),
+            y2scr_offset(state, object_scale)))
+        return false;
+
+    FriBidiStrIndex *cmap = ass_shaper_get_reorder_map(state->shaper);
+    if (!cmap) {
+        ass_curved_path_free(&path);
+        return false;
+    }
+
+    double text_advance = 0.0;
+    for (int i = 0; i < text_info->length; i++) {
+        GlyphInfo *root = text_info->glyphs + cmap[i];
+        if (!root->skip && root->symbol != '\n')
+            text_advance += d6_to_double(root->cluster_advance.x);
+    }
+    if (!isfinite(text_advance)) {
+        ass_curved_path_free(&path);
+        return false;
+    }
+
+    int alignment = state->curved_text_align;
+    if (!alignment)
+        alignment = state->alignment & 3;
+    double cursor;
+    double normal_offset =
+        y2scr_offset(state, state->curved_text_y * object_scale);
+
+    /* Validate every transformed cluster before mutating any of them.  This
+     * keeps pathological coordinates on the normal-rendering fallback path. */
+    for (int pass = 0; pass < 2; pass++) {
+        cursor = alignment == HALIGN_CENTER ?
+            (path.length - text_advance) * 0.5 :
+            alignment == HALIGN_RIGHT ? path.length - text_advance : 0.0;
+        cursor += x2scr_offset(state, state->curved_text_x * object_scale);
+        for (int i = 0; i < text_info->length; i++) {
+            GlyphInfo *root = text_info->glyphs + cmap[i];
+            if (root->skip || root->symbol == '\n')
+                continue;
+
+            ASS_DVector point, tangent;
+            double advance = d6_to_double(root->cluster_advance.x);
+            if (!ass_curved_path_sample(&path, cursor, &point, &tangent)) {
+                ass_curved_path_free(&path);
+                return false;
+            }
+            point.x += -tangent.y * normal_offset;
+            point.y +=  tangent.x * normal_offset;
+            double advance_x = advance * tangent.x;
+            double advance_y = advance * tangent.y;
+            if (!transform_curved_cluster(root, point, tangent, pass != 0) ||
+                    !curved_d6_value(advance_x) ||
+                    !curved_d6_value(advance_y)) {
+                ass_curved_path_free(&path);
+                return false;
+            }
+            if (pass) {
+                root->cluster_advance.x = double_to_d6(advance_x);
+                root->cluster_advance.y = double_to_d6(advance_y);
+            }
+            cursor += advance;
+        }
+    }
+
+    ass_curved_path_free(&path);
+    return true;
+}
+
+static void compute_curved_string_bbox(TextInfo *text_info, ASS_DRect *bbox)
+{
+    bool seen = false;
+    bbox->x_min = bbox->y_min = 0.0;
+    bbox->x_max = bbox->y_max = 0.0;
+    for (int i = 0; i < text_info->length; i++) {
+        GlyphInfo *root = text_info->glyphs + i;
+        if (root->skip)
+            continue;
+        for (GlyphInfo *info = root; info; info = info->next) {
+            double angle = -info->curved_angle * ASS_PI / 180.0;
+            double c = cos(angle), s = sin(angle);
+            double px = d6_to_double(info->pos.x);
+            double py = d6_to_double(info->pos.y);
+            double xs[2] = {d6_to_double(info->bbox.x_min),
+                            d6_to_double(info->bbox.x_max)};
+            double ys[2] = {d6_to_double(info->bbox.y_min),
+                            d6_to_double(info->bbox.y_max)};
+            for (int xi = 0; xi < 2; xi++) {
+                for (int yi = 0; yi < 2; yi++) {
+                    double x = px + xs[xi] * c - ys[yi] * s;
+                    double y = py + xs[xi] * s + ys[yi] * c;
+                    if (!seen) {
+                        bbox->x_min = bbox->x_max = x;
+                        bbox->y_min = bbox->y_max = y;
+                        seen = true;
+                    } else {
+                        bbox->x_min = FFMIN(bbox->x_min, x);
+                        bbox->x_max = FFMAX(bbox->x_max, x);
+                        bbox->y_min = FFMIN(bbox->y_min, y);
+                        bbox->y_max = FFMAX(bbox->y_max, y);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -9256,9 +9478,21 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     apply_baseline_shear(state);
 
+    bool curved_text = apply_curved_text(state);
+    if (curved_text) {
+        /* The path is already local to the ASS positioning anchor. */
+        if (rotate_baseline)
+            origin_x = origin_y = 0.0;
+        compute_curved_string_bbox(text_info, &bbox);
+        bbox_origin = bbox;
+    }
+
     if (rotate_baseline) {
         apply_baseline_rotation(state, origin_x, origin_y);
-        compute_string_bbox(text_info, &bbox);
+        if (curved_text)
+            compute_curved_string_bbox(text_info, &bbox);
+        else
+            compute_string_bbox(text_info, &bbox);
     }
     if (text_info->n_furi_groups)
         position_furi_groups(state);
@@ -9273,9 +9507,39 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     double device_x = 0;
     double device_y = 0;
 
-    // handle positioned events first: an event can be both positioned and
-    // scrolling, and the scrolling effect overrides the position on one axis
-    if (state->evt_type & EVENT_POSITIONED) {
+    if (curved_text) {
+        if (state->evt_type & EVENT_POSITIONED) {
+            object_anchor.x = x2scr_pos(render_priv, state->pos_x);
+            object_anchor.y = y2scr_pos(render_priv, state->pos_y);
+        } else {
+            int halign = state->alignment & 3;
+            if (halign == HALIGN_LEFT)
+                object_anchor.x = x2scr_left(state, MarginL);
+            else if (halign == HALIGN_RIGHT)
+                object_anchor.x = x2scr_right(state,
+                    render_priv->track->PlayResX - MarginR);
+            else
+                object_anchor.x = (x2scr_left(state, MarginL) +
+                    x2scr_right(state,
+                        render_priv->track->PlayResX - MarginR)) * 0.5;
+
+            if (valign == VALIGN_TOP) {
+                object_anchor.y = y2scr_top(state, MarginV);
+            } else if (valign == VALIGN_CENTER) {
+                object_anchor.y = y2scr(state,
+                    render_priv->track->PlayResY / 2.0);
+            } else {
+                double line_pos = state->explicit ?
+                    0 : render_priv->settings.line_position;
+                double scr_bottom = y2scr_sub(state,
+                    render_priv->track->PlayResY - MarginV);
+                double scr_top = y2scr_top(state, 0);
+                object_anchor.y = scr_bottom +
+                    (scr_top - scr_bottom) * line_pos / 100.0;
+            }
+        }
+    } else if (state->evt_type & EVENT_POSITIONED) {
+        // A non-curved event retains the ordinary bbox-relative placement.
         double base_x = 0;
         double base_y = 0;
         get_base_point(bbox_for_position, state->alignment, &base_x, &base_y);
@@ -9286,7 +9550,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     }
 
     // x coordinate
-    if (state->evt_type & EVENT_HSCROLL) {
+    if (!curved_text && (state->evt_type & EVENT_HSCROLL)) {
         if (state->scroll_direction == SCROLL_RL)
             device_x =
                 x2scr_pos(render_priv,
@@ -9296,12 +9560,12 @@ ass_render_event(RenderContext *state, ASS_Event *event,
             device_x =
                 x2scr_pos(render_priv, state->scroll_shift) -
                 (bbox_for_position->x_max - bbox_for_position->x_min);
-    } else if (!(state->evt_type & EVENT_POSITIONED)) {
+    } else if (!curved_text && !(state->evt_type & EVENT_POSITIONED)) {
         device_x = x2scr_left(state, MarginL);
     }
 
     // y coordinate
-    if (state->evt_type & EVENT_VSCROLL) {
+    if (!curved_text && (state->evt_type & EVENT_VSCROLL)) {
         if (state->scroll_direction == SCROLL_TB)
             device_y =
                 y2scr(state,
@@ -9314,7 +9578,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
                       state->scroll_y1 -
                       state->scroll_shift) -
                 bbox_for_position->y_min;
-    } else if (!(state->evt_type & EVENT_POSITIONED)) {
+    } else if (!curved_text && !(state->evt_type & EVENT_POSITIONED)) {
         if (valign == VALIGN_TOP) {     // toptitle
             device_y =
                 y2scr_top(state,
@@ -9352,12 +9616,14 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     double object_base_y = 0.0;
     double text_base_x = 0.0;
     double text_base_y = 0.0;
-    get_base_point(bbox_for_position, state->alignment,
-                   &object_base_x, &object_base_y);
-    get_base_point(bbox_for_position, state->text_alignment,
-                   &text_base_x, &text_base_y);
-    object_anchor.x = device_x + object_base_x;
-    object_anchor.y = device_y + object_base_y;
+    if (!curved_text) {
+        get_base_point(bbox_for_position, state->alignment,
+                       &object_base_x, &object_base_y);
+        get_base_point(bbox_for_position, state->text_alignment,
+                       &text_base_x, &text_base_y);
+        object_anchor.x = device_x + object_base_x;
+        object_anchor.y = device_y + object_base_y;
+    }
     if (automatic_position) {
         // Layout has now resolved Style margins, alignment and glyph metrics.
         // Convert that anchor back to script units before applying operands.
@@ -9375,8 +9641,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         state->evt_type |= EVENT_POSITIONED;
         state->detect_collisions = 0;
     }
-    device_x = object_anchor.x - text_base_x;
-    device_y = object_anchor.y - text_base_y;
+    device_x = object_anchor.x - (curved_text ? 0.0 : text_base_x);
+    device_y = object_anchor.y - (curved_text ? 0.0 : text_base_y);
 
     update_glyph_jitter_offsets(state);
 
@@ -9435,7 +9701,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the
     // frame, so negative values for top and left may occur
-    if (text_info->n_furi_groups) {
+    if (curved_text || text_info->n_furi_groups) {
         event_images->top = device_y + render_bbox.y_min - text_info->border_top;
         event_images->height =
             render_bbox.y_max - render_bbox.y_min +

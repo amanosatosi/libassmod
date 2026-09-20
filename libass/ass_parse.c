@@ -31,6 +31,7 @@
 #include "ass_string.h"
 
 #define MAX_VALID_NARGS 10
+#define CURVED_TEXT_MAX_PATH_BYTES 65536
 #define MAX_BE 127
 #define NBSP 0xa0   // unicode non-breaking space character
 
@@ -268,6 +269,28 @@ static inline int32_t dtoi32(double val)
 static double calc_anim(double new, double old, double pwr)
 {
    return (1 - pwr) * old + new * pwr;
+}
+
+static void apply_curved_text_path(RenderContext *state, struct arg arg)
+{
+    if (state->curved_path_outline || arg.end <= arg.start)
+        return;
+    size_t length = arg.end - arg.start;
+    if (length > CURVED_TEXT_MAX_PATH_BYTES)
+        return;
+
+    OutlineHashKey key = {0};
+    key.type = OUTLINE_DRAWING;
+    key.u.drawing.text = (ASS_StringView) {
+        .str = arg.start,
+        .len = arg.end - arg.start,
+    };
+    OutlineHashValue *outline = ass_cache_get(
+        state->renderer->cache.outline_cache, &key, state->renderer);
+    if (!outline || !outline->valid ||
+            !ass_curved_outline_usable(&outline->outline[0]))
+        return;
+    state->curved_path_outline = outline;
 }
 
 static int32_t numeric_argtoi32(struct arg arg, double current, NumericDomain domain)
@@ -3057,6 +3080,32 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             push_arg(args, &nargs, p + strlen("3sgrd"), name_end);
             apply_secondary_outline_gradient(state, name_end, q, args, nargs,
                                              pwr, nested);
+        } else if (tag("ctan")) {
+            if (!nested) {
+                int32_t value;
+                if (nargs == 1 && parse_int32_arg_strict(*args, &value) &&
+                        value >= 1 && value <= 3)
+                    state->curved_text_align = value;
+                else
+                    state->curved_text_align = 0;
+            }
+        } else if (tag("ctx")) {
+            double target;
+            if (nargs == 1 && numeric_arg_strict(*args, state->curved_text_x,
+                                                  NUM_SIGNED, &target))
+                state->curved_text_x = calc_anim(target,
+                                                  state->curved_text_x, pwr);
+        } else if (tag("cty")) {
+            double target;
+            if (nargs == 1 && numeric_arg_strict(*args, state->curved_text_y,
+                                                  NUM_SIGNED, &target))
+                state->curved_text_y = calc_anim(target,
+                                                  state->curved_text_y, pwr);
+        } else if (complex_tag("ct")) {
+            /* Path morphing is deliberately not part of v1. */
+            if (!nested && p == name_end && *name_end == '(' &&
+                    !has_backslash_arg && nargs == 1)
+                apply_curved_text_path(state, args[0]);
         } else if (tag("colsp")) {
             if (nargs) {
                 const TextInfo *info = &state->text_info;

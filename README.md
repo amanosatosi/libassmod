@@ -118,6 +118,11 @@ For `\ortho` semantics and examples, see:
   Corner-pin distortion; optional P0 (top-left) comes last for compatibility.
   See [syntax and animation](docs/distort-tag.md).
 
+- `\ct(path)`, `\ctan1` / `\ctan2` / `\ctan3`, `\ctx`, `\cty`
+  Text-on-path layout applied to complete HarfBuzz shaping clusters, with
+  arc-length spacing and animated along-path/normal offsets. See
+  [curved text and complex-script shaping](docs/curved-text.md).
+
 - `\rnd<value>`  
 - `\rndx<value>`  
 - `\rndy<value>`  

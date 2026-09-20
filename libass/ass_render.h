@@ -37,6 +37,7 @@
 #include "ass_fontselect.h"
 #include "ass_library.h"
 #include "ass_drawing.h"
+#include "ass_curved_text.h"
 #include "ass_distort.h"
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
@@ -310,6 +311,7 @@ typedef struct glyph_info {
     double shadow_y;
     double frx, fry, frz;       // rotation
     double frs;                 // baseline rotation
+    double curved_angle;        // local curved-baseline rotation, degrees
     double z;                   // 3D translation along camera Z
     bool ortho;                 // orthographic projection toggle
     double fax, fay;            // text shearing
@@ -364,6 +366,13 @@ typedef struct glyph_info {
     // next glyph in this cluster
     struct glyph_info *next;
 } GlyphInfo;
+
+/* Internal testable primitive: apply one path frame to the complete shaped
+ * cluster rooted at root.  GlyphInfo::next members are never sampled or
+ * advanced independently. */
+bool ass_curved_text_transform_cluster(GlyphInfo *root,
+                                       ASS_DVector point,
+                                       ASS_DVector tangent);
 
 /* Release renderer-owned dynamic resources embedded in a glyph. The shaper
  * uses this before freeing temporary chain nodes, and renderer teardown uses
@@ -697,6 +706,10 @@ struct render_context {
     int karaoke_clip_x1;
     bool distort_enabled;
     ASS_DistortParams distort;
+    OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
+    int curved_text_align;                 // 0 derives from \an, 1..3 explicit
+    double curved_text_x;                  // along-path offset, script units
+    double curved_text_y;                  // normal offset, script units
 
     enum {
         SCROLL_LR,              // left-to-right
