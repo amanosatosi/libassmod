@@ -36,6 +36,20 @@ int main(void)
     ass_curved_path_free(&path);
     ass_outline_free(&outline);
 
+    GlyphInfo horizontal = {
+        .pos = {640, 1280},
+        .offset = {64, 128},
+        .advance = {192, 64},
+    };
+    if (!ass_curved_text_transform_cluster(&horizontal,
+            (ASS_DVector) {100, 200}, (ASS_DVector) {1, 0}) ||
+            horizontal.pos.x != 6464 || horizontal.pos.y != 12928 ||
+            horizontal.advance.x != 192 || horizontal.advance.y != 64 ||
+            fabs(horizontal.curved_angle) > 1e-9) {
+        fprintf(stderr, "horizontal curved path changed glyph orientation\n");
+        return 1;
+    }
+
     GlyphInfo root = {0};
     root.next = calloc(1, sizeof(*root.next));
     if (!root.next) {
