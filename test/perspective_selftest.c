@@ -144,7 +144,7 @@ int main(void)
     const char *identity = "\\perspective(0,0,160,0,160,96,0,96)";
     const char *trapezoid = "\\perspective(30,0,130,0,180,96,-20,96)";
     const char *side = "\\perspective(0,10,150,0,130,96,20,86)";
-    const char *extreme = "\\perspective(79.9,0,80.1,.001,1000,96,-900,96)";
+    const char *extreme = "\\perspective(79.9,0,80.1,0,1000,96,-900,96)";
     bool ok = compare(lib, renderer, identity, "", 0, true,
                       "identity/no-perspective regression");
     ok &= compare(lib, renderer, trapezoid, identity, 0, false,

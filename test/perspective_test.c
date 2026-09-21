@@ -86,7 +86,7 @@ static void test_extreme_and_invalid(void)
 {
     ASS_Homography h;
     ASS_PerspectiveParams extreme = {.corner = {
-        {49.999, 0}, {50.001, 0.001}, {1000, 100}, {-900, 100},
+        {49.999, 0}, {50.001, 0}, {1000, 100}, {-900, 100},
     }};
     assert(ass_perspective_solve(&extreme, 0, 0, 100, 100, &h));
     ASS_DVector center = map(&h, 50, 50);

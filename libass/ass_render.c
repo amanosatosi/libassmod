@@ -5367,11 +5367,13 @@ static void prepare_perspective(RenderContext *state,
 
     ASS_Renderer *render_priv = state->renderer;
     double left = render_priv->settings.left_margin;
-    double anchor_x = (object_anchor->x - left) * render_priv->par_scale_x + left;
-    double anchor_y = object_anchor->y;
-    double scale_x = render_priv->frame_content_width /
+    /* calc_transform_matrix() and outline points use 26.6 coordinates. */
+    double anchor_x = 64 * ((object_anchor->x - left) *
+                            render_priv->par_scale_x + left);
+    double anchor_y = 64 * object_anchor->y;
+    double scale_x = 64 * render_priv->frame_content_width /
                      (double) render_priv->track->PlayResX;
-    double scale_y = render_priv->frame_content_height /
+    double scale_y = 64 * render_priv->frame_content_height /
                      (double) render_priv->track->PlayResY;
     for (int i = 0; i < count; i++) {
         PerspectiveGroup *group = &groups[i];
