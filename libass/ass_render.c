@@ -609,6 +609,17 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         return NULL;
     int rgba_stride = img->stride;
     uint8_t *rgba = img->rgba;
+    uint8_t *blend_rgb = NULL;
+    int blend_stride = 0;
+    if (info->blend_mode > ASS_BLEND_NORMAL &&
+            info->blend_mode <= ASS_BLEND_SUBSTRACT_INVERSE &&
+            ass_rgba_image_alloc_blend_rgb(img, info->blend_mode)) {
+        ASS_ImageRGBAPriv *rgba_priv = ass_rgba_image_private(
+            img, "render blend source");
+        blend_rgb = rgba_priv->blend_rgb;
+        blend_stride = rgba_priv->blend_stride;
+        memset(blend_rgb, 0, rgba_priv->blend_alloc_size);
+    }
 
     if (full_w <= 0)
         full_w = w;
@@ -812,6 +823,13 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 row[4 * x + 1] = (uint8_t) ((sg * A + 127) / 255);
                 row[4 * x + 2] = (uint8_t) ((sb * A + 127) / 255);
                 row[4 * x + 3] = A;
+                if (blend_rgb) {
+                    uint8_t *blend = blend_rgb + (size_t) y * blend_stride +
+                        (size_t) x * 4;
+                    blend[0] = sr;
+                    blend[1] = sg;
+                    blend[2] = sb;
+                }
                 continue;
             }
             int32_t uf = 0;
@@ -848,6 +866,13 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             row[4 * x + 1] = (uint8_t) ((_g(color) * A) / 255);
             row[4 * x + 2] = (uint8_t) ((_b(color) * A) / 255);
             row[4 * x + 3] = A;
+            if (blend_rgb) {
+                uint8_t *blend = blend_rgb + (size_t) y * blend_stride +
+                    (size_t) x * 4;
+                blend[0] = _r(color);
+                blend[1] = _g(color);
+                blend[2] = _b(color);
+            }
         }
     }
 
@@ -2302,6 +2327,8 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
             }
             cur->dst_x = (int) left;
             cur->dst_y = (int) top;
+            ass_rgba_image_crop_blend_rgb(cur, aleft, atop,
+                                          wclip, hclip, ns);
             ass_rgba_image_replace_buffer(cur, nbuffer, alloc_size,
                                           wclip, hclip, ns);
         }
@@ -2641,6 +2668,7 @@ static void capture_effective_default_state(RenderContext *state)
     style->gradient = state->gradient;
     style->mangetsu_gradient = state->mangetsu_gradient;
     style->image_fill = state->image_fill;
+    style->blend_mode = state->blend_mode;
     memcpy(style->border_layers, state->border_layers,
            sizeof(style->border_layers));
 }
@@ -2996,6 +3024,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->jitter = ass_jitter_default_state();
     state->z = 0.0;
     state->ortho = false;
+    state->blend_mode = ASS_BLEND_NORMAL;
     state->rnd_x = 0.0;
     state->rnd_y = 0.0;
     state->rnd_z = 0.0;
@@ -3252,6 +3281,7 @@ static void capture_column_base_style(RenderContext *state)
     style->gradient = state->gradient;
     style->mangetsu_gradient = state->mangetsu_gradient;
     style->image_fill = state->image_fill;
+    style->blend_mode = state->blend_mode;
     memcpy(style->border_layers, state->border_layers,
            sizeof(style->border_layers));
 }
@@ -3269,6 +3299,7 @@ static void apply_column_base_style(RenderContext *state)
     state->gradient = style->gradient;
     state->mangetsu_gradient = style->mangetsu_gradient;
     state->image_fill = style->image_fill;
+    state->blend_mode = style->blend_mode;
     state->decoration_color_set = style->decoration_color_set;
     state->decoration_alpha_set = style->decoration_alpha_set;
     state->decoration_color = style->decoration_color;
@@ -4897,6 +4928,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
             !secondary_outline_equal(&last->secondary_outline,
                                      &info->secondary_outline) ||
             !image_fill_state_equal(&last->image_fill, &info->image_fill) ||
+            last->blend_mode != info->blend_mode ||
             last->be != info->be ||
             last->blur_x != info->blur_x ||
             last->blur_y != info->blur_y ||
@@ -5065,6 +5097,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->mangetsu_gradient = state->mangetsu_gradient;
     info->secondary_outline = state->secondary_outline;
     info->image_fill = state->image_fill;
+    info->blend_mode = state->blend_mode;
     info->line = 0;
 
     if (main_text && state->column_event && state->column_active) {
@@ -7976,6 +8009,8 @@ static bool text_needs_rgba(const TextInfo *text_info)
             has_bitmap = info->bm_border[layer] != NULL;
         if (!info->bitmap_count || !has_bitmap)
             continue;
+        if (info->blend_mode != ASS_BLEND_NORMAL)
+            return true;
         if (info->fade_color.active && info->fade_color.amount > 0)
             return true;
         for (int layer = 0; layer < 4; layer++) {
@@ -8110,6 +8145,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info->mangetsu_gradient = info->mangetsu_gradient;
                 current_info->secondary_outline = info->secondary_outline;
                 current_info->image_fill = info->image_fill;
+                current_info->blend_mode = info->blend_mode;
                 memcpy(current_info->border_layers, info->border_layers,
                        sizeof(current_info->border_layers));
                 current_info->fade = info->fade;
@@ -8333,6 +8369,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     current_info->mangetsu_gradient = deco.mangetsu_gradient;
     current_info->secondary_outline = deco.secondary_outline;
     current_info->image_fill = deco.image_fill;
+    current_info->blend_mode = deco.blend_mode;
     memcpy(current_info->border_layers, deco.border_layers,
            sizeof(current_info->border_layers));
     current_info->fade = deco.fade;
@@ -9395,6 +9432,7 @@ static ASS_Image **append_bs4_bitmap(RenderContext *state, Bitmap *bitmap,
     CombinedBitmapInfo paint = {0};
     paint.base_c[0] = color;
     paint.c[0] = color;
+    paint.blend_mode = state->blend_mode;
     return render_glyph(state, &paint, bitmap, pos.x, pos.y, color, 0,
                         1000000, tail, type, NULL, 0, 0, rgba_tail);
 }

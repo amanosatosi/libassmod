@@ -16,7 +16,12 @@ AM_CFLAGS = -std=gnu99 -D_GNU_SOURCE -D_XPLATFORM_SOURCE
 EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
              docs/curved-text.md docs/perspective-tag.md \
              test/curved_text_selftest.c test/perspective_test.c \
-             test/perspective_selftest.c
+             test/perspective_selftest.c \
+             docs/blend-tag.md test/blend_selftest.c \
+             samples/blend-basic.ass samples/blend-alpha.ass \
+             samples/blend-components.ass samples/blend-order.ass \
+             samples/blend-img.ass samples/blend-reset.ass \
+             samples/blend-video.ass
 
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \

@@ -2753,6 +2753,12 @@ static void set_karaoke_boundary(GlyphInfo *glyphs, int start, int end,
     }
 }
 
+static inline bool arg_equals(struct arg arg, const char *value)
+{
+    size_t length = (size_t) (arg.end - arg.start);
+    return strlen(value) == length && !memcmp(arg.start, value, length);
+}
+
 static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
                                   int start, int end, int segment_index)
 {
@@ -3867,6 +3873,37 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->have_origin = 1;
                 state->detect_collisions = 0;
             }
+        } else if (tag("blend")) {
+            /* VSFilterMod treats blend modes as immediate discrete state,
+             * including when this parser is entered recursively by \t(). */
+            ASS_BlendMode mode = ASS_BLEND_NORMAL;
+            if (nargs) {
+                struct arg arg = args[0];
+                size_t len = (size_t) (arg.end - arg.start);
+                if (len > 2) {
+                    if (arg_equals(arg, "over"))
+                        mode = ASS_BLEND_OVERLAY;
+                    else if (arg_equals(arg, "add"))
+                        mode = ASS_BLEND_ADD;
+                    else if (arg_equals(arg, "sub"))
+                        mode = ASS_BLEND_SUBSTRACT;
+                    else if (arg_equals(arg, "mult"))
+                        mode = ASS_BLEND_MULTIPLY;
+                    else if (arg_equals(arg, "scr"))
+                        mode = ASS_BLEND_SCREEN;
+                    else if (arg_equals(arg, "diff"))
+                        mode = ASS_BLEND_DIFFERENCE;
+                    else if (arg_equals(arg, "rsub"))
+                        mode = ASS_BLEND_SUBSTRACT_REVERSE;
+                    else if (arg_equals(arg, "isub"))
+                        mode = ASS_BLEND_SUBSTRACT_INVERSE;
+                } else {
+                    mode = (ASS_BlendMode) argtoi32(arg);
+                }
+            }
+            state->blend_mode = mode;
+            if (state->blend_mode != ASS_BLEND_NORMAL)
+                state->needs_rgba = true;
         } else if (complex_tag("t")) {
             double accel;
             int cnt = nargs - 1;

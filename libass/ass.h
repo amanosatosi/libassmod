@@ -96,6 +96,7 @@ typedef struct ass_image_rgba {
 
 #define LIBASSMOD_FEATURE_RGBA 1
 #define LIBASSMOD_FEATURE_TAG_IMAGE 1
+#define LIBASSMOD_FEATURE_BLEND_BGRA 1
 
 /* Returns non-zero when this libass build tracks aligned allocation ownership.
  * This is intended for host-side diagnostic build verification. */
@@ -649,6 +650,15 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
 ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
                                        long long now, int *detect_change);
 void ass_free_images_rgba(ASS_ImageRGBA *img);
+/**
+ * Composite an ordered Mangetsu RGBA result returned by this renderer into
+ * an existing BGRA8 frame. Do not pass copied or caller-created image nodes.
+ * The frame is updated in place, so every image blends against the video and
+ * all earlier subtitle images. A negative stride is supported when dst points
+ * at the logical top-left row. Returns 0 on success and -1 for invalid input.
+ */
+int ass_composite_images_bgra(ASS_ImageRGBA *img, uint8_t *dst,
+                              int width, int height, int stride);
 int ass_track_has_rgba(ASS_Track *track);
 int ass_frame_needs_rgba(ASS_Renderer *priv);
 int ass_set_tag_image_rgba(ASS_Renderer *priv, const char *path,

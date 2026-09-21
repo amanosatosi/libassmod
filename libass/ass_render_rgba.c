@@ -426,6 +426,10 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
     img->result.next = NULL;
     img->buffer = buffer;
     img->alloc_size = alloc_size;
+    img->blend_rgb = NULL;
+    img->blend_alloc_size = 0;
+    img->blend_stride = 0;
+    img->blend_mode = ASS_BLEND_NORMAL;
     ass_aligned_retag(buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, img,
                       allocation_site);
 #ifndef NDEBUG
@@ -502,6 +506,7 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img)
 #endif
     ass_aligned_free_tagged(
         rgba_priv->buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, rgba_priv);
+    free(rgba_priv->blend_rgb);
     free(rgba_priv);
 }
 
@@ -544,6 +549,93 @@ bool ass_rgba_image_view_valid(ASS_ImageRGBA *img, const char *operation)
         rgba_debug_fail(operation, img, rgba_debug_find_image(img));
 #endif
     return valid;
+}
+
+bool ass_rgba_image_alloc_blend_rgb(ASS_ImageRGBA *img,
+                                    ASS_BlendMode blend_mode)
+{
+    ASS_ImageRGBAPriv *priv = ass_rgba_image_private(img, "blend source allocation");
+    if (!priv || blend_mode == ASS_BLEND_NORMAL || img->w <= 0 || img->h <= 0 ||
+            img->stride <= 0 || (size_t) img->stride > SIZE_MAX / (size_t) img->h)
+        return false;
+
+    size_t size = (size_t) img->stride * (size_t) img->h;
+    uint8_t *buffer = malloc(size);
+    if (!buffer)
+        return false;
+    free(priv->blend_rgb);
+    priv->blend_rgb = buffer;
+    priv->blend_alloc_size = size;
+    priv->blend_stride = img->stride;
+    priv->blend_mode = blend_mode;
+    return true;
+}
+
+bool ass_rgba_image_crop_blend_rgb(ASS_ImageRGBA *img, int x, int y,
+                                   int w, int h, int stride)
+{
+    ASS_ImageRGBAPriv *priv = ass_rgba_image_private(img, "blend source crop");
+    if (!priv || !priv->blend_rgb)
+        return true;
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || w > INT_MAX / 4 ||
+            stride < w * 4 ||
+            (size_t) stride > SIZE_MAX / (size_t) h) {
+        free(priv->blend_rgb);
+        priv->blend_rgb = NULL;
+        priv->blend_alloc_size = 0;
+        priv->blend_stride = 0;
+        priv->blend_mode = ASS_BLEND_NORMAL;
+        return false;
+    }
+
+    size_t public_offset = (size_t) (img->rgba - priv->buffer);
+    size_t view_y = public_offset / (size_t) img->stride;
+    size_t view_x_bytes = public_offset % (size_t) img->stride;
+    size_t src_y = view_y + (size_t) y;
+    size_t src_x_bytes = view_x_bytes + (size_t) x * 4;
+    size_t row_bytes = (size_t) w * 4;
+    bool source_valid = src_x_bytes + row_bytes <=
+        (size_t) priv->blend_stride;
+    size_t source_start = 0;
+    if (source_valid && src_y <= SIZE_MAX / (size_t) priv->blend_stride) {
+        source_start = src_y * (size_t) priv->blend_stride;
+        source_valid = source_start <= SIZE_MAX - src_x_bytes;
+        source_start += src_x_bytes;
+    } else {
+        source_valid = false;
+    }
+    size_t last_row = (size_t) (h - 1) * (size_t) priv->blend_stride;
+    source_valid = source_valid && source_start <= priv->blend_alloc_size &&
+        last_row <= priv->blend_alloc_size - source_start &&
+        row_bytes <= priv->blend_alloc_size - source_start - last_row;
+    if (!source_valid) {
+        free(priv->blend_rgb);
+        priv->blend_rgb = NULL;
+        priv->blend_alloc_size = 0;
+        priv->blend_stride = 0;
+        priv->blend_mode = ASS_BLEND_NORMAL;
+        return false;
+    }
+
+    size_t size = (size_t) stride * (size_t) h;
+    uint8_t *buffer = malloc(size);
+    if (!buffer) {
+        free(priv->blend_rgb);
+        priv->blend_rgb = NULL;
+        priv->blend_alloc_size = 0;
+        priv->blend_stride = 0;
+        priv->blend_mode = ASS_BLEND_NORMAL;
+        return false;
+    }
+    const uint8_t *source = priv->blend_rgb + source_start;
+    for (int row = 0; row < h; row++)
+        memcpy(buffer + (size_t) row * stride,
+               source + (size_t) row * priv->blend_stride, row_bytes);
+    free(priv->blend_rgb);
+    priv->blend_rgb = buffer;
+    priv->blend_alloc_size = size;
+    priv->blend_stride = stride;
+    return true;
 }
 
 void ass_rgba_images_set_owner(ASS_ImageRGBA *img, ASS_RGBAOwner owner,
@@ -747,4 +839,102 @@ void ass_free_images_rgba(ASS_ImageRGBA *img)
         ass_rgba_image_free(NULL, img);
         img = next;
     }
+}
+
+int ass_composite_images_bgra(ASS_ImageRGBA *img, uint8_t *dst,
+                              int width, int height, int stride)
+{
+    int64_t stride_abs = stride < 0 ? -(int64_t) stride : stride;
+    if (!dst || width <= 0 || height <= 0 || !stride ||
+            (int64_t) width * 4 > stride_abs)
+        return -1;
+
+    /* Validate the complete list before modifying dst so callers may safely
+     * fall back to their normal compositor on error. */
+    for (ASS_ImageRGBA *cur = img; cur; cur = cur->next)
+        if (!ass_rgba_image_private(cur, "BGRA composition preflight") ||
+                !ass_rgba_image_view_valid(cur, "BGRA composition preflight"))
+            return -1;
+
+    for (ASS_ImageRGBA *cur = img; cur; cur = cur->next) {
+        ASS_ImageRGBAPriv *priv = ass_rgba_image_private(cur, "BGRA composition");
+
+        int64_t tile_left = cur->dst_x;
+        int64_t tile_top = cur->dst_y;
+        int x0 = tile_left <= 0 ? 0 :
+            tile_left >= width ? width : (int) tile_left;
+        int y0 = tile_top <= 0 ? 0 :
+            tile_top >= height ? height : (int) tile_top;
+        int64_t tile_right = tile_left + cur->w;
+        int64_t tile_bottom = tile_top + cur->h;
+        int x1 = tile_right <= 0 ? 0 :
+            tile_right >= width ? width : (int) tile_right;
+        int y1 = tile_bottom <= 0 ? 0 :
+            tile_bottom >= height ? height : (int) tile_bottom;
+        if (x0 >= x1 || y0 >= y1)
+            continue;
+        int source_x = x0 - cur->dst_x;
+        int source_y = y0 - cur->dst_y;
+        const uint8_t *rgba = cur->rgba + (size_t) source_y * cur->stride +
+            (size_t) source_x * 4;
+
+        const uint8_t *blend_rgb = NULL;
+        ASS_BlendMode mode = priv->blend_mode;
+        if (mode < ASS_BLEND_NORMAL || mode > ASS_BLEND_SUBSTRACT_INVERSE)
+            mode = ASS_BLEND_NORMAL;
+        if (mode != ASS_BLEND_NORMAL && priv->blend_rgb) {
+            size_t offset = (size_t) (cur->rgba - priv->buffer);
+            size_t blend_y = offset / (size_t) cur->stride + (size_t) source_y;
+            size_t blend_x = offset % (size_t) cur->stride +
+                (size_t) source_x * 4;
+            size_t row_bytes = (size_t) (x1 - x0) * 4;
+            bool blend_valid = blend_x + row_bytes <=
+                (size_t) priv->blend_stride &&
+                blend_y <= SIZE_MAX / (size_t) priv->blend_stride;
+            size_t blend_start = blend_valid ?
+                blend_y * (size_t) priv->blend_stride : 0;
+            blend_valid = blend_valid && blend_start <= SIZE_MAX - blend_x;
+            blend_start += blend_valid ? blend_x : 0;
+            size_t last_row = (size_t) (y1 - y0 - 1) *
+                (size_t) priv->blend_stride;
+            blend_valid = blend_valid &&
+                blend_start <= priv->blend_alloc_size &&
+                last_row <= priv->blend_alloc_size - blend_start &&
+                row_bytes <= priv->blend_alloc_size - blend_start - last_row;
+            if (blend_valid)
+                blend_rgb = priv->blend_rgb + blend_start;
+            else
+                mode = ASS_BLEND_NORMAL;
+        } else {
+            mode = ASS_BLEND_NORMAL;
+        }
+
+        for (int y = y0; y < y1; y++) {
+            const uint8_t *src = rgba + (size_t) (y - y0) * cur->stride;
+            const uint8_t *straight = blend_rgb ?
+                blend_rgb + (size_t) (y - y0) * priv->blend_stride : NULL;
+            uint8_t *out = dst + (ptrdiff_t) y * stride + (size_t) x0 * 4;
+            for (int x = 0; x < x1 - x0; x++) {
+                unsigned alpha = src[4 * x + 3];
+                if (mode == ASS_BLEND_NORMAL) {
+                    unsigned inv_alpha = 255 - alpha;
+                    out[4 * x + 0] = (uint8_t) (src[4 * x + 2] +
+                        out[4 * x + 0] * inv_alpha / 255);
+                    out[4 * x + 1] = (uint8_t) (src[4 * x + 1] +
+                        out[4 * x + 1] * inv_alpha / 255);
+                    out[4 * x + 2] = (uint8_t) (src[4 * x + 0] +
+                        out[4 * x + 2] * inv_alpha / 255);
+                } else if (alpha) {
+                    for (int c = 0; c < 3; c++) {
+                        int source_channel = 2 - c;
+                        out[4 * x + c] = ass_blend_compose_channel(
+                            mode, straight[4 * x + source_channel],
+                            out[4 * x + c], (uint8_t) alpha);
+                    }
+                }
+                out[4 * x + 3] = 0;
+            }
+        }
+    }
+    return 0;
 }

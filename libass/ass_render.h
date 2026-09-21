@@ -76,11 +76,74 @@ typedef enum {
     ASS_RGBA_OWNER_FREED,
 } ASS_RGBAOwner;
 
+typedef enum {
+    ASS_BLEND_NORMAL = 0,
+    ASS_BLEND_OVERLAY,
+    ASS_BLEND_ADD,
+    ASS_BLEND_SUBSTRACT,
+    ASS_BLEND_MULTIPLY,
+    ASS_BLEND_SCREEN,
+    ASS_BLEND_DIFFERENCE,
+    /* Undocumented, but accepted by the VSFilterMod parser. */
+    ASS_BLEND_SUBSTRACT_REVERSE,
+    ASS_BLEND_SUBSTRACT_INVERSE,
+} ASS_BlendMode;
+
+static inline uint8_t ass_blend_div255(unsigned value)
+{
+    return (uint8_t) ((value + 1 + ((value + 1) >> 8)) >> 8);
+}
+
+static inline uint8_t ass_blend_channel(ASS_BlendMode mode,
+                                        uint8_t source, uint8_t destination)
+{
+    switch (mode) {
+    case ASS_BLEND_OVERLAY:
+        return destination < 128 ?
+            2 * ass_blend_div255(source * destination) :
+            255 - 2 * ass_blend_div255((255 - source) * (255 - destination));
+    case ASS_BLEND_ADD:
+        return source > 255 - destination ? 255 : source + destination;
+    case ASS_BLEND_SUBSTRACT:
+        return destination > source ? destination - source : 0;
+    case ASS_BLEND_MULTIPLY:
+        return ass_blend_div255(source * destination);
+    case ASS_BLEND_SCREEN:
+        return 255 - ass_blend_div255((255 - source) * (255 - destination));
+    case ASS_BLEND_DIFFERENCE:
+        return source > destination ? source - destination : destination - source;
+    case ASS_BLEND_SUBSTRACT_REVERSE:
+        return source > destination ? source - destination : 0;
+    case ASS_BLEND_SUBSTRACT_INVERSE: {
+        uint8_t inverted = 255 - destination;
+        return source > inverted ? source - inverted : 0;
+    }
+    case ASS_BLEND_NORMAL:
+    default:
+        return source;
+    }
+}
+
+static inline uint8_t ass_blend_compose_channel(ASS_BlendMode mode,
+                                                 uint8_t source,
+                                                 uint8_t destination,
+                                                 uint8_t alpha)
+{
+    uint8_t blended = ass_blend_channel(mode, source, destination);
+    return (uint8_t) ((destination * (256 - alpha) +
+                       blended * (alpha + 1)) >> 8);
+}
+
 typedef struct ass_image_rgba_priv {
     ASS_ImageRGBA result;
     /* Always the exact base returned by ass_aligned_alloc(), never a view. */
     uint8_t *buffer;
     size_t alloc_size;
+    /* Exact straight source RGB, allocated only for non-normal blend tiles. */
+    uint8_t *blend_rgb;
+    size_t blend_alloc_size;
+    int blend_stride;
+    ASS_BlendMode blend_mode;
 #ifndef NDEBUG
     uint64_t magic;
     uint64_t allocation_id;
@@ -236,6 +299,7 @@ typedef struct {
     uint8_t draw_sub_x;
     uint8_t draw_sub_y;
     bool from_drawing;
+    ASS_BlendMode blend_mode;
 } CombinedBitmapInfo;
 
 typedef struct {
@@ -293,6 +357,7 @@ typedef struct glyph_info {
     MangetsuGradientState mangetsu_gradient;
     KaraokeOutlinePaint secondary_outline;
     ImageFillState image_fill;
+    ASS_BlendMode blend_mode;
     int line;
     ASS_Vector advance;         // 26.6
     ASS_Vector cluster_advance;
@@ -487,6 +552,7 @@ typedef struct {
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
     ImageFillState image_fill;
+    ASS_BlendMode blend_mode;
     bool decoration_color_set;
     bool decoration_alpha_set;
     uint32_t decoration_color;
@@ -652,6 +718,7 @@ struct render_context {
     KaraokeOutlinePaint secondary_outline;
     int mangetsu_gradient_next_id;
     ImageFillState image_fill;
+    ASS_BlendMode blend_mode;
     bool needs_rgba;
     int clip_x0, clip_y0, clip_x1, clip_y1;
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
@@ -847,6 +914,10 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img);
 ASS_ImageRGBAPriv *ass_rgba_image_private(ASS_ImageRGBA *img,
                                            const char *operation);
 bool ass_rgba_image_view_valid(ASS_ImageRGBA *img, const char *operation);
+bool ass_rgba_image_alloc_blend_rgb(ASS_ImageRGBA *img,
+                                    ASS_BlendMode blend_mode);
+bool ass_rgba_image_crop_blend_rgb(ASS_ImageRGBA *img, int x, int y,
+                                   int w, int h, int stride);
 void ass_rgba_images_set_owner(ASS_ImageRGBA *img, ASS_RGBAOwner owner,
                                const char *operation);
 bool ass_rgba_image_clip_to_frame(ASS_Renderer *priv, ASS_ImageRGBA *img);

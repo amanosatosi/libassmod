@@ -215,6 +215,15 @@ test('furi-extension', furi_unit,
         meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
     timeout: 120,
 )
+
+blend_unit = executable(
+    'blend_unit',
+    files('blend_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
 test('karaoke-paint-extension', karaoke_paint_unit, timeout: 120)
 test('multi-border-extension', multiborder_unit)
 test('actor-colorcoding', colorcoding_unit)
@@ -224,6 +233,7 @@ test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
 test('mangetsu-motion-scale', mangetsu_motion_scale_unit)
+test('vsfiltermod-blend', blend_unit)
 if get_option('default_library') != 'shared'
     test('rgba-ownership-lifetime', rgba_ownership_unit, timeout: 120)
     test('shaper-chain-cleanup', shaper_chain_cleanup_unit)
