@@ -3226,6 +3226,54 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_x = calc_anim(x, state->rnd_x, pwr);
             state->rnd_y = calc_anim(y, state->rnd_y, pwr);
             state->rnd_z = calc_anim(z, state->rnd_z, pwr);
+        } else if (complex_tag("perspective")) {
+            if (*name_end != '(' || has_backslash_arg)
+                continue;
+
+            char *raw_start = name_end + 1;
+            char *raw_end = q;
+            if (raw_start >= raw_end || raw_end[-1] != ')')
+                continue;
+            raw_end--;
+
+            ASS_PerspectiveParams target = state->perspective;
+            char *ptr = raw_start;
+            bool ok = true;
+            for (int i = 0; i < 8; i++) {
+                char *next = i < 7 ? memchr(ptr, ',', raw_end - ptr) : NULL;
+                if ((i < 7 && !next) || (i == 7 && memchr(ptr, ',', raw_end - ptr))) {
+                    ok = false;
+                    break;
+                }
+                char *tok_end = next ? next : raw_end;
+                rskip_spaces(&tok_end, ptr);
+                skip_spaces(&ptr);
+                double current = i & 1 ? state->perspective.corner[i / 2].y :
+                                         state->perspective.corner[i / 2].x;
+                double value;
+                if (tok_end <= ptr ||
+                        !numeric_arg_strict((struct arg) {ptr, tok_end}, current,
+                                            NUM_SIGNED, &value)) {
+                    ok = false;
+                    break;
+                }
+                if (i & 1)
+                    target.corner[i / 2].y = value;
+                else
+                    target.corner[i / 2].x = value;
+                ptr = next ? next + 1 : raw_end;
+            }
+            skip_spaces(&ptr);
+            if (!ok || ptr != raw_end)
+                continue;
+
+            state->perspective_enabled = true;
+            for (int i = 0; i < 4; i++) {
+                state->perspective.corner[i].x = calc_anim(
+                    target.corner[i].x, state->perspective.corner[i].x, pwr);
+                state->perspective.corner[i].y = calc_anim(
+                    target.corner[i].y, state->perspective.corner[i].y, pwr);
+            }
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;

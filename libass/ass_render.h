@@ -39,6 +39,7 @@
 #include "ass_drawing.h"
 #include "ass_curved_text.h"
 #include "ass_distort.h"
+#include "ass_perspective.h"
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
 #include "gradient.h"
@@ -326,6 +327,10 @@ typedef struct glyph_info {
     int hspacing_scaled;        // 26.6
     bool distort_enabled;
     ASS_DistortParams distort;
+    bool perspective_enabled;
+    ASS_PerspectiveParams perspective;
+    bool perspective_valid;
+    ASS_Homography perspective_homography;
     OutlineHashValue *distorted_outline;
     Bitmap distort_bitmap, distort_bitmap_o;
     Bitmap distort_bitmap_border[ASS_BORDER_LAYERS_MAX - 1];
@@ -706,6 +711,8 @@ struct render_context {
     int karaoke_clip_x1;
     bool distort_enabled;
     ASS_DistortParams distort;
+    bool perspective_enabled;
+    ASS_PerspectiveParams perspective;
     OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
     int curved_text_align;                 // 0 derives from \an, 1..3 explicit
     double curved_text_x;                  // along-path offset, script units

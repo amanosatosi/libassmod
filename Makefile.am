@@ -14,7 +14,9 @@ AM_CPPFLAGS = -I$(top_srcdir)/libass
 AM_CFLAGS = -std=gnu99 -D_GNU_SOURCE -D_XPLATFORM_SOURCE
 
 EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
-             docs/curved-text.md test/curved_text_selftest.c
+             docs/curved-text.md docs/perspective-tag.md \
+             test/curved_text_selftest.c test/perspective_test.c \
+             test/perspective_selftest.c
 
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \

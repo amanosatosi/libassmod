@@ -36,6 +36,7 @@
 #include "ass_parse.h"
 #include "ass_priv.h"
 #include "ass_distort.h"
+#include "ass_perspective.h"
 #include "ass_shaper.h"
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
@@ -3003,6 +3004,8 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->distort = (ASS_DistortParams) {
         .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
     };
+    state->perspective_enabled = false;
+    state->perspective = (ASS_PerspectiveParams) {0};
 
     capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
@@ -3083,6 +3086,8 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->distort = (ASS_DistortParams) {
         .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
     };
+    state->perspective_enabled = false;
+    state->perspective = (ASS_PerspectiveParams) {0};
     state->curved_path_outline = NULL;
     state->curved_text_align = 0;
     state->curved_text_x = 0.0;
@@ -3754,8 +3759,8 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
 /**
  * \brief Calculate outline transformation matrix
  */
-static void calc_transform_matrix(RenderContext *state,
-                                  GlyphInfo *info, double m[3][3])
+static void calc_transform_matrix_base(RenderContext *state,
+                                       GlyphInfo *info, double m[3][3])
 {
     ASS_Renderer *render_priv = state->renderer;
 
@@ -3849,6 +3854,22 @@ static void calc_transform_matrix(RenderContext *state,
         m[1][i] = z4[i] * offs_y + y3[i] * dist;
         m[2][i] = z4[i];
     }
+}
+
+static void calc_transform_matrix(RenderContext *state,
+                                  GlyphInfo *info, double m[3][3])
+{
+    calc_transform_matrix_base(state, info, m);
+    if (!info->perspective_valid)
+        return;
+
+    double result[3][3] = {{0}};
+    const double (*h)[3] = info->perspective_homography.m;
+    for (int row = 0; row < 3; row++)
+        for (int col = 0; col < 3; col++)
+            for (int k = 0; k < 3; k++)
+                result[row][col] += h[row][k] * m[k][col];
+    memcpy(m, result, sizeof(result));
 }
 
 /**
@@ -5136,6 +5157,9 @@ static bool append_glyph_to_target(RenderContext *state,
 #endif
     info->distort_enabled = state->distort_enabled;
     info->distort = state->distort;
+    info->perspective_enabled = state->perspective_enabled;
+    info->perspective = state->perspective;
+    info->perspective_valid = false;
     info->distorted_outline = NULL;
     info->has_distort_bitmap = false;
     info->has_distort_outline = false;
@@ -5198,6 +5222,180 @@ static bool append_text_segment(RenderContext *state, char *start, char *end,
         state->reset_effect = false;
     }
     return true;
+}
+
+typedef struct {
+    ASS_PerspectiveParams params;
+    double min_x, min_y, max_x, max_y;
+    bool has_point;
+    bool invalid;
+    bool solved;
+    ASS_Homography homography;
+} PerspectiveGroup;
+
+static bool perspective_params_match(const ASS_PerspectiveParams *a,
+                                     const ASS_PerspectiveParams *b)
+{
+    for (int i = 0; i < 4; i++)
+        if (a->corner[i].x != b->corner[i].x ||
+                a->corner[i].y != b->corner[i].y)
+            return false;
+    return true;
+}
+
+static PerspectiveGroup *perspective_group_for(PerspectiveGroup *groups,
+                                                int *count, int capacity,
+                                                const ASS_PerspectiveParams *p)
+{
+    for (int i = 0; i < *count; i++)
+        if (perspective_params_match(&groups[i].params, p))
+            return &groups[i];
+    if (*count >= capacity)
+        return NULL;
+    PerspectiveGroup *group = &groups[(*count)++];
+    group->params = *p;
+    group->min_x = group->min_y = DBL_MAX;
+    group->max_x = group->max_y = -DBL_MAX;
+    return group;
+}
+
+static void perspective_accumulate_glyph(RenderContext *state, GlyphInfo *info,
+                                         PerspectiveGroup *groups,
+                                         int *count, int capacity)
+{
+    info->perspective_valid = false;
+    if (!info->perspective_enabled || info->skip || info->symbol == '\n')
+        return;
+
+    PerspectiveGroup *group = perspective_group_for(
+        groups, count, capacity, &info->perspective);
+    if (!group || group->invalid)
+        return;
+    OutlineHashValue *outline = info->distorted_outline ?
+        info->distorted_outline : info->outline;
+    if (!outline || !outline->outline[0].n_points)
+        return;
+
+    double base[3][3], matrix[3][3];
+    calc_transform_matrix_base(state, info, base);
+    const ASS_Transform *tr = &info->transform;
+    for (int row = 0; row < 3; row++) {
+        matrix[row][0] = base[row][0] * tr->scale.x;
+        matrix[row][1] = base[row][1] * tr->scale.y;
+        matrix[row][2] = base[row][0] * tr->offset.x +
+                         base[row][1] * tr->offset.y + base[row][2];
+    }
+
+    const ASS_Outline *fill = &outline->outline[0];
+    for (size_t i = 0; i < fill->n_points; i++) {
+        double x = fill->points[i].x, y = fill->points[i].y;
+        double X = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2];
+        double Y = matrix[1][0] * x + matrix[1][1] * y + matrix[1][2];
+        double W = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2];
+        if (!isfinite(X) || !isfinite(Y) || !isfinite(W) || fabs(W) <= DBL_MIN) {
+            group->invalid = true;
+            return;
+        }
+        x = X / W;
+        y = Y / W;
+        if (!isfinite(x) || !isfinite(y)) {
+            group->invalid = true;
+            return;
+        }
+        group->min_x = FFMIN(group->min_x, x);
+        group->min_y = FFMIN(group->min_y, y);
+        group->max_x = FFMAX(group->max_x, x);
+        group->max_y = FFMAX(group->max_y, y);
+        group->has_point = true;
+    }
+}
+
+static void perspective_accumulate_list(RenderContext *state,
+                                        GlyphInfo *glyphs, int length,
+                                        PerspectiveGroup *groups,
+                                        int *count, int capacity)
+{
+    for (int i = 0; i < length; i++)
+        for (GlyphInfo *info = glyphs + i; info; info = info->next)
+            perspective_accumulate_glyph(state, info, groups, count, capacity);
+}
+
+static void perspective_assign_list(GlyphInfo *glyphs, int length,
+                                    PerspectiveGroup *groups, int count)
+{
+    for (int i = 0; i < length; i++) {
+        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
+            if (!info->perspective_enabled)
+                continue;
+            for (int group = 0; group < count; group++) {
+                if (groups[group].solved && perspective_params_match(
+                        &groups[group].params, &info->perspective)) {
+                    info->perspective_homography = groups[group].homography;
+                    info->perspective_valid = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+static void prepare_perspective(RenderContext *state,
+                                const ASS_DVector *object_anchor)
+{
+    TextInfo *text_info = &state->text_info;
+    int capacity = text_info->length;
+    for (int i = 0; i < text_info->n_furi_groups; i++)
+        capacity += text_info->furi_groups[i].length;
+    if (capacity <= 0)
+        return;
+
+    PerspectiveGroup *groups = calloc(capacity, sizeof(*groups));
+    if (!groups)
+        return;
+    int count = 0;
+    perspective_accumulate_list(state, text_info->glyphs, text_info->length,
+                                groups, &count, capacity);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *furi = &text_info->furi_groups[i];
+        perspective_accumulate_list(state, furi->glyphs, furi->length,
+                                    groups, &count, capacity);
+    }
+    if (!count) {
+        free(groups);
+        return;
+    }
+
+    ASS_Renderer *render_priv = state->renderer;
+    double left = render_priv->settings.left_margin;
+    double anchor_x = (object_anchor->x - left) * render_priv->par_scale_x + left;
+    double anchor_y = object_anchor->y;
+    double scale_x = render_priv->frame_content_width /
+                     (double) render_priv->track->PlayResX;
+    double scale_y = render_priv->frame_content_height /
+                     (double) render_priv->track->PlayResY;
+    for (int i = 0; i < count; i++) {
+        PerspectiveGroup *group = &groups[i];
+        if (!group->has_point || group->invalid ||
+                !(group->min_x < group->max_x) || !(group->min_y < group->max_y))
+            continue;
+        ASS_PerspectiveParams destination;
+        for (int corner = 0; corner < 4; corner++) {
+            destination.corner[corner].x = anchor_x +
+                group->params.corner[corner].x * scale_x;
+            destination.corner[corner].y = anchor_y +
+                group->params.corner[corner].y * scale_y;
+        }
+        group->solved = ass_perspective_solve(
+            &destination, group->min_x, group->min_y,
+            group->max_x, group->max_y, &group->homography);
+    }
+
+    perspective_assign_list(text_info->glyphs, text_info->length, groups, count);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *furi = &text_info->furi_groups[i];
+        perspective_assign_list(furi->glyphs, furi->length, groups, count);
+    }
+    free(groups);
 }
 
 static bool secondary_outline_equal(const KaraokeOutlinePaint *a,
@@ -7813,9 +8011,41 @@ static bool text_needs_rgba(const TextInfo *text_info)
     return false;
 }
 
+static void position_glyph_list_for_render(GlyphInfo *glyphs, int length,
+                                           double device_x, double device_y,
+                                           double par_scale_x)
+{
+    for (int i = 0; i < length; i++) {
+        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
+            double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
+            double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
+            info->pos.x = double_to_d6(device_x + jitter_dx +
+                                       d6_to_double(info->pos.x) * par_scale_x);
+            info->pos.y = double_to_d6(device_y + jitter_dy) + info->pos.y;
+        }
+    }
+}
+
+static void position_glyphs_for_render(RenderContext *state,
+                                       double device_x, double device_y)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    int left = render_priv->settings.left_margin;
+    device_x = (device_x - left) * render_priv->par_scale_x + left;
+    TextInfo *text_info = &state->text_info;
+    position_glyph_list_for_render(text_info->glyphs, text_info->length,
+                                   device_x, device_y,
+                                   render_priv->par_scale_x);
+    for (int i = 0; i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        position_glyph_list_for_render(group->glyphs, group->length,
+                                       device_x, device_y,
+                                       render_priv->par_scale_x);
+    }
+}
+
 static void render_glyph_list_to_bitmaps(RenderContext *state,
                                          GlyphInfo *glyphs, int length,
-                                         double device_x, double device_y,
                                          unsigned *nb_bitmaps,
                                          CombinedBitmapInfo **combined_info)
 {
@@ -7940,11 +8170,6 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             assert(current_info);
 
             ASS_Vector pos, pos_o;
-            double jitter_dx = info->has_jitter ? info->jitter_dx : 0.0;
-            double jitter_dy = info->has_jitter ? info->jitter_dy : 0.0;
-            info->pos.x = double_to_d6(device_x + jitter_dx +
-                                       d6_to_double(info->pos.x) * render_priv->par_scale_x);
-            info->pos.y = double_to_d6(device_y + jitter_dy) + info->pos.y;
             if (current_info->from_drawing && !current_info->bitmap_count) {
                 current_info->draw_sub_x = (uint8_t) ((info->pos.x >> 3) & 7);
                 current_info->draw_sub_y = (uint8_t) ((info->pos.y >> 3) & 7);
@@ -8209,23 +8434,18 @@ static void render_decoration_list_to_bitmaps(RenderContext *state,
 }
 
 // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
-static void render_and_combine_glyphs(RenderContext *state,
-                                      double device_x, double device_y)
+static void render_and_combine_glyphs(RenderContext *state)
 {
     ASS_Renderer *render_priv = state->renderer;
     TextInfo *text_info = &state->text_info;
-    int left = render_priv->settings.left_margin;
-    device_x = (device_x - left) * render_priv->par_scale_x + left;
     unsigned nb_bitmaps = 0;
     CombinedBitmapInfo *combined_info = text_info->combined_bitmaps;
     render_glyph_list_to_bitmaps(state, text_info->glyphs, text_info->length,
-                                 device_x, device_y, &nb_bitmaps,
-                                 &combined_info);
+                                 &nb_bitmaps, &combined_info);
     for (int i = 0; i < text_info->n_furi_groups; i++) {
         FuriGroup *group = &text_info->furi_groups[i];
         render_glyph_list_to_bitmaps(state, group->glyphs, group->length,
-                                     device_x, device_y, &nb_bitmaps,
-                                     &combined_info);
+                                     &nb_bitmaps, &combined_info);
     }
     render_decoration_list_to_bitmaps(state, text_info->glyphs,
                                       text_info->length, &nb_bitmaps,
@@ -8775,6 +8995,37 @@ static void capture_bs4_box_geometry(RenderContext *state,
 
     box->geometry = *info;
     box->valid = true;
+}
+
+static void sync_bs4_perspective_from_list(BS4BoxGeometry *box,
+                                           GlyphInfo *glyphs, int length)
+{
+    if (box->geometry.perspective_valid)
+        return;
+    for (int i = 0; i < length; i++) {
+        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
+            if (info->perspective_valid && perspective_params_match(
+                    &info->perspective, &box->geometry.perspective)) {
+                box->geometry.perspective_homography =
+                    info->perspective_homography;
+                box->geometry.perspective_valid = true;
+                return;
+            }
+        }
+    }
+}
+
+static void sync_bs4_perspective(RenderContext *state, BS4BoxGeometry *box)
+{
+    if (!box->valid || !box->geometry.perspective_enabled)
+        return;
+    TextInfo *text_info = &state->text_info;
+    sync_bs4_perspective_from_list(box, text_info->glyphs, text_info->length);
+    for (int i = 0; !box->geometry.perspective_valid &&
+            i < text_info->n_furi_groups; i++) {
+        FuriGroup *group = &text_info->furi_groups[i];
+        sync_bs4_perspective_from_list(box, group->glyphs, group->length);
+    }
 }
 
 static uint32_t box_border_layer_color(RenderContext *state,
@@ -9692,7 +9943,12 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         capture_bs4_box_geometry(state, &bs4_box_geometry, &bs4_layout_bbox,
                                  device_x, device_y);
 
-    render_and_combine_glyphs(state, device_x, device_y);
+    position_glyphs_for_render(state, device_x, device_y);
+    prepare_perspective(state, &object_anchor);
+    if (state->bs4_box_mode)
+        sync_bs4_perspective(state, &bs4_box_geometry);
+
+    render_and_combine_glyphs(state);
     compute_line_gradient_rects(state);
     compute_mangetsu_gradient_rects(state);
     collect_mangetsu_gradient_debug(state);
