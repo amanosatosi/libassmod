@@ -139,6 +139,8 @@ int main(void)
     }
     ass_set_frame_size(renderer, WIDTH, HEIGHT);
     ass_set_storage_size(renderer, WIDTH, HEIGHT);
+    ass_set_fonts(renderer, NULL, "sans-serif",
+                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     static const char *numeric[] = {
         "\\blend0", "\\blend1", "\\blend2", "\\blend3", "\\blend4",
