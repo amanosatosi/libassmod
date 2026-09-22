@@ -224,7 +224,11 @@ int main(void)
         "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort", &centered);
     if (same_sig(&legacy, &centered) || legacy.min_x != centered.min_x ||
             legacy.min_y != centered.min_y) {
-        fprintf(stderr, "ta2 changed the top-left block anchor or left lines unchanged\n");
+        fprintf(stderr, "ta2 changed the top-left block anchor or left lines unchanged: "
+                "legacy=(%d,%d)..(%d,%d), ta=(%d,%d)..(%d,%d), same=%d\n",
+                legacy.min_x, legacy.min_y, legacy.max_x, legacy.max_y,
+                centered.min_x, centered.min_y, centered.max_x, centered.max_y,
+                same_sig(&legacy, &centered));
         ok = false;
     }
     ok &= render_case(lib, renderer,
@@ -234,7 +238,11 @@ int main(void)
     if (same_sig(&right_legacy, &right_left) ||
             right_legacy.max_x != right_left.max_x ||
             right_legacy.min_y != right_left.min_y) {
-        fprintf(stderr, "ta1 changed the top-right block anchor or left lines unchanged\n");
+        fprintf(stderr, "ta1 changed the top-right block anchor or left lines unchanged: "
+                "legacy=(%d,%d)..(%d,%d), ta=(%d,%d)..(%d,%d), same=%d\n",
+                right_legacy.min_x, right_legacy.min_y, right_legacy.max_x, right_legacy.max_y,
+                right_left.min_x, right_left.min_y, right_left.max_x, right_left.max_y,
+                same_sig(&right_legacy, &right_left));
         ok = false;
     }
     ok &= render_case(lib, renderer,
@@ -244,7 +252,11 @@ int main(void)
     if (same_sig(&bottom_legacy, &bottom_right) ||
             bottom_legacy.min_x != bottom_right.min_x ||
             bottom_legacy.max_y != bottom_right.max_y) {
-        fprintf(stderr, "ta3 changed the bottom-left block anchor or right lines unchanged\n");
+        fprintf(stderr, "ta3 changed the bottom-left block anchor or right lines unchanged: "
+                "legacy=(%d,%d)..(%d,%d), ta=(%d,%d)..(%d,%d), same=%d\n",
+                bottom_legacy.min_x, bottom_legacy.min_y, bottom_legacy.max_x, bottom_legacy.max_y,
+                bottom_right.min_x, bottom_right.min_y, bottom_right.max_x, bottom_right.max_y,
+                same_sig(&bottom_legacy, &bottom_right));
         ok = false;
     }
 
