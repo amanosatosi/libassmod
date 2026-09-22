@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ass.h"
@@ -222,7 +223,9 @@ int main(void)
         "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort", &legacy);
     ok &= render_case(lib, renderer,
         "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort", &centered);
-    if (same_sig(&legacy, &centered) || legacy.min_x != centered.min_x ||
+    /* Image ink can differ by a few pixels when a different line supplies
+     * the outermost side bearing; the positioned block anchor must not move. */
+    if (same_sig(&legacy, &centered) || abs(legacy.min_x - centered.min_x) > 3 ||
             legacy.min_y != centered.min_y) {
         fprintf(stderr, "ta2 changed the top-left block anchor or left lines unchanged: "
                 "legacy=(%d,%d)..(%d,%d), ta=(%d,%d)..(%d,%d), same=%d\n",
@@ -236,7 +239,7 @@ int main(void)
     ok &= render_case(lib, renderer,
         "{\\an9\\ta1\\pos(320,180)}LONG FIRST LINE\\Nshort", &right_left);
     if (same_sig(&right_legacy, &right_left) ||
-            right_legacy.max_x != right_left.max_x ||
+            abs(right_legacy.max_x - right_left.max_x) > 3 ||
             right_legacy.min_y != right_left.min_y) {
         fprintf(stderr, "ta1 changed the top-right block anchor or left lines unchanged: "
                 "legacy=(%d,%d)..(%d,%d), ta=(%d,%d)..(%d,%d), same=%d\n",
@@ -250,7 +253,7 @@ int main(void)
     ok &= render_case(lib, renderer,
         "{\\an1\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort", &bottom_right);
     if (same_sig(&bottom_legacy, &bottom_right) ||
-            bottom_legacy.min_x != bottom_right.min_x ||
+            abs(bottom_legacy.min_x - bottom_right.min_x) > 3 ||
             bottom_legacy.max_y != bottom_right.max_y) {
         fprintf(stderr, "ta3 changed the bottom-left block anchor or right lines unchanged: "
                 "legacy=(%d,%d)..(%d,%d), ta=(%d,%d)..(%d,%d), same=%d\n",
