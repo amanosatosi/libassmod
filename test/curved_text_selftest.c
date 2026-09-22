@@ -130,6 +130,12 @@ static double center_y(const Sample *sample)
     return (double) (sample->weighted_y / sample->weight);
 }
 
+static double combined_center_x(const Sample *a, const Sample *b)
+{
+    return (double) ((a->weighted_x + b->weighted_x) /
+                     (a->weight + b->weight));
+}
+
 static int width(const Sample *sample)
 {
     return sample->max_x - sample->min_x;
@@ -344,14 +350,169 @@ int main(void)
     ok &= expect(same_sample(&animated, &fixed),
                  "animated ctx/cty did not match the interpolated static state");
 
-    Sample multiline, multiline_normal;
+    Sample multiline, multiline_normal, multiline_one, multiline_three;
     ok &= render_sample(lib, renderer,
-        "{\\an5\\pos(480,280)\\ct(m -300 0 l 300 0)}ONE\\NTWO",
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}TEST",
+        0, &multiline_one);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}TEST\\NTEST",
         0, &multiline);
     ok &= render_sample(lib, renderer,
-        "{\\an5\\pos(480,280)}ONE\\NTWO", 0, &multiline_normal);
-    ok &= expect(same_sample(&multiline, &multiline_normal),
-                 "multiline curved-text fallback changed normal layout");
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}TEST\\NTEST\\NTEST",
+        0, &multiline_three);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)}TEST\\NTEST", 0, &multiline_normal);
+    ok &= expect(height(&multiline) > height(&multiline_one) + 25 &&
+                 height(&multiline_three) > height(&multiline) + 25,
+                 "explicit lines did not receive separate curved baselines");
+    ok &= near(center_x(&multiline), center_x(&multiline_one), 2.0,
+               "second line did not restart path progression");
+    ok &= near(center_x(&multiline_three), center_x(&multiline_one), 2.0,
+               "third line did not restart path progression");
+    ok &= expect(!same_sample(&multiline, &multiline_normal),
+                 "multiline path fell back to ordinary layout");
+
+    Sample acceptance_one, acceptance_two;
+    ok &= render_sample(lib, renderer,
+        "{\\pos(418,360)\\ct(m -134.95 0 b -44.98 -45.33 44.98 -45.33 134.95 0)}testingly test",
+        0, &acceptance_one);
+    ok &= render_sample(lib, renderer,
+        "{\\pos(418,360)\\ct(m -134.95 0 b -44.98 -45.33 44.98 -45.33 134.95 0)}testingly test\\Nand test again",
+        0, &acceptance_two);
+    ok &= expect(acceptance_two.coverage > acceptance_one.coverage &&
+                 height(&acceptance_two) > height(&acceptance_one) + 20,
+                 "acceptance example did not render a second curved line");
+
+    Sample small_one, small_two, large_one, large_two;
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\fs40\\ct(m 0 0 l 600 0)}TEST",
+        0, &small_one);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\fs40\\ct(m 0 0 l 600 0)}TEST\\NTEST",
+        0, &small_two);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\fs80\\ct(m 0 0 l 600 0)}TEST",
+        0, &large_one);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\fs80\\ct(m 0 0 l 600 0)}TEST\\NTEST",
+        0, &large_two);
+    ok &= expect(2 * (center_y(&large_two) - center_y(&large_one)) >
+                 2 * (center_y(&small_two) - center_y(&small_one)) + 20,
+                 "curved line spacing did not follow font metrics");
+
+    const int alignments[] = {4, 5, 6};
+    for (size_t i = 0; i < sizeof(alignments) / sizeof(alignments[0]); i++) {
+        char long_text[256], short_text[256], both_text[256];
+        const char *format =
+            "{\\an%d\\pos(480,280)\\ct(m -300 0 l 300 0)}%s";
+        snprintf(long_text, sizeof(long_text), format, alignments[i],
+                 "THIS IS A LONG LINE");
+        snprintf(short_text, sizeof(short_text), format, alignments[i],
+                 "short");
+        snprintf(both_text, sizeof(both_text), format, alignments[i],
+                 "THIS IS A LONG LINE\\Nshort");
+        Sample long_line, short_line, both_lines;
+        ok &= render_sample(lib, renderer, long_text, 0, &long_line);
+        ok &= render_sample(lib, renderer, short_text, 0, &short_line);
+        ok &= render_sample(lib, renderer, both_text, 0, &both_lines);
+        ok &= near(center_x(&both_lines),
+                   combined_center_x(&long_line, &short_line), 2.0,
+                   "visual lines did not align independently on the path");
+    }
+
+    Sample diagonal_one, diagonal_two;
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 500 180)}TEST",
+        0, &diagonal_one);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 500 180)}TEST\\NTEST",
+        0, &diagonal_two);
+    ok &= expect(center_x(&diagonal_two) < center_x(&diagonal_one) - 5 &&
+                 center_y(&diagonal_two) > center_y(&diagonal_one) + 15,
+                 "multiline offset did not follow the diagonal path normal");
+
+    Sample cubic_one, cubic_two, wrapped, wrapped_normal, unwrapped_normal;
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(480,180)\\ct(m -300 0 b -200 -150 200 -150 300 0)}TEST",
+        0, &cubic_one);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(480,180)\\ct(m -300 0 b -200 -150 200 -150 300 0)}TEST\\NTEST",
+        0, &cubic_two);
+    ok &= expect(height(&cubic_two) > height(&cubic_one) + 20,
+                 "strongly curved lines overlapped their baselines");
+    const char *wrap_words =
+        "A LONG AUTOMATIC WRAPPING LINE WITH ENOUGH WORDS TO CROSS THE "
+        "SUBTITLE MARGINS AND FORM MULTIPLE VISUAL LINES OF TEXT";
+    char wrap_text[512], wrap_normal_text[512];
+    snprintf(wrap_text, sizeof(wrap_text),
+        "{\\an5\\pos(480,200)\\ct(m -350 0 b -230 -90 230 -90 350 0)}%s",
+        wrap_words);
+    snprintf(wrap_normal_text, sizeof(wrap_normal_text),
+        "{\\an5\\pos(480,200)}%s", wrap_words);
+    ok &= render_sample(lib, renderer, wrap_text, 0, &wrapped);
+    ok &= render_sample(lib, renderer, wrap_normal_text, 0, &wrapped_normal);
+    snprintf(wrap_normal_text, sizeof(wrap_normal_text),
+        "{\\q2\\an5\\pos(480,200)}%s", wrap_words);
+    ok &= render_sample(lib, renderer, wrap_normal_text, 0,
+                        &unwrapped_normal);
+    ok &= expect(height(&wrapped_normal) > height(&unwrapped_normal) + 25,
+                 "automatic-wrap fixture did not produce visual lines");
+    ok &= expect(height(&wrapped) > height(&cubic_one) + 25 &&
+                 !same_sample(&wrapped, &wrapped_normal),
+                 "automatically wrapped lines did not follow the path");
+
+    Sample soft_break, hard_break, soft_as_space, space_text;
+    ok &= render_sample(lib, renderer,
+        "{\\q2\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}ONE\\nTWO",
+        0, &soft_break);
+    ok &= render_sample(lib, renderer,
+        "{\\q2\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}ONE\\NTWO",
+        0, &hard_break);
+    ok &= expect(same_sample(&soft_break, &hard_break),
+                 "WrapStyle 2 soft break missed curved visual-line layout");
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}ONE\\nTWO",
+        0, &soft_as_space);
+    ok &= render_sample(lib, renderer,
+        "{\\an4\\pos(180,150)\\ct(m 0 0 l 600 0)}ONE TWO",
+        0, &space_text);
+    ok &= expect(same_sample(&soft_as_space, &space_text),
+                 "default soft-break semantics changed");
+
+    Sample multiline_effects, multiline_plain, multiline_furi;
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(480,280)\\ct(m -300 0 b -200 -80 200 -80 300 0)}FIRST\\NSECOND",
+        0, &multiline_plain);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(480,280)\\bord5\\blur1\\ct(m -300 0 b -200 -80 200 -80 300 0)}FIRST\\NSECOND",
+        0, &multiline_effects);
+    ok &= expect(multiline_effects.coverage > multiline_plain.coverage,
+                 "border/blur failed on multiline curved text");
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(480,280)\\ct(m -300 0 b -200 -80 200 -80 300 0)}<A|B>\\N<C|D>",
+        0, &multiline_furi);
+    ok &= expect(multiline_furi.coverage > 0,
+                 "multiline furigana fallback stopped rendering");
+
+    Sample multiline_transforms, multiline_move0, multiline_move1;
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(480,280)\\fscx120\\fscy85\\frz12\\scale110"
+        "\\shad3\\clip(0,0,960,540)"
+        "\\ct(m -300 0 b -200 -80 200 -80 300 0)}FIRST\\NSECOND",
+        0, &multiline_transforms);
+    ok &= expect(multiline_transforms.coverage > 0,
+                 "multiline curved text failed with transforms or clipping");
+    const char *moving_lines =
+        "{\\an5\\move(380,230,480,280,0,1000)"
+        "\\ct(m -300 0 b -200 -80 200 -80 300 0)}FIRST\\NSECOND";
+    ok &= render_sample(lib, renderer, moving_lines, 0,
+                        &multiline_move0);
+    ok &= render_sample(lib, renderer, moving_lines, 500,
+                        &multiline_move1);
+    ok &= near(center_x(&multiline_move1) - center_x(&multiline_move0),
+               50.0, 2.0, "move X did not carry multiline curved text");
+    ok &= near(center_y(&multiline_move1) - center_y(&multiline_move0),
+               25.0, 2.0, "move Y did not carry multiline curved text");
 
     /* Script coverage.  The synthetic internal-chain regression separately
      * verifies that the multiple glyphs of one Myanmar cluster stay rigid. */
@@ -380,6 +541,15 @@ int main(void)
         ok &= expect(script_sample.coverage > 0,
                      "script coverage case produced no curved glyphs");
     }
+    char myanmar_lines[2048];
+    snprintf(myanmar_lines, sizeof(myanmar_lines),
+        "{\\an5\\pos(480,220)\\ct(m -340 0 b -220 -100 220 -100 340 0)}%s\\N%s",
+        scripts[2], scripts[3]);
+    Sample myanmar_multiline;
+    ok &= render_sample(lib, renderer, myanmar_lines, 0,
+                        &myanmar_multiline);
+    ok &= expect(myanmar_multiline.coverage > 0,
+                 "multiline Myanmar shaping produced no curved glyphs");
 
     ass_renderer_done(renderer);
     ass_library_done(lib);

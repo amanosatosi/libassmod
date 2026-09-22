@@ -1,7 +1,6 @@
 # Mangetsu curved text (`\ct`)
 
-Mangetsu can lay a normally shaped, single-line subtitle along an ASS vector
-path:
+Mangetsu can lay normally shaped subtitle lines along an ASS vector path:
 
 ```ass
 {\an5\pos(960,540)\ct(m -400 0 b -250 -180 250 -180 400 0)}CURVED TEXT
@@ -55,14 +54,15 @@ The path is event-wide and survives `\r` style resets.
 - `\ctan2`: center the shaped line on the path.
 - `\ctan3`: align the shaped line to the end of the path.
 
-Without `\ctan`, Mangetsu derives the value from the horizontal component of
+Each final visual line aligns independently. Without `\ctan`, Mangetsu derives
+the value from the horizontal component of
 `\an`: left (`\an1/4/7`) means start, center (`\an2/5/8`) means center, and
 right (`\an3/6/9`) means end. `\ctan` affects only path alignment. Values other
 than the strict integer enum 1 through 3 restore the `\an`-derived default.
 
 ### `\ctx<number>`
 
-Moves the complete shaped line forward or backward along the path. The value
+Moves each shaped line forward or backward along its path. The value
 is a script-unit path-distance offset and participates in Mangetsu's ordinary
 numeric `\t` interpolation:
 
@@ -100,6 +100,15 @@ shorter than the shaped line is deterministic: layout extrapolates past its
 ends using the first or last tangent instead of collapsing clusters at an
 endpoint.
 
+Hard breaks (`\N`), `\n` when WrapStyle treats it as a break, and automatic
+wrapping all produce separate visual lines. Every line starts its own distance
+along the same path and uses its own shaped width for start, center, or end
+alignment. The first line follows the authored baseline. Each later line is
+offset along the local path normal by the renderer's calculated baseline
+advance, including font metrics, scaling, and line spacing. On a horizontal
+left-to-right path, later lines appear below the first; on a diagonal or
+curved path, the offset follows the changing normal rather than screen Y.
+
 A horizontal left-to-right path has zero local rotation. For other tangents,
 the screen-coordinate tangent angle is converted to libass's existing rotation
 sign convention. Normal `\frz`, `\frx`, `\fry`, `\org`, and positioning still
@@ -132,9 +141,9 @@ When `\ct` is absent, no curved-path code changes glyph positions or matrices.
 - Path morphing such as `\t(...,\ct(...))` is intentionally unsupported in
   this first version. A transformed `\ct` is ignored; animate `\ctx` and
   `\cty` instead.
-- Curved layout currently requires one visual line. Hard line breaks, soft
-  wrapping, column layout, furigana layout, and scroll effects fall back to
-  normal rendering for the whole event; text is never deleted.
+- Column layout, furigana layout, and scroll effects still fall back to
+  normal rendering for the whole event; text is never deleted. Native
+  furigana has the same fallback for one-line and multiline events.
 - Existing karaoke timing and shaping data are preserved. Karaoke never
   causes this feature to split a HarfBuzz cluster, but advanced sweep/reveal
   paint remains based on the existing renderer's karaoke model and is not a
@@ -142,4 +151,3 @@ When `\ct` is absent, no curved-path code changes glyph positions or matrices.
 - BorderStyle 4/5 boxes and decorations retain their existing event-level
   geometry model; this version does not construct a separate curved box or a
   continuously bent underline.
-

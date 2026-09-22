@@ -7814,7 +7814,7 @@ bool ass_curved_text_transform_cluster(GlyphInfo *root,
 static bool apply_curved_text(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
-    if (!state->curved_path_outline || text_info->n_lines != 1 ||
+    if (!state->curved_path_outline || text_info->n_lines < 1 ||
             text_info->n_furi_groups || state->column_event ||
             (state->evt_type & (EVENT_HSCROLL | EVENT_VSCROLL)))
         return false;
@@ -7833,31 +7833,57 @@ static bool apply_curved_text(RenderContext *state)
         return false;
     }
 
-    double text_advance = 0.0;
+    /* The single-line case needs no allocation.  For wrapped text, keep one
+     * shaped advance, path cursor and normal baseline offset per visual line. */
+    double single_line[3] = {0};
+    double *line_data = single_line;
+    size_t n_lines = text_info->n_lines;
+    if (n_lines > 1) {
+        if (n_lines > SIZE_MAX / (3 * sizeof(*line_data))) {
+            ass_curved_path_free(&path);
+            return false;
+        }
+        line_data = calloc(3 * n_lines, sizeof(*line_data));
+        if (!line_data) {
+            ass_curved_path_free(&path);
+            return false;
+        }
+    }
+    double *line_advance = line_data;
+    double *line_cursor = line_data + n_lines;
+    double *line_baseline = line_data + 2 * n_lines;
+    compute_line_baselines(state, line_baseline);
+
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *root = text_info->glyphs + cmap[i];
+        if (root->line < 0 || (size_t) root->line >= n_lines)
+            goto fail;
         if (!root->skip && root->symbol != '\n')
-            text_advance += d6_to_double(root->cluster_advance.x);
+            line_advance[root->line] +=
+                d6_to_double(root->cluster_advance.x);
     }
-    if (!isfinite(text_advance)) {
-        ass_curved_path_free(&path);
-        return false;
-    }
+    for (size_t line = 0; line < n_lines; line++)
+        if (!isfinite(line_advance[line]) ||
+                !isfinite(line_baseline[line]))
+            goto fail;
 
     int alignment = state->curved_text_align;
     if (!alignment)
         alignment = state->alignment & 3;
-    double cursor;
     double normal_offset =
         y2scr_offset(state, state->curved_text_y * object_scale);
 
     /* Validate every transformed cluster before mutating any of them.  This
      * keeps pathological coordinates on the normal-rendering fallback path. */
     for (int pass = 0; pass < 2; pass++) {
-        cursor = alignment == HALIGN_CENTER ?
-            (path.length - text_advance) * 0.5 :
-            alignment == HALIGN_RIGHT ? path.length - text_advance : 0.0;
-        cursor += x2scr_offset(state, state->curved_text_x * object_scale);
+        for (size_t line = 0; line < n_lines; line++) {
+            line_cursor[line] = alignment == HALIGN_CENTER ?
+                (path.length - line_advance[line]) * 0.5 :
+                alignment == HALIGN_RIGHT ?
+                    path.length - line_advance[line] : 0.0;
+            line_cursor[line] +=
+                x2scr_offset(state, state->curved_text_x * object_scale);
+        }
         for (int i = 0; i < text_info->length; i++) {
             GlyphInfo *root = text_info->glyphs + cmap[i];
             if (root->skip || root->symbol == '\n')
@@ -7865,30 +7891,37 @@ static bool apply_curved_text(RenderContext *state)
 
             ASS_DVector point, tangent;
             double advance = d6_to_double(root->cluster_advance.x);
-            if (!ass_curved_path_sample(&path, cursor, &point, &tangent)) {
-                ass_curved_path_free(&path);
-                return false;
-            }
-            point.x += -tangent.y * normal_offset;
-            point.y +=  tangent.x * normal_offset;
+            int line = root->line;
+            if (!ass_curved_path_sample(&path, line_cursor[line],
+                                        &point, &tangent))
+                goto fail;
+            double offset = normal_offset + line_baseline[line];
+            point.x += -tangent.y * offset;
+            point.y +=  tangent.x * offset;
             double advance_x = advance * tangent.x;
             double advance_y = advance * tangent.y;
             if (!transform_curved_cluster(root, point, tangent, pass != 0) ||
                     !curved_d6_value(advance_x) ||
-                    !curved_d6_value(advance_y)) {
-                ass_curved_path_free(&path);
-                return false;
-            }
+                    !curved_d6_value(advance_y))
+                goto fail;
             if (pass) {
                 root->cluster_advance.x = double_to_d6(advance_x);
                 root->cluster_advance.y = double_to_d6(advance_y);
             }
-            cursor += advance;
+            line_cursor[line] += advance;
         }
     }
 
+    if (line_data != single_line)
+        free(line_data);
     ass_curved_path_free(&path);
     return true;
+
+fail:
+    if (line_data != single_line)
+        free(line_data);
+    ass_curved_path_free(&path);
+    return false;
 }
 
 static void compute_curved_string_bbox(TextInfo *text_info, ASS_DRect *bbox)
