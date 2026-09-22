@@ -2927,6 +2927,11 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
 
     style = handle_selective_style_overrides(state, style);
 
+    /* These alignment controls are override-level, unlike the event-wide
+     * positioning tags. A style reset restores their legacy fallbacks. */
+    state->line_alignment = 0;
+    state->curved_text_align = 0;
+
     init_font_scale(state);
 
     state->c[0] = style->PrimaryColour;
@@ -7210,7 +7215,8 @@ static void align_lines(RenderContext *state, double max_text_width)
     int i, j;
     double width = 0;
     int last_break = -1;
-    int halign = state->text_alignment & 3;
+    int halign = state->line_alignment ?
+        state->line_alignment : state->text_alignment & 3;
     int justify = state->justify;
     double max_width = 0;
 
@@ -7862,14 +7868,18 @@ static bool apply_curved_text(RenderContext *state)
             line_advance[root->line] +=
                 d6_to_double(root->cluster_advance.x);
     }
-    for (size_t line = 0; line < n_lines; line++)
+    double max_advance = 0.0;
+    for (size_t line = 0; line < n_lines; line++) {
         if (!isfinite(line_advance[line]) ||
                 !isfinite(line_baseline[line]))
             goto fail;
+        max_advance = FFMAX(max_advance, line_advance[line]);
+    }
 
-    int alignment = state->curved_text_align;
-    if (!alignment)
-        alignment = state->alignment & 3;
+    int alignment = state->curved_text_align ?
+        (state->curved_text_align - 1) % 3 + 1 : state->alignment & 3;
+    int line_alignment = state->line_alignment ?
+        state->line_alignment : state->text_alignment & 3;
     double normal_offset =
         y2scr_offset(state, state->curved_text_y * object_scale);
 
@@ -7877,10 +7887,18 @@ static bool apply_curved_text(RenderContext *state)
      * keeps pathological coordinates on the normal-rendering fallback path. */
     for (int pass = 0; pass < 2; pass++) {
         for (size_t line = 0; line < n_lines; line++) {
+            double aligned_advance = state->curved_text_align ?
+                max_advance : line_advance[line];
             line_cursor[line] = alignment == HALIGN_CENTER ?
-                (path.length - line_advance[line]) * 0.5 :
+                (path.length - aligned_advance) * 0.5 :
                 alignment == HALIGN_RIGHT ?
-                    path.length - line_advance[line] : 0.0;
+                    path.length - aligned_advance : 0.0;
+            if (state->curved_text_align) {
+                double spare = max_advance - line_advance[line];
+                line_cursor[line] += line_alignment == HALIGN_CENTER ?
+                    spare * 0.5 :
+                    line_alignment == HALIGN_RIGHT ? spare : 0.0;
+            }
             line_cursor[line] +=
                 x2scr_offset(state, state->curved_text_x * object_scale);
         }
@@ -7896,6 +7914,13 @@ static bool apply_curved_text(RenderContext *state)
                                         &point, &tangent))
                 goto fail;
             double offset = normal_offset + line_baseline[line];
+            if (state->curved_text_align) {
+                double asc = text_info->lines[line].asc;
+                double desc = text_info->lines[line].desc;
+                int row = (state->curved_text_align - 1) / 3;
+                offset += row == 2 ? asc :
+                    row == 1 ? (asc - desc) * 0.5 : -desc;
+            }
             point.x += -tangent.y * offset;
             point.y +=  tangent.x * offset;
             double advance_x = advance * tangent.x;

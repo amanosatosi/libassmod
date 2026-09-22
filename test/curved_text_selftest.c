@@ -324,13 +324,104 @@ int main(void)
     ok &= expect(same_sample(&reset_path, &selected_valid),
                  "style reset destroyed the event-wide path");
     ok &= render_sample(lib, renderer,
-        "{\\an5\\pos(480,280)\\ctan9\\ct(m -300 0 l 300 0)}ALIGN",
+        "{\\an5\\pos(480,280)\\ctan10\\ct(m -300 0 l 300 0)}ALIGN",
         0, &invalid_align);
     ok &= render_sample(lib, renderer,
         "{\\an5\\pos(480,280)\\ct(m -300 0 l 300 0)}ALIGN",
         0, &default_align);
     ok &= expect(same_sample(&invalid_align, &default_align),
                  "invalid ctan did not restore an-derived alignment");
+
+    Sample anchors[10];
+    for (int value = 1; value <= 9; value++) {
+        char text[160];
+        snprintf(text, sizeof(text),
+            "{\\an7\\pos(180,260)\\ctan%d\\ct(m 0 0 l 600 0)}ALIGN",
+            value);
+        ok &= render_sample(lib, renderer, text, 0, &anchors[value]);
+    }
+    for (int row = 0; row < 3; row++) {
+        int first = row * 3 + 1;
+        ok &= expect(center_x(&anchors[first]) + 30 <
+                     center_x(&anchors[first + 1]) &&
+                     center_x(&anchors[first + 1]) + 30 <
+                     center_x(&anchors[first + 2]),
+                     "ctan horizontal path anchoring failed");
+    }
+    for (int column = 1; column <= 3; column++) {
+        ok &= expect(center_y(&anchors[column + 6]) >
+                     center_y(&anchors[column + 3]) + 5 &&
+                     center_y(&anchors[column + 3]) >
+                     center_y(&anchors[column]) + 5,
+                     "ctan top/middle/bottom path anchoring failed");
+    }
+    Sample first_ctan, reset_ctan, ignored_ctan, curved_anchor, diagonal_anchor;
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\ctan5\\ctan9\\ct(m 0 0 l 600 0)}ALIGN",
+        0, &first_ctan);
+    ok &= expect(same_sample(&first_ctan, &anchors[5]),
+                 "ctan did not keep the first valid override");
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\ctan5\\r\\ct(m 0 0 l 600 0)}ALIGN",
+        0, &reset_ctan);
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\ct(m 0 0 l 600 0)}ALIGN",
+        0, &default_align);
+    ok &= expect(same_sample(&reset_ctan, &default_align),
+                 "style reset did not restore legacy curved baseline");
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\t(0,1000,\\ctan5)\\ct(m 0 0 l 600 0)}ALIGN",
+        500, &ignored_ctan);
+    ok &= expect(same_sample(&ignored_ctan, &default_align),
+                 "animated ctan changed the static path anchor");
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(480,280)\\ctan8"
+        "\\ct(m -300 0 b -220 -130 160 -60 300 40)}ASYMMETRIC",
+        0, &curved_anchor);
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,180)\\ctan8\\ct(m 0 0 l 450 180)}DIAGONAL",
+        0, &diagonal_anchor);
+    ok &= expect(curved_anchor.coverage > 0 && diagonal_anchor.coverage > 0,
+                 "ctan failed on curved or diagonal paths");
+
+    Sample ta_left, ta_center, ta_right, ctan_left, ctan_center;
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta1\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        0, &ta_left);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta2\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        0, &ta_center);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta3\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        0, &ta_right);
+    ok &= expect(center_x(&ta_left) + 5 < center_x(&ta_center) &&
+                 center_x(&ta_center) + 5 < center_x(&ta_right),
+                 "ta did not align curved visual lines within the text block");
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta2\\ctan4\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        0, &ctan_left);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta2\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        0, &ctan_center);
+    ok &= expect(center_x(&ctan_left) + 30 < center_x(&ctan_center),
+                 "ctan path anchor was overwritten by ta");
+
+    Sample small_baseline, small_top, large_baseline, large_top;
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\fs30\\bord0\\shad0\\ct(m 0 0 l 600 0)}METRICS",
+        0, &small_baseline);
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\fs30\\bord0\\shad0\\ctan7\\ct(m 0 0 l 600 0)}METRICS",
+        0, &small_top);
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\fs60\\bord0\\shad0\\ct(m 0 0 l 600 0)}METRICS",
+        0, &large_baseline);
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\pos(180,260)\\fs60\\bord0\\shad0\\ctan7\\ct(m 0 0 l 600 0)}METRICS",
+        0, &large_top);
+    ok &= expect(center_y(&large_top) - center_y(&large_baseline) >
+                 center_y(&small_top) - center_y(&small_baseline) + 5,
+                 "ctan vertical anchor did not follow scaled line metrics");
 
     Sample short0, short1;
     const char *short_path =
@@ -479,7 +570,7 @@ int main(void)
     ok &= expect(same_sample(&soft_as_space, &space_text),
                  "default soft-break semantics changed");
 
-    Sample multiline_effects, multiline_plain, multiline_furi;
+    Sample multiline_effects, multiline_plain, multiline_furi, aligned_furi;
     ok &= render_sample(lib, renderer,
         "{\\an5\\pos(480,280)\\ct(m -300 0 b -200 -80 200 -80 300 0)}FIRST\\NSECOND",
         0, &multiline_plain);
@@ -493,6 +584,13 @@ int main(void)
         0, &multiline_furi);
     ok &= expect(multiline_furi.coverage > 0,
                  "multiline furigana fallback stopped rendering");
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta2\\ctan5\\pos(480,280)"
+        "\\ct(m -300 0 b -200 -80 200 -80 300 0)}"
+        "<漢字|ふりがな>\\Nshort",
+        0, &aligned_furi);
+    ok &= expect(aligned_furi.coverage > 0,
+                 "ta/ctan furigana fallback stopped rendering");
 
     Sample multiline_transforms, multiline_move0, multiline_move1;
     ok &= render_sample(lib, renderer,

@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <stdbool.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 
 typedef struct {
     int count;
+    int min_x, min_y, max_x, max_y;
     uint64_t coverage;
     uint64_t hash;
 } RenderSig;
@@ -76,9 +78,17 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
     (void) change;
 
     memset(sig, 0, sizeof(*sig));
+    sig->min_x = sig->min_y = INT_MAX;
+    sig->max_x = sig->max_y = INT_MIN;
     sig->hash = 1469598103934665603ULL;
     for (ASS_Image *cur = img; cur; cur = cur->next) {
         sig->count++;
+        if (cur->dst_x < sig->min_x) sig->min_x = cur->dst_x;
+        if (cur->dst_y < sig->min_y) sig->min_y = cur->dst_y;
+        if (cur->dst_x + cur->w > sig->max_x)
+            sig->max_x = cur->dst_x + cur->w;
+        if (cur->dst_y + cur->h > sig->max_y)
+            sig->max_y = cur->dst_y + cur->h;
         hash_i32(&sig->hash, cur->type);
         hash_i32(&sig->hash, cur->w);
         hash_i32(&sig->hash, cur->h);
@@ -190,6 +200,100 @@ int main(void)
         "{\\an3\\tan7\\pos(320,180)\\frz25}Hello",
         "{\\an3\\tan7\\pos(320,180)\\org(320,180)\\frz25}Hello",
         "\\tan moved the default transform origin away from the object anchor");
+
+    const int equivalent[][3] = {{1, 4, 7}, {2, 5, 8}, {3, 6, 9}};
+    for (int group = 0; group < 3; group++) {
+        char first[160], other[160];
+        snprintf(first, sizeof(first),
+            "{\\an7\\ta%d\\pos(320,180)}LONG FIRST LINE\\Nshort",
+            equivalent[group][0]);
+        for (int member = 1; member < 3; member++) {
+            snprintf(other, sizeof(other),
+                "{\\an7\\ta%d\\pos(320,180)}LONG FIRST LINE\\Nshort",
+                equivalent[group][member]);
+            ok &= expect_same(lib, renderer, first, other,
+                              "equivalent ta numpad values rendered differently");
+        }
+    }
+
+    RenderSig legacy, centered, right_legacy, right_left, bottom_legacy,
+              bottom_right;
+    ok &= render_case(lib, renderer,
+        "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort", &legacy);
+    ok &= render_case(lib, renderer,
+        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort", &centered);
+    if (same_sig(&legacy, &centered) || legacy.min_x != centered.min_x ||
+            legacy.min_y != centered.min_y) {
+        fprintf(stderr, "ta2 changed the top-left block anchor or left lines unchanged\n");
+        ok = false;
+    }
+    ok &= render_case(lib, renderer,
+        "{\\an9\\pos(320,180)}LONG FIRST LINE\\Nshort", &right_legacy);
+    ok &= render_case(lib, renderer,
+        "{\\an9\\ta1\\pos(320,180)}LONG FIRST LINE\\Nshort", &right_left);
+    if (same_sig(&right_legacy, &right_left) ||
+            right_legacy.max_x != right_left.max_x ||
+            right_legacy.min_y != right_left.min_y) {
+        fprintf(stderr, "ta1 changed the top-right block anchor or left lines unchanged\n");
+        ok = false;
+    }
+    ok &= render_case(lib, renderer,
+        "{\\an1\\pos(320,180)}LONG FIRST LINE\\Nshort", &bottom_legacy);
+    ok &= render_case(lib, renderer,
+        "{\\an1\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort", &bottom_right);
+    if (same_sig(&bottom_legacy, &bottom_right) ||
+            bottom_legacy.min_x != bottom_right.min_x ||
+            bottom_legacy.max_y != bottom_right.max_y) {
+        fprintf(stderr, "ta3 changed the bottom-left block anchor or right lines unchanged\n");
+        ok = false;
+    }
+
+    ok &= expect_same(lib, renderer,
+        "{\\an7\\ta2\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "ta did not keep the first valid override");
+    ok &= expect_same(lib, renderer,
+        "{\\an7\\ta0\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "invalid ta prevented a later valid override");
+    ok &= expect_same(lib, renderer,
+        "{\\an7\\ta2\\r\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "style reset did not clear ta");
+    ok &= expect_same(lib, renderer,
+        "{\\an7\\t(0,1000,\\ta2)\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "ta inside a transform affected static line layout");
+
+    ok &= expect_same(lib, renderer,
+        "{\\q2\\an7\\ta2\\pos(320,180)}LONG LINE\\nshort",
+        "{\\q2\\an7\\ta2\\pos(320,180)}LONG LINE\\Nshort",
+        "ta missed a WrapStyle 2 soft line break");
+    ok &= expect_same(lib, renderer,
+        "{\\an7\\ta2\\pos(320,180)}LONG\\nLINE",
+        "{\\an7\\ta2\\pos(320,180)}LONG LINE",
+        "ta changed default soft-break semantics");
+
+    char const *wrap_words =
+        "THIS IS A LONG AUTOMATICALLY WRAPPED SUBTITLE LINE WITH ENOUGH "
+        "WORDS TO CREATE SEVERAL VISUAL LINES";
+    char wrap_left[256], wrap_center[256], wrap_none[256];
+    snprintf(wrap_left, sizeof(wrap_left),
+        "{\\an7\\ta1\\pos(100,80)}%s", wrap_words);
+    snprintf(wrap_center, sizeof(wrap_center),
+        "{\\an7\\ta2\\pos(100,80)}%s", wrap_words);
+    snprintf(wrap_none, sizeof(wrap_none),
+        "{\\q2\\an7\\ta2\\pos(100,80)}%s", wrap_words);
+    RenderSig wrapped_left, wrapped_center, unwrapped;
+    ok &= render_case(lib, renderer, wrap_left, &wrapped_left);
+    ok &= render_case(lib, renderer, wrap_center, &wrapped_center);
+    ok &= render_case(lib, renderer, wrap_none, &unwrapped);
+    if (wrapped_left.max_y - wrapped_left.min_y <=
+            unwrapped.max_y - unwrapped.min_y + 20 ||
+            same_sig(&wrapped_left, &wrapped_center)) {
+        fprintf(stderr, "ta did not align automatically wrapped visual lines\n");
+        ok = false;
+    }
 
     ass_renderer_done(renderer);
     ass_library_done(lib);

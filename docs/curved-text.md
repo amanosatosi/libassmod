@@ -48,17 +48,55 @@ The first valid, non-transformed `\ct` definition in an event wins. Invalid
 definitions do not prevent a later valid definition from being selected.
 The path is event-wide and survives `\r` style resets.
 
-### `\ctan1`, `\ctan2`, `\ctan3`
+### `\ta1`–`\ta9`
 
-- `\ctan1`: align the shaped line to the start of the path.
-- `\ctan2`: center the shaped line on the path.
-- `\ctan3`: align the shaped line to the end of the path.
+`\ta` aligns final visual lines within the ordinary multiline text block.
+Values 1/4/7 mean left, 2/5/8 mean center, and 3/6/9 mean right; the vertical
+digit component is ignored. `\an` still controls the event's `\pos`/margin
+anchor, origin, and vertical placement. For example:
 
-Each final visual line aligns independently. Without `\ctan`, Mangetsu derives
-the value from the horizontal component of
-`\an`: left (`\an1/4/7`) means start, center (`\an2/5/8`) means center, and
-right (`\an3/6/9`) means end. `\ctan` affects only path alignment. Values other
-than the strict integer enum 1 through 3 restore the `\an`-derived default.
+```ass
+{\an7\ta2\pos(400,200)}LONG FIRST LINE\Nshort
+```
+
+The block stays top-left anchored at `(400,200)`, while `short` is centered
+under the longer line. `\ta` applies after hard/soft wrapping, including
+automatic visual lines. Without it, the existing `\an`/`\tan` line-alignment
+behavior is unchanged. The first valid integer 1–9 wins until `\r` or
+`\rStyleName`; a reset restores that legacy fallback. Invalid values are
+ignored, and `\ta` inside `\t` has no effect.
+
+### `\ctan1`–`\ctan9`
+
+`\ctan` anchors curved text relative to the path using the full numpad:
+
+```text
+7 8 9   top of text on path
+4 5 6   vertical middle on path
+1 2 3   bottom of text on path
+│ │ │
+│ │ └─ path end
+│ └─── path center
+└───── path start
+```
+
+For a horizontal path, `\ctan8` centers the text along it and places the
+text's top at the path; `\ctan5` centers its vertical middle there; `\ctan2`
+places its bottom there. Vertical offsets come from each visual line's actual
+ascent and descent: top `+asc`, middle `(asc − desc)/2`, bottom `−desc`, along
+the local Y-down path normal. Font metrics, scale, and line spacing therefore
+remain authoritative.
+
+With explicit `\ctan`, the widest shaped visual line defines the text block
+width. The horizontal digit anchors that block at the path start, center, or
+end; `\ta` (or `\an` when `\ta` is absent) aligns shorter lines inside it.
+For example, `\an7\ta2\ctan5` keeps the event top-left anchored, centers
+short lines in the text block, and centers that block on the curved path.
+
+Without `\ctan`, legacy `\ct` stays baseline-based: each visual line is
+placed independently along the path by the horizontal component of `\an`.
+No vertical metric shift is added. The first valid integer 1–9 wins until a
+style reset; invalid values are ignored and `\ctan` inside `\t` has no effect.
 
 ### `\ctx<number>`
 
@@ -102,8 +140,10 @@ endpoint.
 
 Hard breaks (`\N`), `\n` when WrapStyle treats it as a break, and automatic
 wrapping all produce separate visual lines. Every line starts its own distance
-along the same path and uses its own shaped width for start, center, or end
-alignment. The first line follows the authored baseline. Each later line is
+along the same path. With no `\ctan`, each line uses its own shaped width for
+legacy path alignment; with explicit `\ctan`, the widest line defines the
+path-aligned block and `\ta` aligns shorter lines within it. The first line
+follows the authored baseline. Each later line is
 offset along the local path normal by the renderer's calculated baseline
 advance, including font metrics, scaling, and line spacing. On a horizontal
 left-to-right path, later lines appear below the first; on a diagonal or

@@ -672,6 +672,7 @@ struct render_context {
 
     int alignment;              // object anchor; if zero, style value will be used
     int text_alignment;         // text horizontal alignment; vertical follows alignment
+    int line_alignment;         // explicit \ta horizontal line alignment; 0 = legacy
     int justify;                // justify instructions
     double frx, fry, frz;
     double frs;
@@ -781,7 +782,7 @@ struct render_context {
     bool perspective_enabled;
     ASS_PerspectiveParams perspective;
     OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
-    int curved_text_align;                 // 0 derives from \an, 1..3 explicit
+    int curved_text_align;                 // 0 = legacy baseline, 1..9 = path anchor
     double curved_text_x;                  // along-path offset, script units
     double curved_text_y;                  // normal offset, script units
 

@@ -3087,13 +3087,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             apply_secondary_outline_gradient(state, name_end, q, args, nargs,
                                              pwr, nested);
         } else if (tag("ctan")) {
-            if (!nested) {
+            if (!nested && !state->curved_text_align) {
                 int32_t value;
                 if (nargs == 1 && parse_int32_arg_strict(*args, &value) &&
-                        value >= 1 && value <= 3)
+                        value >= 1 && value <= 9)
                     state->curved_text_align = value;
-                else
-                    state->curved_text_align = 0;
             }
         } else if (tag("ctx")) {
             double target;
@@ -3725,6 +3723,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                          (numpad2align(val) & 3);
                 state->parsed_tags |= PARSED_TAN;
             }
+        } else if (tag("ta")) {
+            int32_t val;
+            if (!nested && !state->line_alignment && nargs == 1 &&
+                    parse_int32_arg_strict(*args, &val) &&
+                    val >= 1 && val <= 9)
+                state->line_alignment = numpad2align(val) & 3;
         } else if (tag("a")) {
             int32_t val = argtoi32(*args);
             if ((state->parsed_tags & PARSED_A) == 0) {
