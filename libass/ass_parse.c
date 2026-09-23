@@ -3308,6 +3308,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                         value >= 1 && value <= 9)
                     state->curved_text_align = value;
             }
+        } else if (tag("wtan")) {
+            if (!nested && !state->warp_text_alignment) {
+                int32_t value;
+                if (nargs == 1 && parse_int32_arg_strict(*args, &value) &&
+                        value >= 1 && value <= 9)
+                    state->warp_text_alignment = value;
+            }
         } else if (tag("ctx")) {
             double target;
             if (nargs == 1 && numeric_arg_strict(*args, state->curved_text_x,

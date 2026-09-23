@@ -708,6 +708,7 @@ struct render_context {
     int alignment;              // object anchor; if zero, style value will be used
     int text_alignment;         // text horizontal alignment; vertical follows alignment
     int line_alignment;         // explicit \ta horizontal line alignment; 0 = legacy
+    int warp_text_alignment;    // explicit \wtan visual warped-block anchor; 0 = legacy
     int justify;                // justify instructions
     double frx, fry, frz;
     double frs;

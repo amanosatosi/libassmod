@@ -2,6 +2,9 @@
 
 Mangetsu implements VSFilterMod’s six-argument `\distort` override tag and an extended eight-argument form that also exposes the top-left corner. Both forms use the existing bilinear outline warp.
 
+Use [`\wtan1`–`\wtan9`](warp-text-anchor.md) to place the complete warped
+multiline text block by its final outline bounds.
+
 ## User-facing behavior
 
 - **Legacy syntax:** `\distort(u1,v1,u2,v2,u3,v3)` — P0 is `(0,0)`.

@@ -2521,6 +2521,54 @@ static void add_furi_to_bbox(TextInfo *text_info, ASS_DRect *bbox)
     }
 }
 
+/* \wtan uses the ink geometry after distortion and line/ruby placement.
+ * Keep this separate from compute_string_bbox: ordinary \an deliberately
+ * uses layout metrics, including the first line's ascent. */
+static bool compute_warp_text_bbox(TextInfo *text_info, ASS_DRect *bbox)
+{
+    bool seen = false, warped = false;
+    bbox->x_min = bbox->x_max = bbox->y_min = bbox->y_max = 0.0;
+
+    for (int list = -1; list < text_info->n_furi_groups; list++) {
+        GlyphInfo *glyphs = list < 0 ? text_info->glyphs :
+            text_info->furi_groups[list].glyphs;
+        int length = list < 0 ? text_info->length :
+            text_info->furi_groups[list].length;
+        for (int i = 0; i < length; i++) {
+            GlyphInfo *root = glyphs + i;
+            if (root->skip)
+                continue;
+            for (GlyphInfo *info = root; info; info = info->next) {
+                OutlineHashValue *outline = info->has_distort_outline ?
+                    info->distorted_outline : info->outline;
+                if (!outline || (!outline->outline[0].n_points &&
+                                 !outline->outline[1].n_points))
+                    continue;
+                warped |= info->has_distort_outline;
+                double x = d6_to_double(info->pos.x);
+                double y = d6_to_double(info->pos.y);
+                double x0 = x + d6_to_double(info->bbox.x_min);
+                double x1 = x + d6_to_double(info->bbox.x_max);
+                double y0 = y + d6_to_double(info->bbox.y_min);
+                double y1 = y + d6_to_double(info->bbox.y_max);
+                if (!seen) {
+                    bbox->x_min = x0;
+                    bbox->x_max = x1;
+                    bbox->y_min = y0;
+                    bbox->y_max = y1;
+                    seen = true;
+                } else {
+                    bbox->x_min = FFMIN(bbox->x_min, x0);
+                    bbox->x_max = FFMAX(bbox->x_max, x1);
+                    bbox->y_min = FFMIN(bbox->y_min, y0);
+                    bbox->y_max = FFMAX(bbox->y_max, y1);
+                }
+            }
+        }
+    }
+    return seen && warped;
+}
+
 static ASS_Style *handle_selective_style_overrides(RenderContext *state,
                                                    ASS_Style *rstyle)
 {
@@ -2985,6 +3033,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     /* These alignment controls are override-level, unlike the event-wide
      * positioning tags. A style reset restores their legacy fallbacks. */
     state->line_alignment = 0;
+    state->warp_text_alignment = 0;
     state->curved_text_align = 0;
 
     init_font_scale(state);
@@ -3182,6 +3231,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->perspective = (ASS_PerspectiveParams) {0};
     state->curved_path_outline = NULL;
     state->curved_text_align = 0;
+    state->warp_text_alignment = 0;
     state->curved_text_x = 0.0;
     state->curved_text_y = 0.0;
     state->line_border_style_set = false;
@@ -10056,6 +10106,9 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     ASS_DRect render_bbox = bbox;
     add_furi_to_bbox(text_info, &render_bbox);
+    ASS_DRect warp_text_bbox;
+    bool warp_text_anchor = state->warp_text_alignment && !curved_text &&
+        compute_warp_text_bbox(text_info, &warp_text_bbox);
     ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &render_bbox;
     ASS_DRect *bbox_for_position = &render_bbox;
     ASS_DVector object_anchor = {0};
@@ -10176,7 +10229,10 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (!curved_text) {
         get_base_point(bbox_for_position, state->alignment,
                        &object_base_x, &object_base_y);
-        get_base_point(bbox_for_position, state->text_alignment,
+        get_base_point(warp_text_anchor ? &warp_text_bbox : bbox_for_position,
+                       warp_text_anchor ?
+                           numpad2align(state->warp_text_alignment) :
+                           state->text_alignment,
                        &text_base_x, &text_base_y);
         object_anchor.x = device_x + object_base_x;
         object_anchor.y = device_y + object_base_y;

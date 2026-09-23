@@ -142,6 +142,40 @@ static bool expect_different(ASS_Library *lib, ASS_Renderer *renderer,
     return true;
 }
 
+static bool expect_warp_anchor(ASS_Library *lib, ASS_Renderer *renderer,
+                               int alignment, int x, int y,
+                               const char *text, const char *label)
+{
+    char input[2048];
+    int n = snprintf(input, sizeof(input),
+        "{\\an5\\pos(%d,%d)\\fs32\\bord0\\shad0\\wtan%d"
+        "\\distort(1,0,1.3,1.15,-0.2,1)}%s",
+        x, y, alignment, text);
+    RenderSig sig;
+    if (n < 0 || n >= (int) sizeof(input) ||
+            !render_case(lib, renderer, input, &sig)) {
+        fprintf(stderr, "%s: could not render warped text\n", label);
+        return false;
+    }
+
+    int column = (alignment - 1) % 3;
+    int row = (alignment - 1) / 3;
+    double anchor_x = column == 0 ? sig.min_x : column == 1 ?
+        (sig.min_x + sig.max_x) * 0.5 : sig.max_x;
+    double anchor_y = row == 2 ? sig.min_y : row == 1 ?
+        (sig.min_y + sig.max_y) * 0.5 : sig.max_y;
+    /* The outline control box is calculated before rasterization; hinting and
+     * anti-aliasing may change the image rectangle by a few pixels. */
+    if (anchor_x - x < -5 || anchor_x - x > 5 ||
+            anchor_y - y < -5 || anchor_y - y > 5) {
+        fprintf(stderr, "%s: anchor=(%.1f,%.1f), expected=(%d,%d), "
+                "ink=(%d,%d)..(%d,%d)\n", label, anchor_x, anchor_y,
+                x, y, sig.min_x, sig.min_y, sig.max_x, sig.max_y);
+        return false;
+    }
+    return true;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -309,6 +343,50 @@ int main(void)
         fprintf(stderr, "ta did not align automatically wrapped visual lines\n");
         ok = false;
     }
+
+    const char *three_lines = "A\\NA MUCH LONGER SECOND LINE\\NABC";
+    ok &= expect_warp_anchor(lib, renderer, 8, 320, 60, three_lines,
+                             "wtan8 multiline top center");
+    ok &= expect_warp_anchor(lib, renderer, 5, 320, 180, three_lines,
+                             "wtan5 multiline center");
+    ok &= expect_warp_anchor(lib, renderer, 2, 320, 300, three_lines,
+                             "wtan2 multiline bottom center");
+    ok &= expect_warp_anchor(lib, renderer, 4, 20, 180, three_lines,
+                             "wtan4 multiline left edge");
+    ok &= expect_warp_anchor(lib, renderer, 6, 620, 180, three_lines,
+                             "wtan6 multiline right edge");
+    ok &= expect_warp_anchor(lib, renderer, 8, 320, 55,
+        "A\\N{\\distort(1,-3,1.35,1.2,-0.1,1.1)}LONG SECOND LINE"
+        "\\N{\\distort(1,0.1,1.35,1.7,-0.1,1.3)}ABC",
+        "wtan8 follows later lines' warped vertical extent");
+    ok &= expect_warp_anchor(lib, renderer, 8, 320, 60,
+        "<A|ruby>\\NSECOND\\Nthird",
+        "wtan8 includes ruby above the first line");
+
+    for (int alignment = 1; alignment <= 9; alignment++) {
+        int column = (alignment - 1) % 3;
+        int row = (alignment - 1) / 3;
+        int x = column == 0 ? 30 : column == 1 ? 320 : 610;
+        int y = row == 2 ? 60 : row == 1 ? 180 : 300;
+        ok &= expect_warp_anchor(lib, renderer, alignment, x, y, "SINGLE",
+                                 "single-line wtan anchor");
+    }
+    ok &= expect_same(lib, renderer,
+        "{\\an5\\pos(320,180)\\wtan8}PLAIN\\NLINE",
+        "{\\an5\\pos(320,180)}PLAIN\\NLINE",
+        "wtan changed rendering without a warp");
+    ok &= expect_same(lib, renderer,
+        "{\\an5\\pos(320,180)\\wtan0\\wtan8\\distort(1,0,1.3,1,-.2,1)}A\\NB",
+        "{\\an5\\pos(320,180)\\wtan8\\distort(1,0,1.3,1,-.2,1)}A\\NB",
+        "invalid wtan blocked the next valid value");
+    ok &= expect_same(lib, renderer,
+        "{\\an5\\pos(320,180)\\wtan8\\r\\distort(1,0,1.3,1,-.2,1)}A\\NB",
+        "{\\an5\\pos(320,180)\\distort(1,0,1.3,1,-.2,1)}A\\NB",
+        "style reset did not clear wtan");
+    ok &= expect_same(lib, renderer,
+        "{\\an5\\pos(320,180)\\t(0,1000,\\wtan8)\\distort(1,0,1.3,1,-.2,1)}A\\NB",
+        "{\\an5\\pos(320,180)\\distort(1,0,1.3,1,-.2,1)}A\\NB",
+        "wtan inside transform affected static alignment");
 
     ass_renderer_done(renderer);
     ass_library_done(lib);
