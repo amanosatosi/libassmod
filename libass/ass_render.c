@@ -592,6 +592,18 @@ static uint32_t secondary_outline_color(const CombinedBitmapInfo *info)
     return color;
 }
 
+static inline bool polka_hit(int x, int y, int period, int row_period,
+                             int radius)
+{
+    int py = y * 16 + 8;
+    int row = py / row_period;
+    int dy = py % row_period - row_period / 2;
+    int px = x * 16 + 8 + (row & 1 ? period / 2 : 0);
+    int dx = px % period - period / 2;
+    return (int64_t) dx * dx + (int64_t) dy * dy <=
+           (int64_t) radius * radius;
+}
+
 static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                                          CombinedBitmapInfo *info,
                                          const uint8_t *mask, int w, int h,
@@ -639,6 +651,36 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         clip_diff = 0;
 
     bool secondary_outline = layer == KARAOKE_SECONDARY_OUTLINE_LAYER;
+    PolkaPaint polka = {0};
+    if (!info->from_drawing && layer >= 0 && layer < 3) {
+        polka = info->pattern.propagate_polka ?
+            info->pattern.polka_face[0] : (PolkaPaint) {0};
+        PolkaPaint explicit_paint = info->pattern.polka_face[layer];
+        if (explicit_paint.has_color) {
+            polka.color = explicit_paint.color;
+            polka.has_color = true;
+        }
+        if (explicit_paint.has_size) {
+            polka.size = explicit_paint.size;
+            polka.has_size = true;
+        }
+        if (explicit_paint.has_spacing) {
+            polka.spacing = explicit_paint.spacing;
+            polka.has_spacing = true;
+        }
+    }
+    double dot_size = polka.size * state->screen_scale_y;
+    double dot_spacing = (polka.has_spacing ? polka.spacing :
+                          2.5 * polka.size) * state->screen_scale_y;
+    bool use_polka = polka.has_color && polka.has_size &&
+        dot_size > 0 && dot_spacing > 0;
+    int dot_period = use_polka ? FFMAX(1, (int) lround(dot_spacing * 16)) : 0;
+    int dot_row_period = use_polka ?
+        FFMAX(1, (int) lround(dot_spacing * 0.8660254038 * 16)) : 0;
+    int dot_radius = use_polka ? FFMAX(1, (int) lround(dot_size * 8)) : 0;
+    uint32_t dot_color = polka.color;
+    if (use_polka)
+        ass_apply_fade_color(&dot_color, info->fade_color);
     GradientValues secondary_values;
     const GradientValues *vals;
     const MangetsuGradientLayer *mangetsu;
@@ -815,6 +857,12 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 sr = _r(image_color);
                 sg = _g(image_color);
                 sb = _b(image_color);
+                if (use_polka && polka_hit(gx, gy, dot_period,
+                                           dot_row_period, dot_radius)) {
+                    sr = _r(dot_color);
+                    sg = _g(dot_color);
+                    sb = _b(dot_color);
+                }
                 uint8_t layer_opacity = (uint8_t) ((sa * style_opacity + 127) / 255);
                 uint8_t A = draw_img_compat ?
                     (uint8_t) ((cov64 * layer_opacity) >> 6) :
@@ -852,6 +900,9 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                     ass_gradient_sample_color_fixed(vals, uf, vf) : base_color;
             }
             ass_apply_fade_color(&color, info->fade_color);
+            if (use_polka && polka_hit(gx, gy, dot_period,
+                                       dot_row_period, dot_radius))
+                color = (dot_color & 0xFFFFFF00u) | _a(color);
             uint8_t alpha = use_mangetsu_alpha ?
                 ass_mangetsu_gradient_sample_alpha(mangetsu_alpha,
                                                    dst_x + x + 0.5,
@@ -1557,12 +1608,14 @@ static ASS_Image **render_border_layer(RenderContext *state,
     }
 
     uint32_t saved_base = info->base_c[2];
+    PolkaPaint saved_polka = info->pattern.polka_face[2];
     GradientValues saved_gradient = info->gradient.layer[2];
     MangetsuGradientLayer saved_mangetsu = info->mangetsu_gradient.layer[2];
     MangetsuGradientLayer saved_mangetsu_alpha =
         info->mangetsu_gradient.alpha[2];
     ImageFillLayer saved_image = info->image_fill.layer[2];
     info->base_c[2] = info->border_layers[layer].color;
+    info->pattern.polka_face[2] = info->pattern.polka_border[layer];
     info->gradient.layer[2] = info->border_layers[layer].gradient;
     info->mangetsu_gradient.layer[2] = info->mangetsu_gradient.border[layer];
     info->mangetsu_gradient.alpha[2] =
@@ -1581,6 +1634,7 @@ static ASS_Image **render_border_layer(RenderContext *state,
                             2, 2, rgba_tail);
 
     info->base_c[2] = saved_base;
+    info->pattern.polka_face[2] = saved_polka;
     info->gradient.layer[2] = saved_gradient;
     info->mangetsu_gradient.layer[2] = saved_mangetsu;
     info->mangetsu_gradient.alpha[2] = saved_mangetsu_alpha;
@@ -2667,6 +2721,7 @@ static void capture_effective_default_state(RenderContext *state)
     capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
     style->gradient = state->gradient;
     style->mangetsu_gradient = state->mangetsu_gradient;
+    style->pattern = state->pattern;
     style->image_fill = state->image_fill;
     style->blend_mode = state->blend_mode;
     memcpy(style->border_layers, state->border_layers,
@@ -2940,6 +2995,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->c[3] = style->BackColour;
     ass_gradient_state_reset(&state->gradient, state->c);
     ass_mangetsu_gradient_state_reset(&state->mangetsu_gradient);
+    state->pattern = (TextPatternPaint) {0};
     state->secondary_outline = (KaraokeOutlinePaint) {0};
     for (int i = 0; i < 4; i++)
         clear_image_fill_layer(&state->image_fill.layer[i]);
@@ -3095,6 +3151,8 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
     state->rnd_seed_base = (uint64_t) event->ReadOrder;
     state->mangetsu_gradient_next_id = 0;
+    state->pattern_cycle_serial = 0;
+    state->event_has_cycle = false;
     state->column_event = false;
     state->column_active = false;
     state->column_row = 0;
@@ -3285,6 +3343,7 @@ static void capture_column_base_style(RenderContext *state)
     capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
     style->gradient = state->gradient;
     style->mangetsu_gradient = state->mangetsu_gradient;
+    style->pattern = state->pattern;
     style->image_fill = state->image_fill;
     style->blend_mode = state->blend_mode;
     memcpy(style->border_layers, state->border_layers,
@@ -3303,6 +3362,7 @@ static void apply_column_base_style(RenderContext *state)
     memcpy(state->c, style->c, sizeof(state->c));
     state->gradient = style->gradient;
     state->mangetsu_gradient = style->mangetsu_gradient;
+    state->pattern = style->pattern;
     state->image_fill = style->image_fill;
     state->blend_mode = style->blend_mode;
     state->decoration_color_set = style->decoration_color_set;
@@ -3587,6 +3647,11 @@ static void free_render_context(RenderContext *state)
     state->n_pos_transforms = 0;
     state->max_pos_transforms = 0;
     ass_free_override_buffers(state);
+    while (state->cycle_palettes) {
+        CyclePalette *next = state->cycle_palettes->next;
+        free(state->cycle_palettes);
+        state->cycle_palettes = next;
+    }
 }
 
 /**
@@ -4930,6 +4995,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
             !ass_gradient_equal(&last->gradient, &info->gradient) ||
             !ass_mangetsu_gradient_state_equal(&last->mangetsu_gradient,
                                                &info->mangetsu_gradient) ||
+            memcmp(&last->pattern, &info->pattern, sizeof(info->pattern)) ||
             !secondary_outline_equal(&last->secondary_outline,
                                      &info->secondary_outline) ||
             !image_fill_state_equal(&last->image_fill, &info->image_fill) ||
@@ -5100,6 +5166,7 @@ static bool append_glyph_to_target(RenderContext *state,
         info->c[i] = state->c[i];
     info->gradient = state->gradient;
     info->mangetsu_gradient = state->mangetsu_gradient;
+    info->pattern = state->pattern;
     info->secondary_outline = state->secondary_outline;
     info->image_fill = state->image_fill;
     info->blend_mode = state->blend_mode;
@@ -6921,6 +6988,126 @@ static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
            a->distort.u0 == b->distort.u0 && a->distort.v0 == b->distort.v0;
 }
 
+static bool cycle_visible_unit(unsigned symbol)
+{
+    return symbol > 0x20 && symbol != 0x7F && symbol != 0xA0 &&
+           !(symbol >= 0x2000 && symbol <= 0x200B) &&
+           symbol != 0x2028 && symbol != 0x2029 && symbol != 0x3000;
+}
+
+static void apply_cycle_glyph_color(GlyphInfo *glyph, int layer,
+                                    uint32_t color)
+{
+    if (layer < 3) {
+        glyph->c[layer] = (color & 0xFFFFFF00u) | _a(glyph->c[layer]);
+        glyph->gradient.layer[layer].color_enabled = false;
+        glyph->mangetsu_gradient.layer[layer].active = false;
+    } else {
+        int border = layer - 3;
+        BorderLayerState *paint = &glyph->border_layers[border];
+        paint->color = (color & 0xFFFFFF00u) | _a(paint->color);
+        paint->gradient.color_enabled = false;
+        glyph->mangetsu_gradient.border[border].active = false;
+    }
+}
+
+static PolkaPaint inherit_polka_paint(PolkaPaint base, PolkaPaint local)
+{
+    if (local.has_color) {
+        base.color = local.color;
+        base.has_color = true;
+    }
+    if (local.has_size) {
+        base.size = local.size;
+        base.has_size = true;
+    }
+    if (local.has_spacing) {
+        base.spacing = local.spacing;
+        base.has_spacing = true;
+    }
+    base.explicit_layer |= local.explicit_layer;
+    return base;
+}
+
+/* Called after HarfBuzz has linked output glyphs to their source cluster.
+ * The source-order roots are the orthographic/shaping units for mode 1; the
+ * linked output glyphs are the units for mode 2. Whitespace consumes neither. */
+static void apply_cycle_paint(RenderContext *state)
+{
+    if (!state->event_has_cycle)
+        return;
+    TextInfo *text = &state->text_info;
+    uint32_t serial[3 + ASS_BORDER_LAYERS_MAX] = {0};
+    unsigned index[3 + ASS_BORDER_LAYERS_MAX] = {0};
+    for (int i = 0; i < text->length; i++) {
+        GlyphInfo *root = &text->glyphs[i];
+        if (root->skip || root->drawing_text.str ||
+                !cycle_visible_unit(root->symbol))
+            continue;
+        for (int layer = 0; layer < 3 + ASS_BORDER_LAYERS_MAX; layer++) {
+            const CyclePaint *paint = layer < 3 ?
+                &root->pattern.cycle_face[layer] :
+                &root->pattern.cycle_border[layer - 3];
+            if (!paint->palette)
+                continue;
+            if (serial[layer] != paint->serial) {
+                serial[layer] = paint->serial;
+                index[layer] = 0;
+            }
+            const CyclePalette *palette = paint->palette;
+            uint32_t color = palette->colors[index[layer] % palette->count];
+            for (GlyphInfo *glyph = root; glyph; glyph = glyph->next) {
+                if (paint->mode == 2)
+                    color = palette->colors[index[layer]++ % palette->count];
+                apply_cycle_glyph_color(glyph, layer, color);
+            }
+            if (paint->mode == 1)
+                index[layer]++;
+        }
+    }
+
+    /* A reading belongs to its base span. The first shaped base cluster is
+     * the fallback when the ruby span has no finer one-to-one association. */
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        GlyphInfo *base = NULL;
+        for (int j = group->base_start;
+             j < group->base_start + group->base_len && j < text->length;
+             j++) {
+            if (j >= 0 && !text->glyphs[j].skip &&
+                    cycle_visible_unit(text->glyphs[j].symbol)) {
+                base = &text->glyphs[j];
+                break;
+            }
+        }
+        if (!base)
+            continue;
+        for (int j = 0; j < group->length; j++)
+            for (GlyphInfo *glyph = &group->glyphs[j]; glyph;
+                 glyph = glyph->next) {
+                for (int layer = 0; layer < 3; layer++)
+                    if (base->pattern.cycle_face[layer].palette)
+                        apply_cycle_glyph_color(glyph, layer,
+                                                base->c[layer]);
+                for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++)
+                    if (base->pattern.cycle_border[layer].palette)
+                        apply_cycle_glyph_color(glyph, layer + 3,
+                                     base->border_layers[layer].color);
+                if (base->pattern.propagate_polka) {
+                    for (int layer = 0; layer < 3; layer++)
+                        glyph->pattern.polka_face[layer] =
+                            inherit_polka_paint(base->pattern.polka_face[layer],
+                                                glyph->pattern.polka_face[layer]);
+                    for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++)
+                        glyph->pattern.polka_border[layer] =
+                            inherit_polka_paint(base->pattern.polka_border[layer],
+                                                glyph->pattern.polka_border[layer]);
+                    glyph->pattern.propagate_polka = true;
+                }
+            }
+    }
+}
+
 static bool distort_accumulate_bbox(const GlyphInfo *info,
                                     double *min_x, double *min_y,
                                     double *max_x, double *max_y)
@@ -8071,6 +8258,19 @@ static bool text_needs_rgba(const TextInfo *text_info)
             return true;
         if (info->fade_color.active && info->fade_color.amount > 0)
             return true;
+        if (!info->from_drawing) {
+            const TextPatternPaint *pattern = &info->pattern;
+            if (pattern->propagate_polka)
+                return true;
+            for (int layer = 0; layer < 3; layer++)
+                if (pattern->polka_face[layer].has_color &&
+                        pattern->polka_face[layer].size > 0)
+                    return true;
+            for (int layer = 1; layer < ASS_BORDER_LAYERS_MAX; layer++)
+                if (pattern->polka_border[layer].has_color &&
+                        pattern->polka_border[layer].size > 0)
+                    return true;
+        }
         for (int layer = 0; layer < 4; layer++) {
             if (info->image_fill.layer[layer].enabled)
                 return true;
@@ -8158,6 +8358,10 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             continue;
 
         for (; info; info = info->next) {
+            /* Different shaped glyphs can carry different cycle colors even
+             * within one HarfBuzz cluster. Never union their paint masks. */
+            if (info->pattern.has_cycle)
+                new_run = true;
             int flags = 0;
             if (info->border_style == 3)
                 flags |= FILTER_BORDER_STYLE_3;
@@ -8201,6 +8405,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
                 current_info->gradient = info->gradient;
                 current_info->mangetsu_gradient = info->mangetsu_gradient;
+                current_info->pattern = info->pattern;
                 current_info->secondary_outline = info->secondary_outline;
                 current_info->image_fill = info->image_fill;
                 current_info->blend_mode = info->blend_mode;
@@ -8425,6 +8630,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     memcpy(&current_info->base_c, &deco.c, sizeof(deco.c));
     current_info->gradient = deco.gradient;
     current_info->mangetsu_gradient = deco.mangetsu_gradient;
+    current_info->pattern = (TextPatternPaint) {0};
     current_info->secondary_outline = deco.secondary_outline;
     current_info->image_fill = deco.image_fill;
     current_info->blend_mode = deco.blend_mode;
@@ -9761,6 +9967,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         free_render_context(state);
         return false;
     }
+
+    apply_cycle_paint(state);
 
     preliminary_layout(state);
 

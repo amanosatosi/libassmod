@@ -216,6 +216,15 @@ test('furi-extension', furi_unit,
     timeout: 120,
 )
 
+pattern_paint_unit = executable(
+    'pattern_paint_unit',
+    files('pattern_paint_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 blend_unit = executable(
     'blend_unit',
     files('blend_selftest.c'),
@@ -226,6 +235,7 @@ blend_unit = executable(
 )
 test('karaoke-paint-extension', karaoke_paint_unit, timeout: 120)
 test('multi-border-extension', multiborder_unit)
+test('text-pattern-paint', pattern_paint_unit, timeout: 120)
 test('actor-colorcoding', colorcoding_unit)
 test('fad-color-fade', fad_unit)
 test('rnd-custom-decoration-lifetime', decoration_rnd_unit)

@@ -230,6 +230,38 @@ typedef struct {
     double amount;
 } FadeColorState;
 
+#define ASS_CYCLE_COLORS_MAX 32
+typedef struct cycle_palette {
+    struct cycle_palette *next; // event-owned list for cleanup
+    uint8_t count;
+    uint32_t colors[];
+} CyclePalette;
+
+typedef struct {
+    uint8_t mode;                // 1 = shaped cluster, 2 = output glyph
+    uint32_t serial;             // new tags restart this layer's palette
+    const CyclePalette *palette;
+} CyclePaint;
+
+typedef struct {
+    bool explicit_layer;
+    bool has_color;
+    bool has_size;
+    bool has_spacing;
+    uint32_t color;
+    double size;
+    double spacing;              // zero means default: 2.5 * size
+} PolkaPaint;
+
+typedef struct {
+    CyclePaint cycle_face[3];   // primary, secondary, ASS outline
+    CyclePaint cycle_border[ASS_BORDER_LAYERS_MAX];
+    PolkaPaint polka_face[3];
+    PolkaPaint polka_border[ASS_BORDER_LAYERS_MAX];
+    bool has_cycle;
+    bool propagate_polka;
+} TextPatternPaint;
+
 typedef struct {
     ImageFillLayer layer[4];
 } ImageFillState;
@@ -289,6 +321,7 @@ typedef struct {
     CompositeHashValue *image;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    TextPatternPaint pattern;
     ImageFillState image_fill;
     KaraokeOutlinePaint secondary_outline;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
@@ -355,6 +388,7 @@ typedef struct glyph_info {
     uint32_t c[4];              // colors
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    TextPatternPaint pattern;
     KaraokeOutlinePaint secondary_outline;
     ImageFillState image_fill;
     ASS_BlendMode blend_mode;
@@ -551,6 +585,7 @@ typedef struct {
     uint32_t c[4];
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    TextPatternPaint pattern;
     ImageFillState image_fill;
     ASS_BlendMode blend_mode;
     bool decoration_color_set;
@@ -716,8 +751,12 @@ struct render_context {
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    TextPatternPaint pattern;
     KaraokeOutlinePaint secondary_outline;
     int mangetsu_gradient_next_id;
+    uint32_t pattern_cycle_serial;
+    CyclePalette *cycle_palettes;
+    bool event_has_cycle;
     ImageFillState image_fill;
     ASS_BlendMode blend_mode;
     bool needs_rgba;

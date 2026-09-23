@@ -30,7 +30,7 @@
 #include "ass_parse.h"
 #include "ass_string.h"
 
-#define MAX_VALID_NARGS 10
+#define MAX_VALID_NARGS 33
 #define CURVED_TEXT_MAX_PATH_BYTES 65536
 #define MAX_BE 127
 #define NBSP 0xa0   // unicode non-breaking space character
@@ -2914,6 +2914,141 @@ static void process_unified_karaoke_effects(RenderContext *state)
  *            of a number of spaces immediately preceding '}' or ')'
  * \param pwr multiplier for some tag effects (comes from \t tags)
  */
+/* Return true for a recognized pattern tag, including malformed ones: they
+ * must not fall through to similarly named legacy tags. */
+static bool parse_text_pattern_tag(RenderContext *state, char *name,
+                                   char *name_end, struct arg *args, int nargs,
+                                   bool parenthesized, bool nested, double pwr)
+{
+    char *s = name;
+    int face = 0, border = -1;
+    if (s < name_end && *s >= '1' && *s <= '9') {
+        int n = *s++ - '0';
+        if (s < name_end && *s == 'b') {
+            s++;
+            if (n > ASS_BORDER_LAYERS_MAX)
+                return false;
+            border = n - 1;
+        } else if (n <= 3) {
+            face = n - 1;
+        } else {
+            return false;
+        }
+    }
+    if (border < 0 && name_end - s == 4 && !strncmp(s, "scyc", 4)) {
+        face = 1;
+        s++;
+    }
+    if (name_end - s == 3 && !strncmp(s, "cyc", 3)) {
+        if (nested || !parenthesized || nargs < 2 ||
+                nargs > ASS_CYCLE_COLORS_MAX + 1)
+            return true;
+        int32_t mode;
+        if (!parse_int32_arg_strict(args[0], &mode) ||
+                (mode != 1 && mode != 2))
+            return true;
+        uint32_t colors[ASS_CYCLE_COLORS_MAX];
+        for (int i = 1; i < nargs; i++)
+            if (!parse_ass_color_arg_strict(args[i], &colors[i - 1]))
+                return true;
+        CyclePalette *palette = malloc(sizeof(*palette) +
+                                       (nargs - 1) * sizeof(uint32_t));
+        if (!palette)
+            return true;
+        palette->next = state->cycle_palettes;
+        palette->count = nargs - 1;
+        memcpy(palette->colors, colors, (nargs - 1) * sizeof(uint32_t));
+        state->cycle_palettes = palette;
+        CyclePaint paint = {
+            .mode = mode,
+            .serial = ++state->pattern_cycle_serial,
+            .palette = palette,
+        };
+        if (border >= 0)
+            state->pattern.cycle_border[border] = paint;
+        else
+            state->pattern.cycle_face[face] = paint;
+        state->pattern.has_cycle = true;
+        state->event_has_cycle = true;
+        return true;
+    }
+    if (border < 0 && face == 0 && name_end - s >= 4 &&
+            !strncmp(s, "zpol", 4)) {
+        if (name_end - s == 4 ||
+                (name_end - s == 5 && (s[4] == '0' || s[4] == '1'))) {
+            if (!nested) {
+                state->pattern.propagate_polka =
+                    name_end - s == 4 || s[4] == '1';
+                if (state->pattern.propagate_polka)
+                    mark_rgba_needed(state);
+            }
+            return true;
+        }
+    }
+    /* The extra-border spacing spelling is Nbsp, while its color and size
+     * spellings are Nbpc and Nbps. */
+    if (border >= 0 && name_end - s >= 2 && !strncmp(s, "sp", 2)) {
+        s += 2;
+        PolkaPaint *paint = &state->pattern.polka_border[border];
+        struct arg value = {s, name_end};
+        double number;
+        if (value.start < value.end &&
+                parse_double_arg_strict(value, &number) &&
+                isfinite(number) && number <= 10000) {
+            if (number < 0)
+                number = 0;
+            paint->spacing = paint->spacing * (1 - pwr) + number * pwr;
+            paint->has_spacing = true;
+            paint->explicit_layer = true;
+            mark_rgba_needed(state);
+        }
+        return true;
+    }
+    const char *suffix = border >= 0 ? "bp" : "pol";
+    size_t prefix_len = strlen(suffix);
+    if ((size_t) (name_end - s) < prefix_len ||
+            strncmp(s, suffix, prefix_len))
+        return false;
+    s += prefix_len;
+    int kind;
+    if (s < name_end && *s == 'c') { kind = 0; s++; }
+    else if (s < name_end && *s == 's') { kind = 1; s++; }
+    else return false;
+    if (kind == 1 && s < name_end && *s == 'p') { kind = 2; s++; }
+    struct arg value = parenthesized ?
+        (nargs == 1 ? args[0] : (struct arg) {NULL, NULL}) :
+        (struct arg) {s, name_end};
+    if (!value.start || value.start == value.end)
+        return true;
+    PolkaPaint *paint = border >= 0 ?
+        &state->pattern.polka_border[border] :
+        &state->pattern.polka_face[face];
+    if (kind == 0) {
+        uint32_t color;
+        if (!parse_ass_color_arg_strict(value, &color))
+            return true;
+        if (!paint->has_color)
+            paint->color = color;
+        else
+            change_color(&paint->color, color, pwr);
+        paint->has_color = true;
+    } else {
+        double number;
+        if (!parse_double_arg_strict(value, &number) ||
+                !isfinite(number) || number > 10000)
+            return true;
+        if (number < 0)
+            number = 0;
+        double *target = kind == 1 ? &paint->size : &paint->spacing;
+        *target = *target * (1 - pwr) + number * pwr;
+        if (kind == 1) paint->has_size = true;
+        else paint->has_spacing = true;
+    }
+    paint->explicit_layer = true;
+    mark_rgba_needed(state);
+    return true;
+}
+
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested)
 {
@@ -3063,7 +3198,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             tag_name_matches(p, name_end, "3svc");
         bool secondary_outline_gradient_tag =
             tag_name_matches(p, name_end, "3sgrd");
-        if (numbered_border_tag == BORDER_TAG_IGNORE) {
+        if (!state->colorcode_parse &&
+            parse_text_pattern_tag(state, p, name_end, args, nargs,
+                                   *name_end == '(' && q > name_end + 1 &&
+                                   q[-1] == ')', nested, pwr)) {
+            continue;
+        } else if (numbered_border_tag == BORDER_TAG_IGNORE) {
             continue;
         } else if (numbered_border_tag != BORDER_TAG_NONE) {
             if (state->colorcode_parse &&
