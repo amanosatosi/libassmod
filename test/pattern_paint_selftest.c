@@ -111,6 +111,44 @@ int main(void)
         "{\\cyc(1,&H0000FF&,&H00FF00&)}A B\\NC", &colors);
     ok &= begins(colors.face, colors.n_face,
                  (uint32_t[]) {rgb[0], rgb[1], rgb[0]}, 3);
+
+    /* A later base paint source terminates only its own layer's cycle. */
+    const uint32_t white = 0xFFFFFF00u;
+    const uint32_t black = 0x00000000u;
+    ok &= render_colors(lib, renderer,
+        "{\\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)}ABC"
+        "{\\c&HFFFFFF&}DEF", &colors);
+    ok &= begins(colors.face, colors.n_face,
+                 (uint32_t[]) {rgb[0], rgb[1], rgb[2], white}, 4);
+    for (int i = 3; i < colors.n_face; i++)
+        ok &= colors.face[i] == white;
+    ok &= render_colors(lib, renderer,
+        "{\\c&HFFFFFF&}ABC"
+        "{\\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)}DEF", &colors);
+    ok &= colors.n_face >= 4 && colors.face[0] == white &&
+          begins(colors.face + 1, colors.n_face - 1, rgb, 3);
+    ok &= render_colors(lib, renderer,
+        "{\\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)}AB"
+        "{\\c&HFFFFFF&}CD"
+        "{\\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)}EF", &colors);
+    ok &= begins(colors.face, colors.n_face,
+                 (uint32_t[]) {rgb[0], rgb[1], white, rgb[0], rgb[1]}, 5);
+    ok &= render_colors(lib, renderer,
+        "{\\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)"
+        "\\3cyc(1,&HFFFFFF&,&H000000&)}ABC"
+        "{\\c&HFFFFFF&}DEF", &colors);
+    ok &= begins(colors.face, colors.n_face,
+                 (uint32_t[]) {rgb[0], rgb[1], rgb[2], white, white, white}, 6);
+    ok &= begins(colors.outline, colors.n_outline,
+                 (uint32_t[]) {white, black, white, black, white, black}, 6);
+    ok &= render_colors(lib, renderer,
+        "{\\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)"
+        "\\3cyc(1,&HFFFFFF&,&H000000&)}ABC"
+        "{\\3c&HFF0000&}DEF", &colors);
+    ok &= begins(colors.face, colors.n_face,
+                 (uint32_t[]) {rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2]}, 6);
+    ok &= begins(colors.outline, colors.n_outline,
+                 (uint32_t[]) {white, black, white, rgb[2], rgb[2], rgb[2]}, 6);
     ok &= render_colors(lib, renderer,
         "{\\cyc(1,&H0000FF&,&H00FF00&)\\3cyc(2,&HFFFFFF&,&H000000&)}AB",
         &colors);
@@ -123,6 +161,16 @@ int main(void)
         border_green |= colors.outline[i] == rgb[1];
     }
     ok &= border_red && border_green;
+    ok &= render_colors(lib, renderer,
+        "{\\cyc(1,&H0000FF&,&H00FF00&)\\bord2\\2bs5"
+        "\\2bcyc(1,&H0000FF&,&H00FF00&)}AB"
+        "{\\2bc&HFFFFFF&}CD", &colors);
+    ok &= begins(colors.face, colors.n_face,
+                 (uint32_t[]) {rgb[0], rgb[1], rgb[0], rgb[1]}, 4);
+    bool outer_white = false;
+    for (int i = 0; i < colors.n_outline; i++)
+        outer_white |= colors.outline[i] == white;
+    ok &= outer_white;
     /* Each Myanmar orthographic syllable may emit multiple glyphs, but its
      * marks must retain the same color until the next syllable. */
     ok &= render_colors(lib, renderer,
@@ -164,6 +212,32 @@ int main(void)
         "{\\cyc(1,&H0000FF&,&H00FF00&)\\polc&HFF80C0&\\pols8}Polka",
         &rgba);
     ok &= rgba && cycle_dots != dotted;
+    const char *gradient =
+        "{\\grd(0,&H0000FF&,&H00FF00&)}TEXT";
+    const char *cycle_then_gradient =
+        "{\\cyc(1,&H0000FF&,&H00FF00&)"
+        "\\grd(0,&H0000FF&,&H00FF00&)}TEXT";
+    const char *cycle_only =
+        "{\\cyc(1,&H0000FF&,&H00FF00&)}TEXT";
+    const char *gradient_then_cycle =
+        "{\\1grd(0,&H0000FF&,&H00FF00&)"
+        "\\cyc(1,&H0000FF&,&H00FF00&)}TEXT";
+    uint64_t gradient_hash = rgba_hash(lib, renderer, gradient, &rgba);
+    ok &= rgba;
+    ok &= rgba_hash(lib, renderer, cycle_then_gradient, &rgba) == gradient_hash;
+    uint64_t cycle_hash = rgba_hash(lib, renderer, cycle_only, &rgba);
+    ok &= rgba_hash(lib, renderer, gradient_then_cycle, &rgba) == cycle_hash;
+    ok &= render_colors(lib, renderer,
+        "{\\cyc(1,&H0000FF&,&H00FF00&)\\1grd()}AB", &colors);
+    ok &= colors.n_face > 0 && colors.face[0] == white;
+    const char *vector =
+        "{\\vc(&H0000FF&,&H00FF00&,&HFF0000&,&HFFFFFF&)}TEXT";
+    const char *cycle_then_vector =
+        "{\\cyc(1,&H0000FF&,&H00FF00&)"
+        "\\vc(&H0000FF&,&H00FF00&,&HFF0000&,&HFFFFFF&)}TEXT";
+    uint64_t vector_hash = rgba_hash(lib, renderer, vector, &rgba);
+    ok &= rgba;
+    ok &= rgba_hash(lib, renderer, cycle_then_vector, &rgba) == vector_hash;
     uint64_t outline_plain = rgba_hash(lib, renderer,
         "{\\bord5}Outline", &rgba);
     uint64_t outline_dots = rgba_hash(lib, renderer,

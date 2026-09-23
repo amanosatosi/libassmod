@@ -531,6 +531,11 @@ static void disable_image_fill_layer(RenderContext *state, int layer)
     state->image_fill.layer[layer].yoffset = 0;
 }
 
+static void replace_cycle_base_paint(RenderContext *state, int face,
+                                     int border, double pwr);
+static void replace_cycle_border_paint(RenderContext *state, int border,
+                                       double pwr);
+
 static inline bool ass_inline_isspace(char c)
 {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
@@ -660,6 +665,7 @@ static void apply_img_tag(RenderContext *state, int layer,
         if (layer == 0)
             ass_mangetsu_gradient_layer_reset(
                 &state->mangetsu_gradient.layer[0]);
+        replace_cycle_base_paint(state, layer, -1, pwr);
         state->needs_rgba = true;
     }
 
@@ -979,6 +985,34 @@ static bool parse_plain_decimal_alpha_arg(struct arg arg, int32_t *out)
 
     *out = value;
     return true;
+}
+
+/* A cycle palette is a base color source, not an overlay. Paint-source tags
+ * replace it only on their own layer; alpha and polka tags leave it intact. */
+static void replace_cycle_base_paint(RenderContext *state, int face,
+                                     int border, double pwr)
+{
+    if (pwr <= 0.0 || !state->pattern.has_cycle)
+        return;
+    if (border >= 0 && border < ASS_BORDER_LAYERS_MAX)
+        state->pattern.cycle_border[border] = (CyclePaint) {0};
+    else if (face >= 0 && face < 3)
+        state->pattern.cycle_face[face] = (CyclePaint) {0};
+
+    state->pattern.has_cycle = false;
+    for (int i = 0; i < 3; i++)
+        state->pattern.has_cycle |=
+            state->pattern.cycle_face[i].palette != NULL;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
+        state->pattern.has_cycle |=
+            state->pattern.cycle_border[i].palette != NULL;
+}
+
+static void replace_cycle_border_paint(RenderContext *state, int border,
+                                       double pwr)
+{
+    replace_cycle_base_paint(state, border == 0 ? 2 : -1,
+                             border == 0 ? -1 : border, pwr);
 }
 
 static int32_t parse_alpha_tag(struct arg arg)
@@ -1585,6 +1619,12 @@ static bool parse_mangetsu_fill_gradient_tag(char *p, char *name_end,
 {
     char *q = p;
     int raw_layer = read_decimal_digit(&q, name_end);
+    /* Unnumbered \grd is the primary-face spelling, like \vc and \cyc. */
+    if (raw_layer < 0 && name_end - p >= 3 &&
+            p[0] == 'g' && p[1] == 'r' && p[2] == 'd') {
+        raw_layer = 1;
+        q = p;
+    }
     if (raw_layer < 0 || name_end - q < 3 ||
             q[0] != 'g' || q[1] != 'r' ||
             (q[2] != 'd' && q[2] != 'a'))
@@ -1907,9 +1947,11 @@ static bool apply_mangetsu_positioned_primary_gradient_tag(
     char *raw_end = q - 1;
     MangetsuGradientLayer *dst = &state->mangetsu_gradient.layer[0];
     if (raw_start == raw_end) {
-        if (!nested && dst->coordinate_mode ==
-                MANGETSU_GRADIENT_POSITIONED_RECT)
-            disable_mangetsu_gradient_layer(state, 0);
+        if (!nested) {
+            if (dst->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT)
+                disable_mangetsu_gradient_layer(state, 0);
+            replace_cycle_base_paint(state, 0, -1, pwr);
+        }
         return true;
     }
 
@@ -1935,6 +1977,7 @@ static bool apply_mangetsu_positioned_primary_gradient_tag(
     } else {
         apply_mangetsu_gradient_layer(state, 0, &gradient);
     }
+    replace_cycle_base_paint(state, 0, -1, pwr);
     mark_rgba_needed(state);
     return true;
 }
@@ -2152,6 +2195,10 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
                     disable_mangetsu_border_gradient_layer(state, layer);
                 else
                     disable_mangetsu_color_source(state, layer);
+                if (is_border)
+                    replace_cycle_border_paint(state, layer, pwr);
+                else
+                    replace_cycle_base_paint(state, layer, -1, pwr);
             }
             return true;
         }
@@ -2225,9 +2272,10 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
             dst = is_alpha ? &state->mangetsu_gradient.alpha[layer] :
                              &state->mangetsu_gradient.layer[layer];
         }
+        bool applied = true;
         if (nested)
-            transform_mangetsu_gradient_layer(state, dst, &gradient,
-                                              solid_value, pwr, is_alpha);
+            applied = transform_mangetsu_gradient_layer(
+                state, dst, &gradient, solid_value, pwr, is_alpha);
         else if (is_alpha && is_border)
             apply_mangetsu_border_alpha_gradient_layer(state, layer, &gradient);
         else if (is_alpha && layer == 2)
@@ -2240,6 +2288,12 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
             apply_mangetsu_border_gradient_layer(state, 0, &gradient);
         else
             apply_mangetsu_gradient_layer(state, layer, &gradient);
+        if (applied && !is_alpha) {
+            if (is_border)
+                replace_cycle_border_paint(state, layer, pwr);
+            else
+                replace_cycle_base_paint(state, layer, -1, pwr);
+        }
         mark_rgba_needed(state);
         return true;
     }
@@ -2259,6 +2313,10 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
                 disable_mangetsu_border_gradient_layer(state, layer);
             else
                 disable_mangetsu_color_source(state, layer);
+            if (is_border)
+                replace_cycle_border_paint(state, layer, pwr);
+            else
+                replace_cycle_base_paint(state, layer, -1, pwr);
         }
     }
     return true;
@@ -2508,6 +2566,7 @@ static void apply_numbered_border_tag(RenderContext *state,
             if (!nested && pwr > 0.0)
                 disable_mangetsu_border_gradient_layer(state, layer);
         }
+        replace_cycle_border_paint(state, layer, pwr);
         break;
     }
     case BORDER_TAG_ALPHA: {
@@ -2599,6 +2658,7 @@ static void apply_numbered_border_tag(RenderContext *state,
                                                   border->color, pwr);
             }
         }
+        replace_cycle_border_paint(state, layer, pwr);
         break;
     case BORDER_TAG_ALPHA_GRADIENT:
         if (layer == 0) {
@@ -2964,10 +3024,25 @@ static bool parse_text_pattern_tag(RenderContext *state, char *name,
             .serial = ++state->pattern_cycle_serial,
             .palette = palette,
         };
-        if (border >= 0)
+        if (border >= 0) {
+            default_extra_border_color(state, border);
+            ass_gradient_values_disable_color(
+                &state->border_layers[border].gradient,
+                state->border_layers[border].color, 1.0);
+            disable_mangetsu_border_gradient_layer(state, border);
             state->pattern.cycle_border[border] = paint;
-        else
+        } else {
+            ass_gradient_disable_color(&state->gradient, face,
+                                       state->c[face], 1.0);
+            if (face == 2) {
+                disable_mangetsu_border_gradient_layer(state, 0);
+                sync_layer1_border(state);
+            } else {
+                disable_mangetsu_gradient_layer(state, face);
+            }
+            disable_image_fill_layer(state, face);
             state->pattern.cycle_face[face] = paint;
+        }
         state->pattern.has_cycle = true;
         state->event_has_cycle = true;
         return true;
@@ -4149,6 +4224,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     disable_mangetsu_gradient_layer(state, 0);
                 ass_gradient_disable_color(&state->gradient, 0, state->c[0], pwr);
             }
+            replace_cycle_base_paint(state, 0, -1, pwr);
         } else if (tag("2vc")) {
             if (nargs) {
                 uint32_t vals[4];
@@ -4167,6 +4243,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     disable_mangetsu_gradient_layer(state, 1);
                 ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
             }
+            replace_cycle_base_paint(state, 1, -1, pwr);
         } else if (tag("3vc")) {
             if (nargs) {
                 uint32_t vals[4];
@@ -4184,6 +4261,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     disable_mangetsu_border_gradient_layer(state, 0);
                 ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             }
+            replace_cycle_base_paint(state, 2, -1, pwr);
         } else if (tag("4vc")) {
             if (nargs) {
                 uint32_t vals[4];
@@ -4301,6 +4379,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_mangetsu_gradient_layer(state, 0);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 0);
+            replace_cycle_base_paint(state, 0, -1, pwr);
             column_default(COLUMN_STYLE_COLOR0);
         } else if (tag("2c")) {
             if (nargs) {
@@ -4314,6 +4393,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_mangetsu_gradient_layer(state, 1);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 1);
+            replace_cycle_base_paint(state, 1, -1, pwr);
             column_default(COLUMN_STYLE_COLOR1);
         } else if (tag("3c")) {
             if (nargs) {
@@ -4327,6 +4407,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_mangetsu_border_gradient_layer(state, 0);
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 2);
+            replace_cycle_base_paint(state, 2, -1, pwr);
             sync_layer1_border(state);
             column_default(COLUMN_STYLE_COLOR2);
         } else if (tag("4c")) {

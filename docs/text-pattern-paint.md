@@ -24,6 +24,12 @@ Example: `{\cyc(1,&H0000FF&,&H00FF00&,&HFF0000&)}ABCDEF`.
 Palette tags in `\t()` are currently ignored; static palette switching is
 supported. Drawings, shadows, and boxes are outside this paint system.
 
+Cycle is a layer's base paint source. A later solid color, `\vc`, `\grd`
+(an alias of `\1grd`), numbered layer gradient, positioned gradient, image fill, or extra-border
+paint tag replaces the cycle on that layer. A later `\cyc` starts again at its
+first color. Alpha tags and polka dots do not replace the cycle; other layers'
+cycles continue independently.
+
 ## Polka dots
 
 `\polc&HBBGGRR&` sets dot color, `\polsN` sets diameter, and `\polspN`
