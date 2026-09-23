@@ -2521,7 +2521,7 @@ static void add_furi_to_bbox(TextInfo *text_info, ASS_DRect *bbox)
     }
 }
 
-/* \wtan uses the ink geometry after distortion and line/ruby placement.
+/* Warped text uses the ink geometry after distortion and line/ruby placement.
  * Keep this separate from compute_string_bbox: ordinary \an deliberately
  * uses layout metrics, including the first line's ascent. */
 static bool compute_warp_text_bbox(TextInfo *text_info, ASS_DRect *bbox)
@@ -2536,7 +2536,7 @@ static bool compute_warp_text_bbox(TextInfo *text_info, ASS_DRect *bbox)
             text_info->furi_groups[list].length;
         for (int i = 0; i < length; i++) {
             GlyphInfo *root = glyphs + i;
-            if (root->skip)
+            if (root->skip || root->drawing_text.str)
                 continue;
             for (GlyphInfo *info = root; info; info = info->next) {
                 OutlineHashValue *outline = info->has_distort_outline ?
@@ -7283,12 +7283,12 @@ static bool distort_warp_glyph(GlyphInfo *info,
     return true;
 }
 
-static void apply_distortion(RenderContext *state)
+static bool apply_distortion(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
     FriBidiStrIndex *cmap = ass_shaper_get_reorder_map(state->shaper);
     if (!cmap || text_info->length <= 0)
-        return;
+        return false;
 
     bool has_distortion = false;
     for (int i = 0; i < text_info->length; i++) {
@@ -7298,7 +7298,7 @@ static void apply_distortion(RenderContext *state)
         }
     }
     if (!has_distortion)
-        return;
+        return false;
 
     /*
      * VSFilterMod compacts adjacent CText objects only while their effective
@@ -7308,7 +7308,8 @@ static void apply_distortion(RenderContext *state)
      */
     int *style_run_ids = malloc(text_info->length * sizeof(*style_run_ids));
     if (!style_run_ids)
-        return;
+        return false;
+    bool applied = false;
     int run_id = 0;
     for (int i = 0; i < text_info->length; i++) {
         if (i && text_info->glyphs[i].starts_new_run)
@@ -7368,14 +7369,19 @@ static void apply_distortion(RenderContext *state)
              * same unit warp.
              */
             for (GlyphInfo *g = cur; g; g = g->next) {
-                if (g->outline)
-                    distort_warp_glyph(g, min_x, min_y, max_x, max_y);
+                if (g->outline) {
+                    bool warped = distort_warp_glyph(g, min_x, min_y,
+                                                     max_x, max_y);
+                    if (!cur->drawing_text.str)
+                        applied |= warped;
+                }
             }
         }
 
         i = end - 1;
     }
     free(style_run_ids);
+    return applied;
 }
 
 static void apply_baseline_shear(RenderContext *state)
@@ -8105,13 +8111,29 @@ static bool apply_curved_text(RenderContext *state)
             line_advance[root->line] +=
                 d6_to_double(root->cluster_advance.x);
     }
+    /* Horizontal block extent is path arc length. Vertical extent is in the
+     * pre-curve path-normal coordinate shared by every line baseline. */
     double max_advance = 0.0;
+    double block_top = DBL_MAX;
+    double block_bottom = -DBL_MAX;
     for (size_t line = 0; line < n_lines; line++) {
         if (!isfinite(line_advance[line]) ||
                 !isfinite(line_baseline[line]))
             goto fail;
         max_advance = FFMAX(max_advance, line_advance[line]);
+        if (state->curved_text_align) {
+            if (!isfinite(text_info->lines[line].asc) ||
+                    !isfinite(text_info->lines[line].desc))
+                goto fail;
+            block_top = FFMIN(block_top,
+                              line_baseline[line] - text_info->lines[line].asc);
+            block_bottom = FFMAX(block_bottom,
+                                 line_baseline[line] + text_info->lines[line].desc);
+        }
     }
+    if (state->curved_text_align &&
+            (!isfinite(block_top) || !isfinite(block_bottom)))
+        goto fail;
 
     int alignment = state->curved_text_align ?
         (state->curved_text_align - 1) % 3 + 1 : state->alignment & 3;
@@ -8119,6 +8141,13 @@ static bool apply_curved_text(RenderContext *state)
         state->line_alignment : state->text_alignment & 3;
     double normal_offset =
         y2scr_offset(state, state->curved_text_y * object_scale);
+    double block_anchor_y = 0.0;
+    if (state->curved_text_align) {
+        int row = (state->curved_text_align - 1) / 3;
+        block_anchor_y = row == 2 ? block_top :
+            row == 1 ? block_top + (block_bottom - block_top) * 0.5 :
+                       block_bottom;
+    }
 
     /* Validate every transformed cluster before mutating any of them.  This
      * keeps pathological coordinates on the normal-rendering fallback path. */
@@ -8151,13 +8180,8 @@ static bool apply_curved_text(RenderContext *state)
                                         &point, &tangent))
                 goto fail;
             double offset = normal_offset + line_baseline[line];
-            if (state->curved_text_align) {
-                double asc = text_info->lines[line].asc;
-                double desc = text_info->lines[line].desc;
-                int row = (state->curved_text_align - 1) / 3;
-                offset += row == 2 ? asc :
-                    row == 1 ? (asc - desc) * 0.5 : -desc;
-            }
+            if (state->curved_text_align)
+                offset -= block_anchor_y;
             point.x += -tangent.y * offset;
             point.y +=  tangent.x * offset;
             double advance_x = advance * tangent.x;
@@ -10064,7 +10088,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     compute_string_bbox(text_info, &bs4_layout_bbox);
     add_furi_to_bbox(text_info, &bs4_layout_bbox);
 
-    apply_distortion(state);
+    bool distorted_text = apply_distortion(state);
 
     // determine text bounding box
     ASS_DRect bbox;
@@ -10107,8 +10131,10 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     ASS_DRect render_bbox = bbox;
     add_furi_to_bbox(text_info, &render_bbox);
     ASS_DRect warp_text_bbox;
-    bool warp_text_anchor = state->warp_text_alignment && !curved_text &&
+    bool warp_text_anchor = distorted_text && !curved_text &&
         compute_warp_text_bbox(text_info, &warp_text_bbox);
+    int warp_alignment = state->warp_text_alignment ?
+        numpad2align(state->warp_text_alignment) : state->alignment;
     ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &render_bbox;
     ASS_DRect *bbox_for_position = &render_bbox;
     ASS_DVector object_anchor = {0};
@@ -10230,9 +10256,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         get_base_point(bbox_for_position, state->alignment,
                        &object_base_x, &object_base_y);
         get_base_point(warp_text_anchor ? &warp_text_bbox : bbox_for_position,
-                       warp_text_anchor ?
-                           numpad2align(state->warp_text_alignment) :
-                           state->text_alignment,
+                       warp_text_anchor ? warp_alignment : state->text_alignment,
                        &text_base_x, &text_base_y);
         object_anchor.x = device_x + object_base_x;
         object_anchor.y = device_y + object_base_y;

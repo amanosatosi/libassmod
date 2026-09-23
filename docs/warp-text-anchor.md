@@ -17,11 +17,14 @@ bottom center there. Unequal line widths and glyphs warped beyond their
 ordinary line boxes are included. Borders, shadows, and blur do not enlarge
 this anchor, consistent with ordinary text alignment using text geometry.
 
-`\wtan` changes only placement of distorted text. Without it, existing `\an`
-and `\tan` behavior is unchanged. The first valid `\wtan` in an override
-scope is used; `\r` resets it. Values outside 1–9 and `\wtan` inside `\t`
-are ignored. The final placement translation happens after deformation, so
-it is not itself warped.
+`\wtan` changes only placement of distorted text. When it is omitted, the
+warped block uses the active `\an` value, or the style's Alignment when no
+`\an` is set. An explicit `\wtan` takes precedence. The first valid `\wtan`
+in an override scope is used; `\r` resets it. Values outside 1–9 and
+`\wtan` inside `\t` are ignored. The final placement translation happens
+after deformation, so it is not itself warped. Text without `\distort` keeps
+its ordinary `\an`/`\tan` placement. Vector drawing runs keep their existing
+placement when an event contains no warped text glyphs.
 
 The anchor uses outline control bounds after `\distort` and baseline layout.
 The existing distortion pass does not deform ruby outlines; ruby is included

@@ -82,10 +82,13 @@ ignored, and `\ta` inside `\t` has no effect.
 
 For a horizontal path, `\ctan8` centers the text along it and places the
 text's top at the path; `\ctan5` centers its vertical middle there; `\ctan2`
-places its bottom there. Vertical offsets come from each visual line's actual
-ascent and descent: top `+asc`, middle `(asc − desc)/2`, bottom `−desc`, along
-the local Y-down path normal. Font metrics, scale, and line spacing therefore
-remain authoritative.
+places its bottom there. For multiline text, the block top is the minimum of
+`baseline − ascent` across all visual lines and the block bottom is the
+maximum of `baseline + descent`. `\ctan` selects the top, midpoint, or bottom
+of that complete block in the path-normal coordinate, then places every line
+relative to the same selected point. Thus `\ctan2` puts the whole block above
+the path and `\ctan8` puts it below. Font metrics, scale, and line spacing
+remain authoritative. A single line retains its previous offsets.
 
 With explicit `\ctan`, the widest shaped visual line defines the text block
 width. The horizontal digit anchors that block at the path start, center, or
@@ -97,6 +100,18 @@ Without `\ctan`, legacy `\ct` stays baseline-based: each visual line is
 placed independently along the path by the horizontal component of `\an`.
 No vertical metric shift is added. The first valid integer 1–9 wins until a
 style reset; invalid values are ignored and `\ctan` inside `\t` has no effect.
+
+For a manual multiline comparison in a 1920×1080 script, put these on
+separate dialogue events. The longer second line supplies the block width:
+
+```ass
+{\fs100\an5\pos(984,634)\ctan2\ct(m -500 0 b -300 -180 300 -180 500 0)}testing\Nsuper testing
+{\fs100\an5\pos(984,634)\ctan5\ct(m -500 0 b -300 -180 300 -180 500 0)}testing\Nsuper testing
+{\fs100\an5\pos(984,634)\ctan8\ct(m -500 0 b -300 -180 300 -180 500 0)}testing\Nsuper testing
+```
+
+The full block is above, centered on, and below the path respectively.
+Substitute `1/3`, `4/6`, and `7/9` to compare the left and right attachments.
 
 ### `\ctx<number>`
 

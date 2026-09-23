@@ -355,6 +355,73 @@ int main(void)
                      center_y(&anchors[column]) + 5,
                      "ctan top/middle/bottom path anchoring failed");
     }
+
+    /* The second line is widest.  A flat path makes the selected point of
+     * the complete three-line block directly measurable against the path. */
+    Sample block_anchors[10] = {{0}};
+    for (int value = 1; value <= 9; value++) {
+        char text[256];
+        snprintf(text, sizeof(text),
+            "{\\an5\\ta2\\pos(480,270)\\fs44\\bord0\\shad0"
+            "\\ctan%d\\ct(m -300 0 l 300 0)}"
+            "A\\NTHE LONG SECOND LINE\\NABC", value);
+        ok &= render_sample(lib, renderer, text, 0, &block_anchors[value]);
+        if (!block_anchors[value].images)
+            continue;
+        int column = (value - 1) % 3;
+        int row = (value - 1) / 3;
+        double x = column == 0 ? block_anchors[value].min_x :
+            column == 1 ? (block_anchors[value].min_x +
+                           block_anchors[value].max_x) * 0.5 :
+                          block_anchors[value].max_x;
+        double y = row == 2 ? block_anchors[value].min_y :
+            row == 1 ? (block_anchors[value].min_y +
+                        block_anchors[value].max_y) * 0.5 :
+                       block_anchors[value].max_y;
+        double path_x = column == 0 ? 180 : column == 1 ? 480 : 780;
+        if (fabs(x - path_x) > 18 || fabs(y - 270) > 18) {
+            fprintf(stderr,
+                "multiline ctan%d anchored (%.1f,%.1f), expected (%.1f,270); "
+                "block=(%d,%d)..(%d,%d)\n", value, x, y, path_x,
+                block_anchors[value].min_x, block_anchors[value].min_y,
+                block_anchors[value].max_x, block_anchors[value].max_y);
+            ok = false;
+        }
+    }
+    ok &= expect(block_anchors[2].max_y <= 288 &&
+                 block_anchors[2].min_y < 190 &&
+                 block_anchors[8].min_y >= 252 &&
+                 block_anchors[8].max_y > 350,
+                 "multiline ctan2/8 did not place the entire block above/below the curve");
+
+    Sample curved_block_bottom = {0}, curved_block_middle = {0},
+           curved_block_top = {0};
+    const char *curved_block_format =
+        "{\\an5\\ta2\\pos(480,270)\\fs44\\bord0\\shad0"
+        "\\ctan%d\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
+        "A\\NTHE LONG SECOND LINE\\NABC";
+    char curved_block_text[256];
+    snprintf(curved_block_text, sizeof(curved_block_text),
+             curved_block_format, 2);
+    ok &= render_sample(lib, renderer, curved_block_text, 0,
+                        &curved_block_bottom);
+    snprintf(curved_block_text, sizeof(curved_block_text),
+             curved_block_format, 5);
+    ok &= render_sample(lib, renderer, curved_block_text, 0,
+                        &curved_block_middle);
+    snprintf(curved_block_text, sizeof(curved_block_text),
+             curved_block_format, 8);
+    ok &= render_sample(lib, renderer, curved_block_text, 0,
+                        &curved_block_top);
+    ok &= expect(curved_block_bottom.weight > 0 &&
+                 curved_block_middle.weight > 0 &&
+                 curved_block_top.weight > 0 &&
+                 center_y(&curved_block_bottom) + 35 <
+                     center_y(&curved_block_middle) &&
+                 center_y(&curved_block_middle) + 35 <
+                     center_y(&curved_block_top),
+                 "strong curve reverted to per-line ctan vertical anchors");
+
     Sample first_ctan, reset_ctan, ignored_ctan, curved_anchor, diagonal_anchor;
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\ctan5\\ctan9\\ct(m 0 0 l 600 0)}ALIGN",

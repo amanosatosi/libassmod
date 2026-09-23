@@ -376,6 +376,18 @@ int main(void)
         "{\\an5\\pos(320,180)}PLAIN\\NLINE",
         "wtan changed rendering without a warp");
     ok &= expect_same(lib, renderer,
+        "{\\an8\\pos(320,180)\\distort(1,0,1.3,1,-.2,1)}A\\NABC",
+        "{\\an8\\pos(320,180)\\wtan8\\distort(1,0,1.3,1,-.2,1)}A\\NABC",
+        "distorted text did not inherit the explicit an anchor");
+    ok &= expect_same(lib, renderer,
+        "{\\pos(320,180)\\distort(1,0,1.3,1,-.2,1)}A\\NABC",
+        "{\\pos(320,180)\\wtan2\\distort(1,0,1.3,1,-.2,1)}A\\NABC",
+        "distorted text did not inherit the style alignment");
+    ok &= expect_different(lib, renderer,
+        "{\\an8\\pos(320,180)\\distort(1,0,1.3,1,-.2,1)}A\\NABC",
+        "{\\an8\\pos(320,180)\\wtan2\\distort(1,0,1.3,1,-.2,1)}A\\NABC",
+        "explicit wtan did not override the inherited an anchor");
+    ok &= expect_same(lib, renderer,
         "{\\an5\\pos(320,180)\\wtan0\\wtan8\\distort(1,0,1.3,1,-.2,1)}A\\NB",
         "{\\an5\\pos(320,180)\\wtan8\\distort(1,0,1.3,1,-.2,1)}A\\NB",
         "invalid wtan blocked the next valid value");
