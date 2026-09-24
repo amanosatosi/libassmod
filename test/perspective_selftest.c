@@ -47,6 +47,9 @@ static ASS_Track *read_track(ASS_Library *lib, const char *tags)
     return read_track_at(lib, tags, "\\pos(240,120)");
 }
 
+static bool capture(ASS_Renderer *renderer, ASS_Track *track,
+                    long long now, Mask *mask);
+
 static ASS_Track *read_text_track(ASS_Library *lib, const char *tags,
                                   const char *text)
 {
@@ -270,7 +273,8 @@ int main(void)
         "\\perspective(1,0.1,0,0.05,1,0,0.0005,0,1)", 500, true,
         "plane coefficient interpolation");
     ok &= test_positioning(lib, renderer, trapezoid);
-    ok &= test_positioning(lib, "\\perspective(1,0.12,0,0.04,1,0,0.0005,0.0003,1)");
+    ok &= test_positioning(lib, renderer,
+                           "\\perspective(1,0.12,0,0.04,1,0,0.0005,0.0003,1)");
     ok &= test_plane_layout(lib, renderer);
 
     ass_renderer_done(renderer);
