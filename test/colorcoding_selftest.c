@@ -372,6 +372,22 @@ static bool same_rgba_sig(const RgbaSig *a, const RgbaSig *b)
            a->needs_rgba == b->needs_rgba;
 }
 
+static bool expect_rgba_same_at(ASS_Library *lib, ASS_Renderer *renderer,
+                                const char *dialogue,
+                                const char *expected_dialogue,
+                                long long now, const char *label)
+{
+    RgbaSig got, expected;
+    bool ok = render_rgba_case_at(lib, renderer, "", dialogue, now, &got) &&
+              render_rgba_case_at(lib, renderer, "", expected_dialogue, now,
+                                  &expected);
+    if (!ok || !same_rgba_sig(&got, &expected)) {
+        fprintf(stderr, "%s\n", label);
+        return false;
+    }
+    return true;
+}
+
 static bool expect_same(ASS_Library *lib, ASS_Renderer *renderer,
                         const char *metadata, const char *dialogue,
                         const char *expected_dialogue, const char *label)
@@ -1259,7 +1275,7 @@ int main(void)
     };
     for (int i = 0; i < (int) (sizeof(named_colors) / sizeof(named_colors[0])); i++) {
         char actual[128], expected[128], label[160];
-        snprintf(actual, sizeof(actual), "{\\1grd(0,%s,&H123456&)}Named",
+        snprintf(actual, sizeof(actual), "{\\1grd(0,$%s,&H123456&)}Named",
                  named_colors[i].name);
         snprintf(expected, sizeof(expected), "{\\1grd(0,%s,&H123456&)}Hex",
                  named_colors[i].hex);
@@ -1268,6 +1284,103 @@ int main(void)
         ok &= expect_equivalent_mangetsu_gradient(
             lib, renderer, actual, expected, label);
     }
+
+    static const struct {
+        const char *tag;
+        const char *name;
+        const char *hex;
+    } named_tag_cases[] = {
+        { "c", "white", "&HFFFFFF&" },
+        { "c", "shiro", "&HFFFFFF&" },
+        { "c", "siro", "&HFFFFFF&" },
+        { "c", "black", "&H000000&" },
+        { "c", "kuro", "&H000000&" },
+        { "1c", "shiro", "&HFFFFFF&" },
+        { "2c", "black", "&H000000&" },
+        { "3c", "white", "&HFFFFFF&" },
+        { "4c", "kuro", "&H000000&" },
+        { "5c", "shiro", "&HFFFFFF&" },
+    };
+    for (int i = 0; i < (int) (sizeof(named_tag_cases) /
+                                sizeof(named_tag_cases[0])); i++) {
+        char actual[128], expected[128], label[160];
+        const char *underline = !strcmp(named_tag_cases[i].tag, "5c") ?
+                                "\\u1" : "";
+        snprintf(actual, sizeof(actual), "{%s\\%s$%s}test", underline,
+                 named_tag_cases[i].tag, named_tag_cases[i].name);
+        snprintf(expected, sizeof(expected), "{%s\\%s%s}test", underline,
+                 named_tag_cases[i].tag, named_tag_cases[i].hex);
+        snprintf(label, sizeof(label), "\\%s$%s did not match its hex color",
+                 named_tag_cases[i].tag, named_tag_cases[i].name);
+        ok &= expect_same(lib, renderer, "", actual, expected, label);
+    }
+
+    static const char *const old_names[] = {
+        "white", "shiro", "siro", "black", "kuro"
+    };
+    for (int i = 0; i < (int) (sizeof(old_names) / sizeof(old_names[0])); i++) {
+        char dialogue[128], label[160];
+        snprintf(dialogue, sizeof(dialogue),
+                 "{\\1grd(0,%s,&H123456&)}test", old_names[i]);
+        snprintf(label, sizeof(label),
+                 "unprefixed %s still resolved as a named gradient color",
+                 old_names[i]);
+        ok &= expect_mangetsu_segments(lib, renderer, dialogue, 0, label);
+    }
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\1grd(0,$foobar,&H123456&)}test", 0,
+        "unknown named gradient color was accepted");
+    ok &= expect_mangetsu_segments(
+        lib, renderer, "{\\1grd(0,$whiteabc,&H123456&)}test", 0,
+        "partial named gradient color matched $white");
+    ok &= expect_same(lib, renderer, "", "{\\cwhite}test",
+                      "{\\c&H000000&}test",
+                      "unprefixed \\cwhite still resolved as white");
+    ok &= expect_same(lib, renderer, "", "{\\cshiro}test",
+                      "{\\c&H000000&}test",
+                      "unprefixed \\cshiro still resolved as white");
+    ok &= expect_same(lib, renderer, "", "{\\csiro}test",
+                      "{\\c&H000000&}test",
+                      "unprefixed \\csiro still resolved as white");
+    ok &= expect_same(lib, renderer, "", "{\\cblack}test",
+                      "{\\c&H0B&}test",
+                      "unprefixed \\cblack still resolved as black");
+    ok &= expect_same(lib, renderer, "", "{\\ckuro}test",
+                      "{\\c&H000000&}test",
+                      "unprefixed \\ckuro did not follow the hex fallback");
+
+    ok &= expect_same(lib, renderer, "", "{\\c$foobar}test",
+                      "{\\c&H000000&}test",
+                      "unknown named color did not follow invalid-color handling");
+    ok &= expect_same(lib, renderer, "", "{\\c$whiteabc}test",
+                      "{\\c&H000000&}test",
+                      "partial named color matched $white");
+    ok &= expect_same(lib, renderer, "",
+                      "{\\c$whiteabc\\c&H123456&}test",
+                      "{\\c&H123456&}test",
+                      "malformed named color consumed the following tag");
+    ok &= expect_same(lib, renderer, "", "{\\c&HFFFFFF&}test",
+                      "{\\c$white}test", "standard white hex color changed");
+    ok &= expect_same(lib, renderer, "", "{\\c&H000000&}test",
+                      "{\\c$black}test", "standard black hex color changed");
+    ok &= expect_same(lib, renderer, "", "{\\1c&H123456&}test",
+                      "{\\c&H123456&}test", "standard numbered hex color changed");
+    ok &= expect_rgba_same_at(lib, renderer,
+                              "{\\c$black\\t(0,500,\\c$white)}test",
+                              "{\\c&H000000&\\t(0,500,\\c&HFFFFFF&)}test",
+                              250, "named colors changed inside \\t");
+    ok &= expect_rgba_same_at(
+        lib, renderer,
+        "{\\vc($white,$black,$shiro,$kuro)}test",
+        "{\\vc(&HFFFFFF&,&H000000&,&HFFFFFF&,&H000000&)}test",
+        0, "named vector colors did not match hex colors");
+    ok &= expect_same(lib, renderer, "", "{\\c$black\\c}test",
+                      "{\\c&H000000&\\c}test",
+                      "named color changed color-reset behavior");
+    ok &= expect_same(lib, renderer, "",
+                      "{\\c$white\\1a&H80&}test",
+                      "{\\c&HFFFFFF&\\1a&H80&}test",
+                      "named color changed alpha parsing");
 
     static const struct {
         const char *decimal;

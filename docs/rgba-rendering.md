@@ -129,8 +129,8 @@ ass_free_images_rgba(rgba);
 
 Mangetsu color-valued arguments continue to accept ASS BGR hexadecimal values
 such as `&HFFFFFF&` and `&H000000&`. They also accept these case-insensitive
-shortcuts: `white`, `siro`, and `shiro` mean `&HFFFFFF&`; `black` and `kuro`
-mean `&H000000&`.
+shortcuts: `$white`, `$siro`, and `$shiro` mean `&HFFFFFF&`; `$black` and
+`$kuro` mean `&H000000&`. The `$` prefix is required for named colors.
 
 Alpha-valued arguments continue to accept hexadecimal bytes such as `&H00&`
 and `&HFF&`. A bare ASCII decimal integer from `0` through `255` is also

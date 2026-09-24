@@ -1037,6 +1037,9 @@ static bool parse_named_ass_color_arg(struct arg arg, uint32_t *out)
     static const char *const black_names[] = { "black", "kuro" };
 
     trim_arg_inline(&arg);
+    if (arg.start == arg.end || *arg.start != '$')
+        return false;
+    arg.start++;
     for (int i = 0; i < (int) (sizeof(white_names) / sizeof(white_names[0])); i++) {
         size_t len = strlen(white_names[i]);
         if ((size_t) (arg.end - arg.start) == len &&
