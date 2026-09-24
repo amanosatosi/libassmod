@@ -5391,6 +5391,15 @@ typedef struct {
 static bool perspective_params_match(const ASS_PerspectiveParams *a,
                                      const ASS_PerspectiveParams *b)
 {
+    if (a->plane != b->plane)
+        return false;
+    if (a->plane) {
+        for (int row = 0; row < 3; row++)
+            for (int col = 0; col < 3; col++)
+                if (a->matrix[row][col] != b->matrix[row][col])
+                    return false;
+        return true;
+    }
     for (int i = 0; i < 4; i++)
         if (a->corner[i].x != b->corner[i].x ||
                 a->corner[i].y != b->corner[i].y)
@@ -5425,6 +5434,10 @@ static void perspective_accumulate_glyph(RenderContext *state, GlyphInfo *info,
     PerspectiveGroup *group = perspective_group_for(
         groups, count, capacity, &info->perspective);
     if (!group || group->invalid)
+        return;
+    // Plane matrices operate on local coordinates, not on the current fill
+    // outline. Skip the old bounds scan entirely for the new syntax.
+    if (info->perspective.plane)
         return;
     OutlineHashValue *outline = info->distorted_outline ?
         info->distorted_outline : info->outline;
@@ -5532,6 +5545,12 @@ static void prepare_perspective(RenderContext *state,
                      (double) render_priv->track->PlayResY;
     for (int i = 0; i < count; i++) {
         PerspectiveGroup *group = &groups[i];
+        if (group->params.plane) {
+            group->solved = ass_perspective_plane_matrix(
+                &group->params, anchor_x, anchor_y, scale_x, scale_y,
+                &group->homography);
+            continue;
+        }
         if (!group->has_point || group->invalid ||
                 !(group->min_x < group->max_x) || !(group->min_y < group->max_y))
             continue;

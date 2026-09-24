@@ -115,3 +115,50 @@ bool ass_perspective_map_point(const ASS_Homography *homography,
     mapped->y = Y / W;
     return finite_point(*mapped);
 }
+
+static void multiply(double out[3][3], const double a[3][3],
+                     const double b[3][3])
+{
+    for (int row = 0; row < 3; row++)
+        for (int col = 0; col < 3; col++) {
+            out[row][col] = 0;
+            for (int k = 0; k < 3; k++)
+                out[row][col] += a[row][k] * b[k][col];
+        }
+}
+
+bool ass_perspective_plane_matrix(const ASS_PerspectiveParams *p,
+                                  double anchor_x, double anchor_y,
+                                  double scale_x, double scale_y,
+                                  ASS_Homography *homography)
+{
+    if (!p || !p->plane || !homography || !isfinite(anchor_x) ||
+            !isfinite(anchor_y) || !isfinite(scale_x) || !isfinite(scale_y) ||
+            !(scale_x > 0) || !(scale_y > 0))
+        return false;
+    double det =
+        p->matrix[0][0] * (p->matrix[1][1] * p->matrix[2][2] -
+                           p->matrix[1][2] * p->matrix[2][1]) -
+        p->matrix[0][1] * (p->matrix[1][0] * p->matrix[2][2] -
+                           p->matrix[1][2] * p->matrix[2][0]) +
+        p->matrix[0][2] * (p->matrix[1][0] * p->matrix[2][1] -
+                           p->matrix[1][1] * p->matrix[2][0]);
+    if (!isfinite(det) || fabs(det) < 256 * DBL_EPSILON)
+        return false;
+    double to_local[3][3] = {
+        {1 / scale_x, 0, -anchor_x / scale_x},
+        {0, 1 / scale_y, -anchor_y / scale_y},
+        {0, 0, 1},
+    };
+    double to_screen[3][3] = {
+        {scale_x, 0, anchor_x}, {0, scale_y, anchor_y}, {0, 0, 1},
+    };
+    double intermediate[3][3];
+    multiply(intermediate, p->matrix, to_local);
+    multiply(homography->m, to_screen, intermediate);
+    for (int row = 0; row < 3; row++)
+        for (int col = 0; col < 3; col++)
+            if (!isfinite(homography->m[row][col]))
+                return false;
+    return true;
+}

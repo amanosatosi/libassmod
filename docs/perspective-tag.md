@@ -1,10 +1,39 @@
 # Mangetsu `\perspective` override tag
 
-`\perspective` is a true projective corner pin for a single flat subtitle
-plane. It is separate from curved-text layout (`\ct`) and from Mangetsu's
-bilinear deformation (`\distort`).
+`\perspective` projects subtitle-local coordinates onto a plane. It is separate
+from curved-text layout (`\ct`) and Mangetsu's bilinear deformation (`\distort`).
 
-## Syntax and coordinates
+## Stable plane form (new authoring format)
+
+```ass
+\perspective(a,b,tx,c,d,ty,p,q,1)
+```
+
+The ninth argument is a literal `1` that identifies the plane form. The first
+eight numbers define `X=(a*x+b*y+tx)/(p*x+q*y+1)` and
+`Y=(c*x+d*y+ty)/(p*x+q*y+1)`, where `(x,y)` is in script-space units relative
+to the complete subtitle block's alignment anchor. `(X,Y)` is an offset from
+the evaluated `\pos`/`\move` anchor. `\perspective(1,0,0,0,1,0,0,0,1)` is
+identity. The matrix contains no font, text, line-count, or glyph dimensions.
+Changing those values lays out new local coordinates on the same plane. Normal
+rotation and shear act before projection; position acts after projection.
+The existing layout computes the full multiline block, including furigana,
+before applying `\an1` through `\an9`; the plane receives those anchored
+coordinates. Thus a third line extends the block in local Y without changing
+the stored matrix.
+
+The Aegisub visual tool uses a fixed 200 by 100 local reference rectangle for
+its four handles. The rectangle is only an editing control and is never stored
+as the subtitle's current text bounds. The tool writes this nine-value form
+after a handle edit.
+
+The eight-value form below remains a legacy corner pin with its exact original
+rendering behavior. Existing files are not silently reinterpreted. Editing an
+eight-value quad in the updated visual tool converts it to the stable form;
+because a text-bounds pin has no dimension-independent equivalent, this edit
+uses the displayed four corners on the fixed reference rectangle.
+
+## Legacy syntax and coordinates
 
 ```ass
 \perspective(x0,y0,x1,y1,x2,y2,x3,y3)
@@ -24,7 +53,7 @@ P0 -------- P1
 P3 -------- P2
 ```
 
-The coordinates are script-space offsets from the event positioning anchor.
+In the legacy eight-value form, the coordinates are script-space offsets from the event positioning anchor.
 They are not absolute screen positions. Therefore changing `\pos`, or the
 evaluated position of `\move`, translates the complete projected plane while
 leaving all eight values unchanged. Normal PlayRes/LayoutRes and pixel-aspect
@@ -36,7 +65,7 @@ Example:
 {\an5\pos(960,540)\perspective(-320,-120,280,-80,340,150,-260,190)}SIGN
 ```
 
-## Source-plane definition
+## Legacy source-plane definition
 
 For each distinct effective perspective value in an event, Mangetsu builds one
 deterministic core source rectangle. It takes the axis-aligned bounds of the
@@ -57,8 +86,9 @@ uses raster bounds or state from a previous frame.
 
 ## Projective behavior
 
-Mangetsu solves a 3 by 3 homography from the source rectangle to the four
-destination corners. For a source point `(x,y)`:
+For the eight-value legacy form, Mangetsu solves a 3 by 3 homography from the
+source rectangle to the four destination corners. The nine-value form uses the
+stored homography directly. For a source point `(x,y)`:
 
 ```text
 X = h00*x + h01*y + h02
@@ -102,10 +132,11 @@ normal positioning anchor, not to `\org`.
 ## Animation
 
 `\perspective` is supported inside `\t`. The renderer interpolates the eight
-corner coordinates independently using normal `\t` timing and acceleration,
-then solves a fresh homography for the current render time. Matrix entries are
-never interpolated. Rendering a time directly and reaching it through earlier
-frames therefore produce the same result.
+legacy corner coordinates or the eight plane coefficients independently using
+normal `\t` timing and acceleration. A legacy homography is re-solved for the
+current render time; a plane homography is composed directly. Rendering a time
+directly and reaching it through earlier frames therefore produce the same
+result.
 
 ## Invalid states
 
@@ -113,8 +144,9 @@ The projective transform is ignored for the current render when any of the
 following applies:
 
 - a coordinate is non-finite;
-- the core source rectangle has zero width or height;
-- the destination is collinear or otherwise unsolvable;
+- the legacy core source rectangle has zero width or height;
+- the legacy destination is collinear or otherwise unsolvable;
+- a plane matrix is singular;
 - the projective denominator is singular or crosses zero inside the source
   rectangle (including bow-tie/self-crossing corner orders).
 
@@ -139,10 +171,9 @@ Neither is a compatibility alias or a replacement for the other.
 
 - Static and transformed values render fully, but visual editors should edit a
   static top-level tag rather than rewriting a nested `\t` target.
-- The source plane follows actual renderer outline/control-point geometry. An
-  external editor without renderer geometry access may show a close metric
-  approximation for a newly created identity quad; existing tag handles remain
-  exact because their coordinates are read directly.
+- Legacy corner pins still follow actual renderer outline/control-point bounds.
+  There is no exact dimension-independent conversion for a legacy file; the
+  visual editor converts it only after a handle edit.
 - Gaussian blur remains the renderer's screen-space post-filter, matching the
   existing ASS 3D-transform behavior rather than becoming an anisotropic
   projective blur kernel.

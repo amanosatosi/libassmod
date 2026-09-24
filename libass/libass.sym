@@ -61,3 +61,4 @@ ass_configure_prune
 ass_distort_map_point
 ass_perspective_map_point
 ass_perspective_solve
+ass_perspective_plane_matrix

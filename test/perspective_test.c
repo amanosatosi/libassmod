@@ -109,11 +109,37 @@ static void test_extreme_and_invalid(void)
     assert(!ass_perspective_solve(&extreme, 0, 0, 100, 100, &h));
 }
 
+static void test_local_plane_is_independent_of_bounds(void)
+{
+    ASS_PerspectiveParams p = {
+        .plane = true,
+        .matrix = {{1, .2, 10}, {0, 1, -5}, {.001, -.0005, 1}},
+    };
+    ASS_Homography h, moved;
+    assert(ass_perspective_plane_matrix(&p, 500 * 64, 300 * 64,
+                                         64, 64, &h));
+    ASS_DVector anchor = map(&h, 500 * 64, 300 * 64);
+    near_point(anchor, (ASS_DVector) {510 * 64, 295 * 64});
+    // The same matrix accepts any local glyph coordinate: changes in font
+    // size, width, or multiline height never enter its construction.
+    ASS_DVector small = map(&h, (500 + 20) * 64, (300 + 10) * 64);
+    ASS_DVector large = map(&h, (500 + 100) * 64, (300 + 50) * 64);
+    assert(hypot(large.x - anchor.x, large.y - anchor.y) >
+           hypot(small.x - anchor.x, small.y - anchor.y));
+    assert(ass_perspective_plane_matrix(&p, 900 * 64, 700 * 64,
+                                         64, 64, &moved));
+    ASS_DVector translated = map(&moved, (900 + 20) * 64,
+                                  (700 + 10) * 64);
+    near_point(translated, (ASS_DVector) {small.x + 400 * 64,
+                                         small.y + 400 * 64});
+}
+
 int main(void)
 {
     test_identity();
     test_corners_and_straight_lines();
     test_projective_foreshortening();
     test_extreme_and_invalid();
+    test_local_plane_is_independent_of_bounds();
     return 0;
 }

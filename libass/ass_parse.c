@@ -3462,20 +3462,38 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 continue;
             raw_end--;
 
-            ASS_PerspectiveParams target = state->perspective;
+            // Eight values are the historical text-bounds corner pin. Nine
+            // values are a dimension-independent local plane matrix with a
+            // final version sentinel of 1.
+            int count = 1;
+            for (char *scan = raw_start; scan < raw_end; scan++)
+                count += *scan == ',';
+            if (count != 8 && count != 9)
+                continue;
             char *ptr = raw_start;
             bool ok = true;
-            for (int i = 0; i < 8; i++) {
-                char *next = i < 7 ? memchr(ptr, ',', raw_end - ptr) : NULL;
-                if ((i < 7 && !next) || (i == 7 && memchr(ptr, ',', raw_end - ptr))) {
+            double values[9];
+            for (int i = 0; i < count; i++) {
+                char *next = i < count - 1 ? memchr(ptr, ',', raw_end - ptr) : NULL;
+                if ((i < count - 1 && !next) ||
+                        (i == count - 1 && memchr(ptr, ',', raw_end - ptr))) {
                     ok = false;
                     break;
                 }
                 char *tok_end = next ? next : raw_end;
                 rskip_spaces(&tok_end, ptr);
                 skip_spaces(&ptr);
-                double current = i & 1 ? state->perspective.corner[i / 2].y :
-                                         state->perspective.corner[i / 2].x;
+                double current = 0;
+                if (count == 8)
+                    current = i & 1 ? state->perspective.corner[i / 2].y :
+                                      state->perspective.corner[i / 2].x;
+                else if (i < 8) {
+                    static const int row[8] = {0, 0, 0, 1, 1, 1, 2, 2};
+                    static const int col[8] = {0, 1, 2, 0, 1, 2, 0, 1};
+                    current = state->perspective.plane ?
+                        state->perspective.matrix[row[i]][col[i]] :
+                        (i == 0 || i == 4);
+                }
                 double value;
                 if (tok_end <= ptr ||
                         !numeric_arg_strict((struct arg) {ptr, tok_end}, current,
@@ -3483,23 +3501,33 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     ok = false;
                     break;
                 }
-                if (i & 1)
-                    target.corner[i / 2].y = value;
-                else
-                    target.corner[i / 2].x = value;
+                values[i] = value;
                 ptr = next ? next + 1 : raw_end;
             }
             skip_spaces(&ptr);
-            if (!ok || ptr != raw_end)
+            if (!ok || ptr != raw_end || (count == 9 && values[8] != 1.0))
                 continue;
 
             state->perspective_enabled = true;
-            for (int i = 0; i < 4; i++) {
-                state->perspective.corner[i].x = calc_anim(
-                    target.corner[i].x, state->perspective.corner[i].x, pwr);
-                state->perspective.corner[i].y = calc_anim(
-                    target.corner[i].y, state->perspective.corner[i].y, pwr);
+            bool plane = count == 9;
+            if (plane) {
+                static const int row[8] = {0, 0, 0, 1, 1, 1, 2, 2};
+                static const int col[8] = {0, 1, 2, 0, 1, 2, 0, 1};
+                for (int i = 0; i < 8; i++)
+                    state->perspective.matrix[row[i]][col[i]] = calc_anim(
+                        values[i], state->perspective.plane ?
+                        state->perspective.matrix[row[i]][col[i]] :
+                        (i == 0 || i == 4), pwr);
+                state->perspective.matrix[2][2] = 1;
+            } else {
+                for (int i = 0; i < 4; i++) {
+                    state->perspective.corner[i].x = calc_anim(
+                        values[2 * i], state->perspective.corner[i].x, pwr);
+                    state->perspective.corner[i].y = calc_anim(
+                        values[2 * i + 1], state->perspective.corner[i].y, pwr);
+                }
             }
+            state->perspective.plane = plane;
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;
