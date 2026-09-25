@@ -38,6 +38,7 @@
 #include "ass_distort.h"
 #include "ass_perspective.h"
 #include "ass_shaper.h"
+#include "ass_chat.h"
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
 size_t ass_composite_construct(void *key, void *value, void *priv);
@@ -77,6 +78,29 @@ static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 #define BLUR_PRECISION (1.0 / 256)  // blur error as fraction of full input range
 #define NBSP 0xa0   // unicode non-breaking space character
 #define FURI_AUTO_GAP_FACTOR 0.04
+
+typedef struct {
+    int start, end, name_end;
+    ASS_DRect bounds;
+    double width, height;
+    double stack_top;
+} ChatRange;
+
+typedef struct {
+    double panel_width, panel_pad, bubble_pad, message_gap;
+    double header_pad, radius, max_text_width;
+    double viewport_max, viewport_min;
+} ChatMetrics;
+
+static ChatMetrics chat_choose_metrics(RenderContext *state,
+                                       const ASS_ChatScene *chat,
+                                       const ChatRange *ranges,
+                                       const ChatRange *title);
+static bool render_chat_scene(RenderContext *state, ASS_Event *event,
+                              EventImages *event_images,
+                              ASS_ImageRGBA **rgba_out,
+                              const ASS_ChatScene *chat, ChatRange *ranges,
+                              ChatRange *title, const ChatMetrics *metrics);
 
 // Temporary scale for debugging / visual calibration of rnd* magnitude.
 #ifndef ASS_RND_SCALE
@@ -319,6 +343,11 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     ass_clear_tag_images_internal(render_priv);
 
     render_context_done(&render_priv->state);
+
+    for (int i = 0; i < 8; i++) {
+        free(render_priv->chat_cache[i].source);
+        ass_chat_free(render_priv->chat_cache[i].scene);
+    }
 
     free(render_priv->settings.default_font);
     free(render_priv->settings.default_family);
@@ -1044,6 +1073,12 @@ static ASS_Image **render_glyph_i(RenderContext *state,
         r[j].y0 = (r[j].y0 + dst_y < zy) ? zy - dst_y : r[j].y0;
         r[j].x1 = (r[j].x1 + dst_x > sx) ? sx - dst_x : r[j].x1;
         r[j].y1 = (r[j].y1 + dst_y > sy) ? sy - dst_y : r[j].y1;
+        if (state->chat_clip_active) {
+            r[j].x0 = FFMAX(r[j].x0, state->chat_clip_x0 - dst_x);
+            r[j].x1 = FFMIN(r[j].x1, state->chat_clip_x1 - dst_x);
+            r[j].y0 = FFMAX(r[j].y0, state->chat_clip_y0 - dst_y);
+            r[j].y1 = FFMIN(r[j].y1, state->chat_clip_y1 - dst_y);
+        }
         if (state->karaoke_clip_enabled) {
             r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
             r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
@@ -1187,6 +1222,12 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     clip_y0 = FFMINMAX(state->clip_y0, 0, render_priv->height);
     clip_x1 = FFMINMAX(state->clip_x1, 0, render_priv->width);
     clip_y1 = FFMINMAX(state->clip_y1, 0, render_priv->height);
+    if (state->chat_clip_active) {
+        clip_x0 = FFMAX(clip_x0, state->chat_clip_x0);
+        clip_x1 = FFMIN(clip_x1, state->chat_clip_x1);
+        clip_y0 = FFMAX(clip_y0, state->chat_clip_y0);
+        clip_y1 = FFMIN(clip_y1, state->chat_clip_y1);
+    }
     if (state->karaoke_clip_enabled) {
         clip_x0 = FFMAX(clip_x0, state->karaoke_clip_x0);
         clip_x1 = FFMIN(clip_x1, state->karaoke_clip_x1);
@@ -2402,8 +2443,22 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
     unsigned n_bitmaps = state->text_info.n_bitmaps;
     CombinedBitmapInfo *bitmaps = state->text_info.combined_bitmaps;
 
+#define CHAT_BITMAP_VISIBLE(info) \
+    (!(info)->chat_part || (info)->chat_part <= state->chat_visible)
+#define CHAT_BITMAP_CLIP(info) do { \
+    int part = (info)->chat_part; \
+    state->chat_clip_active = part > 0 && state->chat_clips; \
+    if (state->chat_clip_active) { \
+        state->chat_clip_x0 = state->chat_clips[part].x0; \
+        state->chat_clip_x1 = state->chat_clips[part].x1; \
+    } \
+} while (0)
+
     for (unsigned i = 0; i < n_bitmaps; i++) {
         CombinedBitmapInfo *info = &bitmaps[i];
+        if (!CHAT_BITMAP_VISIBLE(info))
+            continue;
+        CHAT_BITMAP_CLIP(info);
         if (!info->bm_s || state->bs4_box_mode)
             continue;
         if (!info->furi_base_karaoke &&
@@ -2424,6 +2479,9 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
         CombinedBitmapInfo *info = &bitmaps[i];
+        if (!CHAT_BITMAP_VISIBLE(info))
+            continue;
+        CHAT_BITMAP_CLIP(info);
         for (int layer = ASS_BORDER_LAYERS_MAX - 1; layer >= 0; layer--)
             tail = render_border_layer(state, info, layer, tail,
                                        out_rgba ? &rgba_tail : NULL);
@@ -2431,6 +2489,9 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
         CombinedBitmapInfo *info = &bitmaps[i];
+        if (!CHAT_BITMAP_VISIBLE(info))
+            continue;
+        CHAT_BITMAP_CLIP(info);
         if (!info->bm)
             continue;
 
@@ -2466,12 +2527,15 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
     }
 
     *tail = 0;
+    state->chat_clip_active = false;
     blend_vector_clip(state, head);
     if (out_rgba) {
         blend_vector_clip_rgba(state, rgba_head);
         *out_rgba = rgba_head;
     }
     return head;
+#undef CHAT_BITMAP_VISIBLE
+#undef CHAT_BITMAP_CLIP
 }
 
 static void compute_string_bbox(TextInfo *text, ASS_DRect *bbox)
@@ -3182,6 +3246,10 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->clip_x1 = render_priv->track->PlayResX;
     state->clip_y1 = render_priv->track->PlayResY;
     state->clip_mode = 0;
+    state->chat_clip_active = false;
+    state->chat_enabled = false;
+    state->chat_visible = INT_MAX;
+    state->chat_clips = NULL;
     state->detect_collisions = 1;
     state->fade = 0;
     state->drawing_scale = 0;
@@ -4725,6 +4793,8 @@ wrap_lines_naive(RenderContext *state, double max_text_width, char *unibrks)
                    (state->wrap_style != 2)) {
             break_type = 1;
             break_at = last_breakable;
+            if (break_at < 0 && state->chat_enabled && cur > s1)
+                break_at = i - 1; // long unbroken chat tokens retain the gutter
             if (break_at >= 0)
                 ass_msg(render_priv->library, MSGL_DBG2, "line break at %d",
                         break_at);
@@ -5992,22 +6062,40 @@ static bool event_has_active_column(char *text)
     return seen_active;
 }
 
-// Parse event text.
-// Fill render_priv->text_info.
-static bool parse_events(RenderContext *state, ASS_Event *event)
+/* Append fixed header/name text through the same glyph path as message bodies. */
+static bool append_chat_literal(RenderContext *state, const char *text)
+{
+    TextInfo *info = &state->text_info;
+    char *p = (char *) text;
+    while (*p) {
+        unsigned code = ass_utf8_get_char(&p);
+        if (!append_glyph_to_target(state, &info->glyphs, &info->event_text,
+                                    &info->breaks, &info->length,
+                                    &info->max_glyphs, code,
+                                    (ASS_StringView) {NULL, 0}, false, -1))
+            return false;
+    }
+    return true;
+}
+
+static bool append_chat_break(RenderContext *state)
+{
+    TextInfo *info = &state->text_info;
+    state->effect_type = EF_NONE;
+    state->effect_timing = 0;
+    state->effect_skip_timing = 0;
+    state->reset_effect = false;
+    return append_glyph_to_target(state, &info->glyphs, &info->event_text,
+                                  &info->breaks, &info->length,
+                                  &info->max_glyphs, '\n',
+                                  (ASS_StringView) {NULL, 0}, false, -1);
+}
+
+// Parse one part of an event, retaining render state between chat messages.
+static bool parse_event_fragment(RenderContext *state, char *p)
 {
     TextInfo *text_info = &state->text_info;
-
-    char *p = event->Text, *q;
-
-    // Ordinary karaoke retains the allocation-free legacy path.  Build the
-    // explicit timeline only for events which may contain native furigana;
-    // malformed candidates are filtered by the normal parser below.
-    state->karaoke_timeline_enabled =
-        strchr(event->Text, '<') && strchr(event->Text, '|');
-
-    if (event_has_active_column(event->Text) && !begin_column_layout(state))
-        goto fail;
+    char *q;
 
     // Event parsing.
     while (true) {
@@ -6098,8 +6186,61 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         state->reset_effect = false;
     }
 
-    if (state->karaoke_alloc_failed)
+    return !state->karaoke_alloc_failed;
+
+fail:
+    return false;
+}
+
+// Parse event text into one native glyph stream, with explicit chat ranges.
+static bool parse_events(RenderContext *state, ASS_Event *event,
+                         const ASS_ChatScene *chat, ChatRange *ranges,
+                         ChatRange *title)
+{
+    TextInfo *info = &state->text_info;
+    state->karaoke_timeline_enabled =
+        strchr(event->Text, '<') && strchr(event->Text, '|');
+    if (!chat) {
+        if (event_has_active_column(event->Text) && !begin_column_layout(state))
+            goto fail;
+        if (parse_event_fragment(state, event->Text))
+            return true;
         goto fail;
+    }
+
+    if (!parse_event_fragment(state, chat->prefix))
+        goto fail;
+    if (chat->title && *chat->title) {
+        title->start = info->length;
+        if (!append_chat_literal(state, chat->title))
+            goto fail;
+        title->end = info->length;
+    }
+    for (int i = 0; i < chat->count; i++) {
+        const ASS_ChatMessage *message = &chat->messages[i];
+        if (info->length && !append_chat_break(state))
+            goto fail;
+        ranges[i].start = info->length;
+        char *body = message->text;
+        while (*body == '{') {
+            char *end = strchr(body + 1, '}');
+            if (!end)
+                break;
+            ass_parse_override_block(state, body + 1, end);
+            body = end + 1;
+        }
+        if (chat->mode == 1 && chat->show_names &&
+            message->speaker && *message->speaker) {
+            if (!append_chat_literal(state, message->speaker) ||
+                !append_chat_break(state))
+                goto fail;
+            ranges[i].name_end = info->length;
+        } else
+            ranges[i].name_end = ranges[i].start;
+        if (!parse_event_fragment(state, body))
+            goto fail;
+        ranges[i].end = info->length;
+    }
     return true;
 
 fail:
@@ -8447,6 +8588,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
         GlyphInfo *info = glyphs + i;
         if (info->starts_new_run)
             new_run = true;
+        if (current_info && info->chat_part != current_info->chat_part)
+            new_run = true;
         if (info->skip)
             continue;
 
@@ -8493,6 +8636,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                     *combined_info = text_info->combined_bitmaps;
                 }
                 current_info = &(*combined_info)[*nb_bitmaps];
+
+                current_info->chat_part = info->chat_part;
 
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
@@ -8730,6 +8875,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     memcpy(current_info->border_layers, deco.border_layers,
            sizeof(current_info->border_layers));
     current_info->fade = deco.fade;
+    current_info->chat_part = deco.chat_part;
     current_info->fade_color = deco.fade_color;
     current_info->line = deco.line;
     for (int j = 0; j < 4; j++)
@@ -9986,6 +10132,462 @@ static void add_background(RenderContext *state, EventImages *event_images,
     }
 }
 
+/* Chat dimensions are screen-scaled PlayRes ratios and one font-based unit.
+ * The 75% bubble cap is intentional: the other side must remain visible. */
+static double chat_natural_width(const TextInfo *info, int start, int end)
+{
+    double line = 0.0, widest = 0.0;
+    for (int i = start; i < end; i++) {
+        const GlyphInfo *glyph = &info->glyphs[i];
+        if (glyph->symbol == '\n') {
+            widest = FFMAX(widest, line);
+            line = 0.0;
+        } else if (!glyph->skip) {
+            line += fabs(d6_to_double(glyph->cluster_advance.x));
+        }
+    }
+    return FFMAX(widest, line);
+}
+
+static ChatMetrics chat_choose_metrics(RenderContext *state,
+                                       const ASS_ChatScene *chat,
+                                       const ChatRange *ranges,
+                                       const ChatRange *title)
+{
+    ASS_Renderer *priv = state->renderer;
+    const double video_width = priv->frame_content_width;
+    const double video_height = priv->frame_content_height;
+    double unit = fabs(state->style->FontSize * state->screen_scale_y *
+                       state->object_scale);
+    unit = FFMINMAX(unit, 6.0, FFMAX(8.0, video_height / 9.0));
+    ChatMetrics m = {
+        .panel_pad = unit * 0.28,
+        .bubble_pad = unit * 0.22,
+        .message_gap = unit * 0.16,
+        .header_pad = unit * 0.20,
+        .radius = unit * 0.22,
+        .viewport_max = video_height * 0.68,
+        .viewport_min = video_height * 0.28,
+    };
+    double natural = 0.0;
+    for (int i = 0; i < chat->count; i++)
+        natural = FFMAX(natural, chat_natural_width(&state->text_info,
+                          ranges[i].start, ranges[i].end));
+    double title_width = chat_natural_width(&state->text_info,
+                                            title->start, title->end);
+    double wanted = FFMAX((natural + 2 * m.bubble_pad) / 0.75 +
+                          2 * m.panel_pad,
+                          title_width + 2 * m.header_pad + 2 * m.panel_pad);
+    /* A pathological line cannot expand the phone across the whole video. */
+    m.panel_width = FFMINMAX(wanted, video_width * 0.30,
+                             video_width * 0.56);
+    double inner = m.panel_width - 2 * m.panel_pad;
+    m.max_text_width = FFMAX(8.0, inner * 0.75 - 2 * m.bubble_pad);
+    return m;
+}
+
+static void chat_measure_range(const TextInfo *info, ChatRange *range,
+                               double fallback_height)
+{
+    ASS_DRect b = {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+    for (int i = range->start; i < range->end; i++) {
+        const GlyphInfo *root = &info->glyphs[i];
+        if (root->skip || root->symbol == '\n')
+            continue;
+        for (const GlyphInfo *glyph = root; glyph; glyph = glyph->next) {
+            double x = d6_to_double(glyph->pos.x);
+            double y = d6_to_double(glyph->pos.y);
+            b.x_min = FFMIN(b.x_min, x + d6_to_double(glyph->bbox.x_min));
+            b.x_max = FFMAX(b.x_max, x + FFMAX(
+                d6_to_double(glyph->bbox.x_max),
+                d6_to_double(glyph->cluster_advance.x)));
+            b.y_min = FFMIN(b.y_min, y + d6_to_double(glyph->bbox.y_min));
+            b.y_max = FFMAX(b.y_max, y + d6_to_double(glyph->bbox.y_max));
+        }
+    }
+    for (int i = 0; i < info->n_furi_groups; i++) {
+        const FuriGroup *group = &info->furi_groups[i];
+        if (group->base_start >= range->start &&
+            group->base_start < range->end)
+            add_glyph_list_visual_bbox(group->glyphs, group->length, &b);
+    }
+    if (b.x_min == DBL_MAX) {
+        b.x_min = b.x_max = 0.0;
+        b.y_min = 0.0;
+        b.y_max = fallback_height;
+    }
+    range->bounds = b;
+    range->width = FFMAX(0.0, b.x_max - b.x_min);
+    range->height = FFMAX(fallback_height, b.y_max - b.y_min);
+}
+
+static void chat_shift_range(TextInfo *info, const ChatRange *range,
+                             double x, double y)
+{
+    int32_t dx = double_to_d6(x - range->bounds.x_min);
+    int32_t dy = double_to_d6(y - range->bounds.y_min);
+    for (int i = range->start; i < range->end; i++)
+        for (GlyphInfo *glyph = &info->glyphs[i]; glyph; glyph = glyph->next) {
+            glyph->pos.x += dx;
+            glyph->pos.y += dy;
+        }
+    for (int i = 0; i < info->n_furi_groups; i++) {
+        FuriGroup *group = &info->furi_groups[i];
+        if (group->base_start < range->start ||
+            group->base_start >= range->end)
+            continue;
+        for (int j = 0; j < group->length; j++)
+            for (GlyphInfo *glyph = &group->glyphs[j]; glyph;
+                 glyph = glyph->next) {
+                glyph->pos.x += dx;
+                glyph->pos.y += dy;
+            }
+    }
+}
+
+static void chat_set_part(TextInfo *info, const ChatRange *range, int part)
+{
+    for (int i = range->start; i < range->end; i++)
+        for (GlyphInfo *glyph = &info->glyphs[i]; glyph; glyph = glyph->next)
+            glyph->chat_part = part;
+    for (int i = 0; i < info->n_furi_groups; i++) {
+        FuriGroup *group = &info->furi_groups[i];
+        if (group->base_start < range->start ||
+            group->base_start >= range->end)
+            continue;
+        for (int j = 0; j < group->length; j++)
+            for (GlyphInfo *glyph = &group->glyphs[j]; glyph;
+                 glyph = glyph->next)
+                glyph->chat_part = part;
+    }
+}
+
+static void chat_hide_range(TextInfo *info, const ChatRange *range)
+{
+    for (int i = range->start; i < range->end; i++)
+        for (GlyphInfo *glyph = &info->glyphs[i]; glyph; glyph = glyph->next)
+            glyph->skip = true;
+    for (int i = 0; i < info->n_furi_groups; i++) {
+        FuriGroup *group = &info->furi_groups[i];
+        if (group->base_start < range->start ||
+            group->base_start >= range->end)
+            continue;
+        for (int j = 0; j < group->length; j++)
+            for (GlyphInfo *glyph = &group->glyphs[j]; glyph;
+                 glyph = glyph->next)
+                glyph->skip = true;
+    }
+}
+
+static void chat_resolve_outer_clip(RenderContext *state)
+{
+    ASS_Renderer *priv = state->renderer;
+    if (state->explicit || !priv->settings.use_margins) {
+        state->clip_x0 = lround(x2scr_pos_scaled(priv, state->clip_x0));
+        state->clip_x1 = lround(x2scr_pos_scaled(priv, state->clip_x1));
+        state->clip_y0 = lround(y2scr_pos(priv, state->clip_y0));
+        state->clip_y1 = lround(y2scr_pos(priv, state->clip_y1));
+        if (state->explicit) {
+            int zx = priv->settings.left_margin;
+            int zy = priv->settings.top_margin;
+            state->clip_x0 = FFMAX(state->clip_x0, zx);
+            state->clip_y0 = FFMAX(state->clip_y0, zy);
+            state->clip_x1 = FFMIN(state->clip_x1,
+                                   zx + priv->frame_content_width);
+            state->clip_y1 = FFMIN(state->clip_y1,
+                                   zy + priv->frame_content_height);
+        }
+    } else {
+        state->clip_x0 = state->clip_y0 = 0;
+        state->clip_x1 = priv->settings.frame_width;
+        state->clip_y1 = priv->settings.frame_height;
+    }
+}
+
+static ASS_Image **append_chat_box(RenderContext *state, double x, double y,
+                                   double width, double height, double radius,
+                                   uint32_t color, ASS_Image **tail,
+                                   ASS_ImageRGBA ***rgba_tail)
+{
+    if (width <= 0 || height <= 0)
+        return tail;
+    double par = state->renderer->par_scale_x;
+    double left_margin = state->renderer->settings.left_margin;
+    x = (x - left_margin) * par + left_margin;
+    width *= par;
+    radius = FFMIN(radius * par, radius);
+    BS4BoxShape shape = bs4_box_shape(x, y, x + width, y + height, radius);
+    double scale = 64.0 / shape.source_size;
+    double matrix[3][3] = {
+        {width * scale, 0.0, x * 64.0},
+        {0.0, height * scale, y * 64.0},
+        {0.0, 0.0, 1.0},
+    };
+    ASS_Vector pos;
+    Bitmap *bitmap;
+    if (!bs4_get_bitmap(state, matrix, &shape, &pos, &bitmap))
+        return tail;
+    ass_apply_fades(&color, state->fade, state->fade_color);
+    return append_bs4_bitmap(state, bitmap, pos, color,
+                             IMAGE_TYPE_SHADOW, tail, rgba_tail);
+}
+
+static bool render_chat_scene(RenderContext *state, ASS_Event *event,
+                              EventImages *event_images,
+                              ASS_ImageRGBA **rgba_out,
+                              const ASS_ChatScene *chat, ChatRange *ranges,
+                              ChatRange *title, const ChatMetrics *m)
+{
+    ASS_Renderer *priv = state->renderer;
+    TextInfo *info = &state->text_info;
+    double unit = FFMAX(8.0, m->bubble_pad * 3.0);
+    chat_measure_range(info, title, unit);
+    double bubble_cap = (m->panel_width - 2 * m->panel_pad) * 0.75;
+    double total = 0.0, tallest = 0.0;
+    for (int i = 0; i < chat->count; i++) {
+        chat_measure_range(info, &ranges[i], unit);
+        ranges[i].stack_top = total;
+        total += ranges[i].height + 2 * m->bubble_pad;
+        if (i + 1 < chat->count)
+            total += m->message_gap;
+        tallest = FFMAX(tallest, ranges[i].height + 2 * m->bubble_pad);
+    }
+    int initial = chat->has_time ? chat->start_count : chat->count;
+    double initial_height = initial ? ranges[initial - 1].stack_top +
+        ranges[initial - 1].height + 2 * m->bubble_pad : 0.0;
+    double viewport_height = FFMIN(m->viewport_max,
+        FFMAX(m->viewport_min, FFMAX(initial_height, tallest)));
+    double header_height = title->end > title->start ?
+        title->height + 2 * m->header_pad : 0.0;
+    /* Panel/header geometry is fixed for the entire event. Only bubbles
+     * move in the clipped viewport below the header. */
+    double panel_height = 2 * m->panel_pad + header_height + viewport_height;
+
+    int margin_l = event->MarginL ? event->MarginL : state->style->MarginL;
+    int margin_r = event->MarginR ? event->MarginR : state->style->MarginR;
+    int margin_v = event->MarginV ? event->MarginV : state->style->MarginV;
+    double anchor_x, anchor_y;
+    if (state->evt_type & EVENT_POSITIONED) {
+        anchor_x = x2scr_pos(priv, state->pos_x);
+        anchor_y = y2scr_pos(priv, state->pos_y);
+    } else {
+        int halign = state->alignment & 3;
+        if (halign == HALIGN_LEFT)
+            anchor_x = x2scr_left(state, margin_l);
+        else if (halign == HALIGN_RIGHT)
+            anchor_x = x2scr_right(state, priv->track->PlayResX - margin_r);
+        else
+            anchor_x = (x2scr_left(state, margin_l) +
+                x2scr_right(state, priv->track->PlayResX - margin_r)) / 2.0;
+        int valign = state->alignment & 12;
+        if (valign == VALIGN_TOP)
+            anchor_y = y2scr_top(state, margin_v);
+        else if (valign == VALIGN_CENTER)
+            anchor_y = y2scr(state, priv->track->PlayResY / 2.0);
+        else {
+            double line_pos = state->explicit ? 0 : priv->settings.line_position;
+            double bottom = y2scr_sub(state, priv->track->PlayResY - margin_v);
+            anchor_y = bottom + (y2scr_top(state, 0) - bottom) *
+                line_pos / 100.0;
+        }
+    }
+    int halign = state->alignment & 3;
+    int valign = state->alignment & 12;
+    double panel_x = anchor_x - (halign == HALIGN_RIGHT ? m->panel_width :
+                                halign == HALIGN_CENTER ? m->panel_width / 2 : 0);
+    double panel_y = anchor_y - (valign == VALIGN_SUB ? panel_height :
+                                valign == VALIGN_CENTER ? panel_height / 2 : 0);
+    double viewport_top = panel_y + m->panel_pad + header_height;
+    double viewport_bottom = viewport_top + viewport_height;
+
+    int previous;
+    double progress;
+    int visible = ass_chat_visible(chat, priv->time - event->Start,
+                                   &previous, &progress);
+    double visible_height = visible ? ranges[visible - 1].stack_top +
+        ranges[visible - 1].height + 2 * m->bubble_pad : 0.0;
+    double previous_height = previous ? ranges[previous - 1].stack_top +
+        ranges[previous - 1].height + 2 * m->bubble_pad : 0.0;
+    if ((size_t) chat->count + 1 > SIZE_MAX / sizeof(ASS_ChatClip))
+        return false;
+    ASS_ChatClip *clips = calloc((size_t) chat->count + 1, sizeof(*clips));
+    if (!clips)
+        return false;
+
+    int first_body = chat->count && ranges[0].name_end < ranges[0].end ?
+        ranges[0].name_end : chat->count ? ranges[0].start : 0;
+    uint32_t panel_color = chat->count && ranges[0].start < ranges[0].end ?
+        info->glyphs[first_body].c[3] : state->c[3];
+    unsigned luminance = (((panel_color >> 24) & 255) * 299 +
+        ((panel_color >> 16) & 255) * 587 +
+        ((panel_color >> 8) & 255) * 114) / 1000;
+    uint32_t header_color = luminance < 128 ? 0xFFFFFF00u : 0x00000000u;
+    uint32_t title_color = luminance < 128 ? 0x00000000u : 0xFFFFFF00u;
+    for (int i = title->start; i < title->end; i++)
+        for (GlyphInfo *glyph = &info->glyphs[i]; glyph; glyph = glyph->next) {
+            glyph->c[0] = title_color;
+            glyph->gradient = (GradientState) {0};
+            ass_mangetsu_gradient_state_reset(&glyph->mangetsu_gradient);
+            glyph->pattern = (TextPatternPaint) {0};
+            glyph->image_fill = (ImageFillState) {0};
+            glyph->blend_mode = ASS_BLEND_NORMAL;
+        }
+    for (int i = 0; i < chat->count; i++) {
+        for (int j = ranges[i].start; j < ranges[i].name_end; j++)
+            for (GlyphInfo *glyph = &info->glyphs[j]; glyph;
+                 glyph = glyph->next)
+                glyph->c[0] = glyph->c[1];
+        chat_set_part(info, &ranges[i], i + 1);
+    }
+
+    if (title->end > title->start)
+        chat_shift_range(info, title,
+            panel_x + (m->panel_width - title->width) / 2.0,
+            panel_y + m->panel_pad + m->header_pad);
+    for (int i = 0; i < chat->count; i++) {
+        double final_top = viewport_bottom - visible_height + ranges[i].stack_top;
+        double top;
+        if (i < previous)
+            top = viewport_bottom - previous_height + ranges[i].stack_top +
+                  progress * (previous_height - visible_height);
+        else
+            top = final_top + (1.0 - progress) *
+                  (ranges[i].height + 2 * m->bubble_pad);
+        ranges[i].stack_top = top;
+        double bubble_width = FFMIN(bubble_cap,
+                                    ranges[i].width + 2 * m->bubble_pad);
+        double bubble_x = chat->messages[i].side ?
+            panel_x + m->panel_width - m->panel_pad - bubble_width :
+            panel_x + m->panel_pad;
+        double physical_x = (bubble_x - priv->settings.left_margin) *
+            priv->par_scale_x + priv->settings.left_margin;
+        clips[i + 1].x0 = (int) ceil(physical_x);
+        clips[i + 1].x1 = (int) floor(physical_x +
+                                     bubble_width * priv->par_scale_x);
+        chat_shift_range(info, &ranges[i], bubble_x + m->bubble_pad,
+                         top + m->bubble_pad);
+        if (i >= visible || top + ranges[i].height +
+            2 * m->bubble_pad <= viewport_top || top >= viewport_bottom)
+            chat_hide_range(info, &ranges[i]);
+    }
+
+    chat_resolve_outer_clip(state);
+    state->chat_clip_y0 = (int) ceil(viewport_top);
+    state->chat_clip_y1 = (int) floor(viewport_bottom);
+    state->chat_visible = visible;
+    state->chat_clips = clips;
+    state->chat_clip_active = false;
+    state->detect_collisions = 0;
+
+    position_glyphs_for_render(state, 0.0, 0.0);
+    render_and_combine_glyphs(state);
+    compute_line_gradient_rects(state);
+    compute_mangetsu_gradient_rects(state);
+    state->needs_rgba = text_needs_rgba(info);
+
+    memset(event_images, 0, sizeof(*event_images));
+    event_images->event = event;
+    event_images->left = lround((panel_x - priv->settings.left_margin) *
+        priv->par_scale_x + priv->settings.left_margin);
+    event_images->top = lround(panel_y);
+    event_images->width = lround(m->panel_width * priv->par_scale_x);
+    event_images->height = lround(panel_height);
+    event_images->detect_collisions = 0;
+    event_images->needs_rgba = state->needs_rgba;
+
+    ASS_Image *box_head = NULL;
+    ASS_Image **box_tail = &box_head;
+    ASS_ImageRGBA *box_rgba_head = NULL;
+    ASS_ImageRGBA **box_rgba_tail = &box_rgba_head;
+    ASS_ImageRGBA ***rgba_tail = rgba_out ? &box_rgba_tail : NULL;
+    box_tail = append_chat_box(state, panel_x, panel_y, m->panel_width,
+                               panel_height, m->radius * 1.6, panel_color,
+                               box_tail, rgba_tail);
+    if (header_height > 0)
+        box_tail = append_chat_box(state, panel_x + m->panel_pad,
+            panel_y + m->panel_pad, m->panel_width - 2 * m->panel_pad,
+            header_height, m->radius, header_color, box_tail, rgba_tail);
+    for (int i = 0; i < visible; i++) {
+        double bubble_width = FFMIN(bubble_cap,
+                                    ranges[i].width + 2 * m->bubble_pad);
+        double bubble_x = chat->messages[i].side ?
+            panel_x + m->panel_width - m->panel_pad - bubble_width :
+            panel_x + m->panel_pad;
+        int body = ranges[i].name_end < ranges[i].end ?
+            ranges[i].name_end : ranges[i].start;
+        uint32_t color = ranges[i].start < ranges[i].end ?
+            info->glyphs[body].c[2] : state->c[2];
+        state->chat_clip_active = true;
+        state->chat_clip_x0 = clips[i + 1].x0;
+        state->chat_clip_x1 = clips[i + 1].x1;
+        box_tail = append_chat_box(state, bubble_x, ranges[i].stack_top,
+            bubble_width, ranges[i].height + 2 * m->bubble_pad,
+            m->radius, color, box_tail, rgba_tail);
+    }
+    state->chat_clip_active = false;
+    *box_tail = NULL;
+    *box_rgba_tail = NULL;
+    if (box_head)
+        blend_vector_clip(state, box_head);
+    if (box_rgba_head)
+        blend_vector_clip_rgba(state, box_rgba_head);
+
+    ASS_ImageRGBA *text_rgba = NULL;
+    ASS_Image *text = render_text(state, rgba_out ? &text_rgba : NULL);
+    *box_tail = text;
+    event_images->imgs = box_head ? box_head : text;
+    if (box_rgba_head) {
+        *box_rgba_tail = text_rgba;
+        event_images->imgs_rgba = box_rgba_head;
+    } else
+        event_images->imgs_rgba = text_rgba;
+    if (rgba_out)
+        *rgba_out = event_images->imgs_rgba;
+    state->chat_clips = NULL;
+    free(clips);
+    return true;
+}
+
+/* Syntax depends on source text alone. Keep a small per-renderer cache so a
+ * persistent chat event is tokenized once; shaping still uses normal caches. */
+static ASS_ChatScene *get_chat_scene(ASS_Renderer *priv, const char *source,
+                                     bool *cached)
+{
+    *cached = false;
+    if (!strstr(source, "\\chatmode"))
+        return NULL;
+    for (int i = 0; i < 8; i++) {
+        if (priv->chat_cache[i].source &&
+            !strcmp(priv->chat_cache[i].source, source)) {
+            *cached = true;
+            return priv->chat_cache[i].scene;
+        }
+    }
+    ASS_ChatScene *scene = ass_chat_parse(source);
+    if (!scene)
+        return NULL;
+    size_t length = strlen(source);
+    if (length > 65536 || scene->count > 256)
+        return scene;
+    char *copy = malloc(length + 1);
+    if (!copy)
+        return scene;
+    memcpy(copy, source, length + 1);
+    unsigned slot = priv->chat_cache_next++ % 8;
+    free(priv->chat_cache[slot].source);
+    ass_chat_free(priv->chat_cache[slot].scene);
+    priv->chat_cache[slot].source = copy;
+    priv->chat_cache[slot].scene = scene;
+    *cached = true;
+    return scene;
+}
+
+static void release_chat_scene(ASS_ChatScene *scene, bool cached)
+{
+    if (!cached)
+        ass_chat_free(scene);
+}
+
 /**
  * \brief Main ass rendering function, glues everything together
  * \param event event to render
@@ -10009,14 +10611,32 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     free_render_context(state);
     init_render_context(state, event);
 
-    if (!parse_events(state, event))
+    bool chat_cached = false;
+    ASS_ChatScene *chat = get_chat_scene(render_priv, event->Text,
+                                         &chat_cached);
+    ChatRange *ranges = chat && chat->count ?
+        calloc(chat->count, sizeof(*ranges)) : NULL;
+    ChatRange title = {0};
+    if (chat && chat->count && !ranges) {
+        release_chat_scene(chat, chat_cached);
+        free_render_context(state);
         return false;
+    }
+    state->chat_enabled = chat != NULL;
+
+    if (!parse_events(state, event, chat, ranges, &title)) {
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return false;
+    }
 
     TextInfo *text_info = &state->text_info;
     BS4BoxGeometry bs4_box_geometry = {0};
     if (text_info->length == 0) {
         // no valid symbols in the event; this can be smth like {comment}
         free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
         return false;
     }
 
@@ -10049,6 +10669,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         ass_msg(render_priv->library, MSGL_ERR, "Failed to shape text");
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
         return false;
     }
 
@@ -10058,12 +10680,18 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         ass_msg(render_priv->library, MSGL_ERR, "Failed to shape furi text");
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
         return false;
     }
 
     apply_cycle_paint(state);
 
     preliminary_layout(state);
+
+    ChatMetrics chat_metrics = {0};
+    if (chat)
+        chat_metrics = chat_choose_metrics(state, chat, ranges, &title);
 
     int valign = state->alignment & 12;
 
@@ -10078,6 +10706,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     double max_text_width =
         x2scr_right(state, render_priv->track->PlayResX - MarginR) -
         x2scr_left(state, MarginL);
+    if (chat)
+        max_text_width = chat_metrics.max_text_width;
 
     // wrap lines
     wrap_lines_smart(state, max_text_width);
@@ -10099,7 +10729,19 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         ass_msg(render_priv->library, MSGL_ERR, "Failed to expand furi line metrics");
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
         return false;
+    }
+
+    if (chat) {
+        bool ok = render_chat_scene(state, event, event_images, rgba_out,
+                                    chat, ranges, &title, &chat_metrics);
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return ok;
     }
 
     /* Keep the box's source rectangle in untransformed event-local layout. */
@@ -10396,6 +11038,9 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     ass_shaper_cleanup(state->shaper, text_info);
     free_render_context(state);
+
+    release_chat_scene(chat, chat_cached);
+    free(ranges);
 
     return true;
 }

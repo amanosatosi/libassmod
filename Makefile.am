@@ -21,7 +21,9 @@ EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
              samples/blend-basic.ass samples/blend-alpha.ass \
              samples/blend-components.ass samples/blend-order.ass \
              samples/blend-img.ass samples/blend-reset.ass \
-             samples/blend-video.ass
+             samples/blend-video.ass \
+             docs/native-chat.md samples/chat-modes.ass \
+             test/chat_selftest.c test/chat_render_selftest.c
 
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \

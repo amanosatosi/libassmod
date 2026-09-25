@@ -201,6 +201,10 @@ typedef struct {
 } KaraokeSegment;
 
 typedef struct {
+    int x0, x1;
+} ASS_ChatClip;
+
+typedef struct {
     bool enabled;
     ASS_StringView path;
     int32_t xoffset;
@@ -289,6 +293,7 @@ typedef struct ass_tag_image_entry {
 // describes a combined bitmap
 typedef struct {
     FilterDesc filter;
+    int chat_part;              // 0 = header/normal, positive = message index + 1
     uint32_t c[4];              // colors (with fade applied)
     Effect effect_type;
     bool karaoke_reverse;
@@ -367,6 +372,7 @@ static inline JitterState ass_jitter_default_state(void)
 // GlyphInfo and TextInfo are used for text centering and word-wrapping operations
 typedef struct glyph_info {
     unsigned symbol;
+    int chat_part;
     bool skip;                  // skip glyph when layouting text
     bool is_trimmed_whitespace;
     bool has_jitter;
@@ -764,6 +770,12 @@ struct render_context {
     int clip_x0, clip_y0, clip_x1, clip_y1;
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
     char clip_mode;             // 1 = iclip
+    bool chat_clip_active;       // internal viewport, composed after user clip
+    bool chat_enabled;
+    int chat_clip_x0, chat_clip_x1;
+    int chat_clip_y0, chat_clip_y1;
+    int chat_visible;
+    ASS_ChatClip *chat_clips;    // borrowed from the active chat render
     char detect_collisions;
     char be;                    // blur edges
     int fade;                   // alpha from \fad
@@ -887,6 +899,12 @@ struct ass_renderer {
     ASS_Image *images_root;     // rendering result is stored here
     ASS_Image *prev_images_root;
     ASS_TagImageEntry *tag_images;
+    /* Renderer-owned syntax cache; never shared across renderer threads. */
+    struct {
+        char *source;
+        struct ass_chat_scene *scene;
+    } chat_cache[8];
+    unsigned chat_cache_next;
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size

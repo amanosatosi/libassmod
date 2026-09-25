@@ -1383,6 +1383,12 @@ static bool parse_ass_color_arg(struct arg arg, uint32_t *out)
     return true;
 }
 
+static bool chat_structural_name_is(char *p, char *end, const char *name)
+{
+    size_t length = strlen(name);
+    return (size_t) (end - p) == length && !memcmp(p, name, length);
+}
+
 static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out)
 {
     int32_t decimal;
@@ -3252,6 +3258,23 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             continue;
         }
+
+        /* Chat structure was normalized before glyph parsing. Consume these
+         * exact names here so libass's prefix tags (notably \c and \m) cannot
+         * reinterpret them as visual overrides. Outside chat, keep the old
+         * parser behavior byte for byte. */
+        if (state->chat_enabled &&
+            (chat_structural_name_is(p, name_end, "chatmode1") ||
+             chat_structural_name_is(p, name_end, "chatmode2") ||
+             chat_structural_name_is(p, name_end, "msgtitle") ||
+             chat_structural_name_is(p, name_end, "msgm") ||
+             chat_structural_name_is(p, name_end, "msgshowname0") ||
+             chat_structural_name_is(p, name_end, "msgshowname1") ||
+             chat_structural_name_is(p, name_end, "msgstartcount") ||
+             chat_structural_name_is(p, name_end, "msgtime") ||
+             chat_structural_name_is(p, name_end, "msganim") ||
+             chat_structural_name_is(p, name_end, "msg")))
+            continue;
 
         // New tags introduced in vsfilter 2.39
         int numbered_border_layer = -1;

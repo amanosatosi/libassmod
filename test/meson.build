@@ -244,6 +244,27 @@ test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
 test('mangetsu-motion-scale', mangetsu_motion_scale_unit)
 test('vsfiltermod-blend', blend_unit)
+
+chat_unit = executable(
+    'chat_unit',
+    files('chat_selftest.c', '../libass/ass_chat.c'),
+    install: false,
+    include_directories: incs,
+)
+test('native-chat-parser', chat_unit)
+
+chat_render_unit = executable(
+    'chat_render_unit',
+    files('chat_render_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+test('native-chat-render', chat_render_unit,
+    env: {'FURI_TEST_FONT': join_paths(
+        meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    timeout: 120)
 if get_option('default_library') != 'shared'
     test('rgba-ownership-lifetime', rgba_ownership_unit, timeout: 120)
     test('shaper-chain-cleanup', shaper_chain_cleanup_unit)
