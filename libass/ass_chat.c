@@ -453,8 +453,39 @@ static char *named_prefix(const char *source, const char *first_pipe)
     return prefix;
 }
 
-/* A valid block has a named :\N boundary or starts with \N and inherits the
- * preceding logical speaker. Leading overrides are retained as render state. */
+/* Decode only the mode-2 \:\ sequence. Override blocks remain intact so
+ * their arguments still pass through the ordinary ASS tag parser. */
+static size_t copy_decoded_colons(char *dst, const char *start,
+                                  const char *end, bool skip_overrides)
+{
+    size_t length = 0;
+    for (const char *p = start; p < end;) {
+        if (skip_overrides && *p == '{') {
+            const char *close = memchr(p + 1, '}', end - (p + 1));
+            if (close) {
+                size_t block_length = close + 1 - p;
+                memcpy(dst + length, p, block_length);
+                length += block_length;
+                p = close + 1;
+                continue;
+            }
+        }
+        if (*p == '\\' && p + 1 < end && p[1] == '\\') {
+            dst[length++] = *p++;
+            dst[length++] = *p++;
+        } else if (*p == '\\' && p + 2 < end &&
+                   p[1] == ':' && p[2] == '\\') {
+            dst[length++] = ':';
+            p += 3;
+        } else {
+            dst[length++] = *p++;
+        }
+    }
+    return length;
+}
+
+/* A block with an unescaped :\N sets its speaker. Otherwise nonempty body
+ * text inherits the last speaker and side, with anonymous-left as fallback. */
 static bool append_named_block(ASS_ChatScene *scene, const char *open,
                                const char *close)
 {
@@ -479,18 +510,23 @@ static bool append_named_block(ASS_ChatScene *scene, const char *open,
         p = end + 1;
     }
 
+    if (p == close) {
+        free(text);
+        return true;
+    }
     const char *speaker = NULL;
     size_t speaker_len = 0;
-    const char *body = NULL;
+    const char *body = p;
+    char *decoded_name = NULL;
     int side = 0;
+    if (scene->count) {
+        const ASS_ChatMessage *last = &scene->messages[scene->count - 1];
+        speaker = last->speaker;
+        speaker_len = speaker ? strlen(speaker) : 0;
+        side = last->side;
+    }
     if (p + 1 < close && p[0] == '\\' && p[1] == 'N') {
         body = p + 2;
-        if (scene->count) {
-            const ASS_ChatMessage *last = &scene->messages[scene->count - 1];
-            speaker = last->speaker;
-            speaker_len = speaker ? strlen(speaker) : 0;
-            side = last->side;
-        }
     } else {
         const char *delimiter = NULL;
         for (const char *q = p; q < close;) {
@@ -506,6 +542,13 @@ static bool append_named_block(ASS_ChatScene *scene, const char *open,
                     q = after;
                     continue;
                 }
+            } else if (*q == '\\' && q + 1 < close && q[1] == '\\') {
+                q += 2;
+                continue;
+            } else if (*q == '\\' && q + 2 < close &&
+                       q[1] == ':' && q[2] == '\\') {
+                q += 3;
+                continue;
             } else if (q + 2 < close && q[0] == ':' &&
                        q[1] == '\\' && q[2] == 'N') {
                 delimiter = q;
@@ -514,31 +557,34 @@ static bool append_named_block(ASS_ChatScene *scene, const char *open,
             q++;
         }
         if (delimiter) {
-            char *name = trimmed_span(p, delimiter - p);
-            if (!name) {
+            size_t raw_length = delimiter - p;
+            char *raw_name = malloc(raw_length + 1);
+            if (!raw_name) {
                 free(text);
                 return false;
             }
-            if (*name) {
-                speaker = p;
-                speaker_len = delimiter - p;
+            size_t name_length = copy_decoded_colons(raw_name, p,
+                                                      delimiter, false);
+            decoded_name = trimmed_span(raw_name, name_length);
+            free(raw_name);
+            if (!decoded_name) {
+                free(text);
+                return false;
+            }
+            if (*decoded_name) {
+                speaker = decoded_name;
+                speaker_len = strlen(decoded_name);
                 side = scene->main_speaker &&
-                    !strcmp(name, scene->main_speaker);
+                    !strcmp(decoded_name, scene->main_speaker);
                 body = delimiter + 3;
             }
-            free(name);
         }
     }
-    if (!body) { /* Ignore malformed or empty-delimiter blocks. */
-        free(text);
-        return true;
-    }
-    size_t body_length = close - body;
-    memcpy(text + length, body, body_length);
-    length += body_length;
+    length += copy_decoded_colons(text + length, body, close, true);
     text[length] = 0;
     bool ok = append_message(scene, text, text + length,
                              speaker, speaker_len, side);
+    free(decoded_name);
     free(text);
     return ok;
 }

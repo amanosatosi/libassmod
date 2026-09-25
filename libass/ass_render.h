@@ -280,6 +280,12 @@ typedef struct {
     GradientValues gradient;
 } BorderLayerState;
 
+typedef struct {
+    uint32_t fill;             // chat \3c/\3a and \bubc/\buba
+    uint32_t border;           // rounded bubble stroke color and alpha
+    double border_size;        // script-space stroke thickness
+} ChatBubbleStyle;
+
 typedef struct ass_tag_image_entry {
     char *key;
     ASS_TagImageFormat format;
@@ -392,6 +398,7 @@ typedef struct glyph_info {
     char linebreak;             // the first (leading) glyph of some line ?
     bool starts_new_run;
     uint32_t c[4];              // colors
+    ChatBubbleStyle chat_bubble;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
     TextPatternPaint pattern;
@@ -756,6 +763,7 @@ struct render_context {
     double box_corner_radius;
     BorderLayerState box_border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
+    ChatBubbleStyle chat_bubble;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
     TextPatternPaint pattern;

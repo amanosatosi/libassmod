@@ -255,7 +255,7 @@ int main(void)
     ass_chat_free(scene);
 
     const char *malformed[] = {
-        "|Miku Hello|", "|Miku:\\NHello", "Miku:\\NHello|", "||", "|"
+        "|Miku:\\NHello", "Miku:\\NHello|", "||", "|"
     };
     for (size_t i = 0; i < sizeof(malformed) / sizeof(*malformed); i++) {
         char source[128];
@@ -269,6 +269,87 @@ int main(void)
            scene->messages[0].side == 0 &&
            !strcmp(scene->messages[0].text, "fallback"));
     ass_chat_free(scene);
+
+    scene = ass_chat_parse("{\\chatmode2\\msgm(Miku)}"
+                           "|Miku:\\NHello|\\N\\N|reply plz?|\\N\\N"
+                           "|Yurf:\\NYo|");
+    assert(scene && scene->count == 3);
+    expect_named(scene, 0, 1, "Miku", "Hello");
+    expect_named(scene, 1, 1, "Miku", "reply plz?");
+    expect_named(scene, 2, 0, "Yurf", "Yo");
+    ass_chat_free(scene);
+
+    scene = ass_chat_parse("{\\chatmode2\\msgm(Miku)}"
+                           "|Miku:\\NA||B||C||Yurf:\\ND||E|"
+                           "|Miku:\\NF||G|");
+    assert(scene && scene->count == 7);
+    expect_named(scene, 0, 1, "Miku", "A");
+    expect_named(scene, 1, 1, "Miku", "B");
+    expect_named(scene, 2, 1, "Miku", "C");
+    expect_named(scene, 3, 0, "Yurf", "D");
+    expect_named(scene, 4, 0, "Yurf", "E");
+    expect_named(scene, 5, 1, "Miku", "F");
+    expect_named(scene, 6, 1, "Miku", "G");
+    ass_chat_free(scene);
+
+    scene = ass_chat_parse("{\\chatmode2}|Hello||Miku:\\NHi||Again|");
+    assert(scene && scene->count == 3);
+    assert(!scene->messages[0].speaker && scene->messages[0].side == 0 &&
+           !strcmp(scene->messages[0].text, "Hello"));
+    expect_named(scene, 1, 0, "Miku", "Hi");
+    expect_named(scene, 2, 0, "Miku", "Again");
+    ass_chat_free(scene);
+
+    scene = ass_chat_parse("{\\chatmode2\\msgm(Miku)}"
+                           "|{\\3c&H39C5BB&}Miku:\\NHey|"
+                           "|{\\bubbc&HFFFFFF&\\bubbs2}Another message|"
+                           "|And another|");
+    assert(scene && scene->count == 3);
+    expect_named(scene, 1, 1, "Miku",
+                 "{\\bubbc&HFFFFFF&\\bubbs2}Another message");
+    expect_named(scene, 2, 1, "Miku", "And another");
+    ass_chat_free(scene);
+
+    scene = ass_chat_parse("{\\chatmode2\\msgm(Miku:Alt)}"
+                           "|Miku\\:\\Alt:\\NHello|"
+                           "|wait: what the fuck?|"
+                           "|a\\:\\b|");
+    assert(scene && scene->count == 3);
+    expect_named(scene, 0, 1, "Miku:Alt", "Hello");
+    expect_named(scene, 1, 1, "Miku:Alt", "wait: what the fuck?");
+    expect_named(scene, 2, 1, "Miku:Alt", "a:b");
+    ass_chat_free(scene);
+
+    scene = ass_chat_parse("{\\chatmode2\\msgm(Miku:Phone)}"
+                           "|Miku\\:\\Phone:\\N<今日|きょう>はどう？|"
+                           "|wait: <明日|あした>でもいい|");
+    assert(scene && scene->count == 2);
+    expect_named(scene, 0, 1, "Miku:Phone", "<今日|きょう>はどう？");
+    expect_named(scene, 1, 1, "Miku:Phone",
+                 "wait: <明日|あした>でもいい");
+    ass_chat_free(scene);
+
+    const char *partial_colons[] = {"|\\:|", "|:\\|", "|\\|"};
+    for (size_t i = 0;
+         i < sizeof(partial_colons) / sizeof(*partial_colons); i++) {
+        char source[64];
+        snprintf(source, sizeof(source), "{\\chatmode2}%s", partial_colons[i]);
+        scene = ass_chat_parse(source);
+        assert(scene);
+        ass_chat_free(scene);
+    }
+
+    const char *titles[] = {
+        "{\\chatmode1\\msgtitle(Miku)\\msgtitle(Rin)}{\\msg(Miku)}Hi",
+        "{\\chatmode2\\msgtitle(Miku)\\msgtitle(Rin)}|Miku:\\NHi|",
+        "{\\chatmode3\\msgtitle(Miku)\\msgtitle(Rin)}{\\ta7}Hi",
+    };
+    for (size_t i = 0; i < sizeof(titles) / sizeof(*titles); i++) {
+        scene = ass_chat_parse(titles[i]);
+        assert(scene && scene->count == 1 && scene->title &&
+               !strcmp(scene->title, "Miku"));
+        ass_chat_free(scene);
+    }
 
     scene = ass_chat_parse("{\\chatmode2}{\\ta7}A\\N{\\ta9}B");
     assert(scene && scene->mode == ASS_CHAT_MODE_NAMED_LAZY &&

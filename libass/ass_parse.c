@@ -3954,6 +3954,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int32_t a = parse_alpha_tag(args[0]);
                 for (i = 0; i < 4; ++i)
                     change_alpha(&state->c[i], a, pwr);
+                if (state->chat_enabled) {
+                    change_alpha(&state->chat_bubble.fill, a, pwr);
+                    change_alpha(&state->chat_bubble.border, a, pwr);
+                }
             } else {
                 change_alpha(&state->c[0],
                              _a(state->default_style.c[0]), 1);
@@ -3963,6 +3967,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                              _a(state->default_style.c[2]), 1);
                 change_alpha(&state->c[3],
                              _a(state->default_style.c[3]), 1);
+                if (state->chat_enabled) {
+                    uint32_t a = _a(state->default_style.c[2]);
+                    change_alpha(&state->chat_bubble.fill, a, 1);
+                    change_alpha(&state->chat_bubble.border, a, 1);
+                }
             }
             for (i = 0; i < 4; ++i)
                 ass_gradient_disable_alpha(&state->gradient, i,
@@ -4457,13 +4466,34 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_image_fill_layer(state, 1);
             replace_cycle_base_paint(state, 1, -1, pwr);
             column_default(COLUMN_STYLE_COLOR1);
-        } else if (tag("3c")) {
-            if (nargs) {
-                uint32_t val = parse_color_tag(args[0]);
-                change_color(&state->c[2], val, pwr);
-            } else
-                change_color(&state->c[2],
-                             state->default_style.c[2], 1);
+        } else if (state->chat_enabled && tag("bubbc")) {
+            uint32_t color = nargs ? parse_color_tag(args[0]) :
+                state->default_style.c[2];
+            change_color(&state->chat_bubble.border, color, pwr);
+        } else if (state->chat_enabled && tag("bubba")) {
+            uint32_t alpha = nargs ? parse_alpha_tag(args[0]) :
+                _a(state->default_style.c[2]);
+            change_alpha(&state->chat_bubble.border, alpha, pwr);
+        } else if (state->chat_enabled && tag("bubbs")) {
+            double size = nargs ? numeric_argtod(args[0],
+                state->chat_bubble.border_size, NUM_SIGNED) : 0.0;
+            if (isfinite(size)) {
+                size = FFMINMAX(size, 0.0, 10000.0);
+                state->chat_bubble.border_size = FFMAX(0.0,
+                    state->chat_bubble.border_size * (1 - pwr) + size * pwr);
+            }
+        } else if (state->chat_enabled && tag("bubc")) {
+            uint32_t color = nargs ? parse_color_tag(args[0]) :
+                state->default_style.c[2];
+            change_color(&state->chat_bubble.fill, color, pwr);
+        } else if (state->chat_enabled && tag("buba")) {
+            uint32_t alpha = nargs ? parse_alpha_tag(args[0]) :
+                _a(state->default_style.c[2]);
+            change_alpha(&state->chat_bubble.fill, alpha, pwr);
+        } else if (state->chat_enabled && tag("bc")) {
+            uint32_t color = nargs ? parse_color_tag(args[0]) :
+                state->default_style.c[2];
+            change_color(&state->c[2], color, pwr);
             ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             if (!nested && pwr > 0.0)
                 disable_mangetsu_border_gradient_layer(state, 0);
@@ -4471,7 +4501,43 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_image_fill_layer(state, 2);
             replace_cycle_base_paint(state, 2, -1, pwr);
             sync_layer1_border(state);
-            column_default(COLUMN_STYLE_COLOR2);
+        } else if (state->chat_enabled && tag("ba")) {
+            uint32_t alpha = nargs ? parse_alpha_tag(args[0]) :
+                _a(state->default_style.c[2]);
+            apply_all_border_alpha(state, alpha, pwr, nested);
+        } else if (state->chat_enabled && tag("bs")) {
+            double size = nargs ? numeric_argtod(args[0], state->border_x,
+                                                   NUM_SIGNED) :
+                state->default_style.border_x;
+            if (isfinite(size)) {
+                size = FFMINMAX(size, 0.0, 10000.0);
+                state->border_x = FFMAX(0.0,
+                    state->border_x * (1 - pwr) + size * pwr);
+                state->border_y = FFMAX(0.0,
+                    state->border_y * (1 - pwr) + size * pwr);
+                sync_layer1_border(state);
+            }
+        } else if (tag("3c")) {
+            if (state->chat_enabled) {
+                uint32_t color = nargs ? parse_color_tag(args[0]) :
+                    state->default_style.c[2];
+                change_color(&state->chat_bubble.fill, color, pwr);
+            } else if (nargs) {
+                uint32_t val = parse_color_tag(args[0]);
+                change_color(&state->c[2], val, pwr);
+            } else
+                change_color(&state->c[2],
+                             state->default_style.c[2], 1);
+            if (!state->chat_enabled) {
+                ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
+                if (!nested && pwr > 0.0)
+                    disable_mangetsu_border_gradient_layer(state, 0);
+                if (pwr >= 1.0)
+                    disable_image_fill_layer(state, 2);
+                replace_cycle_base_paint(state, 2, -1, pwr);
+                sync_layer1_border(state);
+                column_default(COLUMN_STYLE_COLOR2);
+            }
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
@@ -4511,14 +4577,19 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             column_default(COLUMN_STYLE_ALPHA1);
         } else if (tag("3a")) {
             uint32_t val;
-            if (nargs) {
+            if (state->chat_enabled) {
+                val = nargs ? parse_alpha_tag(args[0]) :
+                    _a(state->default_style.c[2]);
+                change_alpha(&state->chat_bubble.fill, val, pwr);
+            } else if (nargs) {
                 val = parse_alpha_tag(args[0]);
                 apply_all_border_alpha(state, val, pwr, nested);
             } else
                 apply_all_border_alpha(state,
                                        _a(state->default_style.c[2]), 1,
                                        nested);
-            column_default(COLUMN_STYLE_ALPHA2);
+            if (!state->chat_enabled)
+                column_default(COLUMN_STYLE_ALPHA2);
         } else if (tag("4a")) {
             if (nargs) {
                 uint32_t val = parse_alpha_tag(args[0]);

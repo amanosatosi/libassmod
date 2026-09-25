@@ -88,7 +88,7 @@ typedef struct {
 
 typedef struct {
     double panel_width, panel_pad, bubble_pad, message_gap;
-    double header_pad, radius, max_text_width;
+    double bubble_gap, header_pad, radius, max_text_width;
     double viewport_max, viewport_min;
 } ChatMetrics;
 
@@ -3212,6 +3212,11 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
 
     capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
+    state->chat_bubble = (ChatBubbleStyle) {
+        .fill = state->c[2],
+        .border = state->c[2],
+        .border_size = 0,
+    };
     capture_effective_default_state(state);
 }
 
@@ -3224,7 +3229,7 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
  * \brief Start new event. Reset state.
  */
 static void
-init_render_context(RenderContext *state, ASS_Event *event)
+init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
 {
     ASS_Renderer *render_priv = state->renderer;
 
@@ -3247,7 +3252,7 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->clip_y1 = render_priv->track->PlayResY;
     state->clip_mode = 0;
     state->chat_clip_active = false;
-    state->chat_enabled = false;
+    state->chat_enabled = chat_enabled;
     state->chat_visible = INT_MAX;
     state->chat_clips = NULL;
     state->detect_collisions = 1;
@@ -3306,7 +3311,8 @@ init_render_context(RenderContext *state, ASS_Event *event)
     state->line_border_style = 0;
 
     ass_apply_transition_effects(state);
-    scan_line_border_style_override(state, event->Text);
+    if (!state->chat_enabled)
+        scan_line_border_style_override(state, event->Text);
     state->explicit = state->evt_type != EVENT_NORMAL ||
                       ass_event_has_hard_overrides(event->Text);
 
@@ -5284,6 +5290,8 @@ static bool append_glyph_to_target(RenderContext *state,
     info->font = state->font;
     for (int i = 0; i < 4; i++)
         info->c[i] = state->c[i];
+    if (state->chat_enabled)
+        info->chat_bubble = state->chat_bubble;
     info->gradient = state->gradient;
     info->mangetsu_gradient = state->mangetsu_gradient;
     info->pattern = state->pattern;
@@ -10150,6 +10158,25 @@ static double chat_natural_width(const TextInfo *info, int start, int end)
     return FFMAX(widest, line);
 }
 
+static const GlyphInfo *chat_message_style_glyph(const TextInfo *info,
+                                                  const ChatRange *range)
+{
+    if (range->start >= range->end)
+        return NULL;
+    int body = range->name_end < range->end ? range->name_end : range->start;
+    return &info->glyphs[body];
+}
+
+/* Chat geometry is measured before PAR scaling; convert ASS border units once
+ * here and use the same extents for padding and the rendered stroke. */
+static void chat_stroke_extent(RenderContext *state, double size,
+                               double *stroke_x, double *stroke_y)
+{
+    double par = state->renderer->par_scale_x;
+    *stroke_x = par > 0 ? FFMAX(0.0, size * state->border_scale_x / par) : 0;
+    *stroke_y = FFMAX(0.0, size * state->border_scale_y);
+}
+
 static ChatMetrics chat_choose_metrics(RenderContext *state,
                                        const ASS_ChatScene *chat,
                                        const ChatRange *ranges,
@@ -10164,6 +10191,7 @@ static ChatMetrics chat_choose_metrics(RenderContext *state,
     ChatMetrics m = {
         .panel_pad = unit * 0.28,
         .bubble_pad = unit * 0.22,
+        .bubble_gap = unit * 0.10,
         .message_gap = unit * 0.16,
         .header_pad = unit * 0.20,
         .radius = unit * 0.22,
@@ -10171,9 +10199,22 @@ static ChatMetrics chat_choose_metrics(RenderContext *state,
         .viewport_min = video_height * 0.28,
     };
     double natural = 0.0;
-    for (int i = 0; i < chat->count; i++)
+    double stroke_max = 0.0;
+    for (int i = 0; i < chat->count; i++) {
         natural = FFMAX(natural, chat_natural_width(&state->text_info,
                           ranges[i].start, ranges[i].end));
+        const GlyphInfo *glyph = chat_message_style_glyph(&state->text_info,
+                                                           &ranges[i]);
+        if (glyph) {
+            double stroke_x, stroke_y;
+            chat_stroke_extent(state, glyph->chat_bubble.border_size,
+                               &stroke_x, &stroke_y);
+            stroke_max = FFMAX(stroke_max, FFMAX(stroke_x, stroke_y));
+        }
+    }
+    double pad_limit = FFMAX(m.bubble_pad, video_width * 0.56 * 0.75 / 4);
+    m.bubble_pad = FFMIN(pad_limit,
+                         FFMAX(m.bubble_pad, stroke_max + m.bubble_gap));
     double title_width = chat_natural_width(&state->text_info,
                                             title->start, title->end);
     double wanted = FFMAX((natural + 2 * m.bubble_pad) / 0.75 +
@@ -10305,13 +10346,12 @@ static void chat_resolve_outer_clip(RenderContext *state)
     }
 }
 
-static ASS_Image **append_chat_box(RenderContext *state, double x, double y,
-                                   double width, double height, double radius,
-                                   uint32_t color, ASS_Image **tail,
-                                   ASS_ImageRGBA ***rgba_tail)
+static Bitmap *chat_box_bitmap(RenderContext *state, double x, double y,
+                               double width, double height, double radius,
+                               ASS_Vector *pos)
 {
     if (width <= 0 || height <= 0)
-        return tail;
+        return NULL;
     double par = state->renderer->par_scale_x;
     double left_margin = state->renderer->settings.left_margin;
     x = (x - left_margin) * par + left_margin;
@@ -10324,13 +10364,81 @@ static ASS_Image **append_chat_box(RenderContext *state, double x, double y,
         {0.0, height * scale, y * 64.0},
         {0.0, 0.0, 1.0},
     };
-    ASS_Vector pos;
     Bitmap *bitmap;
-    if (!bs4_get_bitmap(state, matrix, &shape, &pos, &bitmap))
+    if (!bs4_get_bitmap(state, matrix, &shape, pos, &bitmap))
+        return NULL;
+    return bitmap;
+}
+
+static ASS_Image **append_chat_box(RenderContext *state, double x, double y,
+                                   double width, double height, double radius,
+                                   uint32_t color, ASS_Image **tail,
+                                   ASS_ImageRGBA ***rgba_tail)
+{
+    ASS_Vector pos;
+    Bitmap *bitmap = chat_box_bitmap(state, x, y, width, height,
+                                      radius, &pos);
+    if (!bitmap)
         return tail;
     ass_apply_fades(&color, state->fade, state->fade_color);
     return append_bs4_bitmap(state, bitmap, pos, color,
                              IMAGE_TYPE_SHADOW, tail, rgba_tail);
+}
+
+/* A bubble stroke occupies the inside of its measured rounded rectangle.
+ * Subtracting the inner mask keeps fill and border alpha from overlapping. */
+static ASS_Image **append_chat_bubble(RenderContext *state,
+                                      double x, double y, double width,
+                                      double height, double radius,
+                                      double stroke_x, double stroke_y,
+                                      ChatBubbleStyle style,
+                                      ASS_Image **tail,
+                                      ASS_ImageRGBA ***rgba_tail)
+{
+    if (stroke_x <= 0 || stroke_y <= 0)
+        return append_chat_box(state, x, y, width, height, radius,
+                               style.fill, tail, rgba_tail);
+    ASS_Vector outer_pos, inner_pos;
+    Bitmap *outer = chat_box_bitmap(state, x, y, width, height,
+                                    radius, &outer_pos);
+    Bitmap *inner = chat_box_bitmap(state, x + stroke_x, y + stroke_y,
+                                    width - 2 * stroke_x,
+                                    height - 2 * stroke_y,
+                                    FFMAX(0.0, radius - FFMAX(stroke_x, stroke_y)),
+                                    &inner_pos);
+    if (!outer)
+        return tail;
+    uint8_t *mask = bs4_copy_bitmap_mask(outer);
+    if (mask) {
+        if (inner)
+            bs4_subtract_inner_mask(mask, outer, outer_pos, inner, inner_pos);
+        if (bs4_mask_has_coverage(mask, outer->w, outer->h)) {
+            Bitmap ring = {
+                .left = outer->left,
+                .top = outer->top,
+                .w = outer->w,
+                .h = outer->h,
+                .logical_w = outer->logical_w,
+                .logical_h = outer->logical_h,
+                .sub_x = outer->sub_x,
+                .sub_y = outer->sub_y,
+                .stride = outer->w,
+                .buffer = mask,
+            };
+            uint32_t border = style.border;
+            ass_apply_fades(&border, state->fade, state->fade_color);
+            tail = append_bs4_bitmap(state, &ring, outer_pos, border,
+                                     IMAGE_TYPE_OUTLINE, tail, rgba_tail);
+        }
+        ass_aligned_free_tagged(mask, ASS_ALIGNED_ALLOC_BS4_MASK, outer);
+    }
+    if (inner) {
+        uint32_t fill = style.fill;
+        ass_apply_fades(&fill, state->fade, state->fade_color);
+        tail = append_bs4_bitmap(state, inner, inner_pos, fill,
+                                 IMAGE_TYPE_SHADOW, tail, rgba_tail);
+    }
+    return tail;
 }
 
 static bool render_chat_scene(RenderContext *state, ASS_Event *event,
@@ -10511,19 +10619,26 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
     for (int i = 0; i < visible; i++) {
         double bubble_width = FFMIN(bubble_cap,
                                     ranges[i].width + 2 * m->bubble_pad);
+        double bubble_height = ranges[i].height + 2 * m->bubble_pad;
         double bubble_x = chat->messages[i].side ?
             panel_x + m->panel_width - m->panel_pad - bubble_width :
             panel_x + m->panel_pad;
-        int body = ranges[i].name_end < ranges[i].end ?
-            ranges[i].name_end : ranges[i].start;
-        uint32_t color = ranges[i].start < ranges[i].end ?
-            info->glyphs[body].c[2] : state->c[2];
+        const GlyphInfo *glyph = chat_message_style_glyph(info, &ranges[i]);
+        ChatBubbleStyle style = glyph ? glyph->chat_bubble :
+            state->chat_bubble;
+        double stroke_x, stroke_y;
+        chat_stroke_extent(state, style.border_size, &stroke_x, &stroke_y);
+        double stroke_limit = FFMAX(0.0, FFMIN(m->bubble_pad - m->bubble_gap,
+            FFMIN(bubble_width, bubble_height) / 4.0));
+        stroke_x = FFMIN(stroke_x, stroke_limit);
+        stroke_y = FFMIN(stroke_y, stroke_limit);
         state->chat_clip_active = true;
-        state->chat_clip_x0 = clips[i + 1].x0;
-        state->chat_clip_x1 = clips[i + 1].x1;
-        box_tail = append_chat_box(state, bubble_x, ranges[i].stack_top,
-            bubble_width, ranges[i].height + 2 * m->bubble_pad,
-            m->radius, color, box_tail, rgba_tail);
+        /* Leave one raster pixel for the rounded edge's antialiasing. */
+        state->chat_clip_x0 = clips[i + 1].x0 - 1;
+        state->chat_clip_x1 = clips[i + 1].x1 + 1;
+        box_tail = append_chat_bubble(state, bubble_x, ranges[i].stack_top,
+            bubble_width, bubble_height, m->radius, stroke_x, stroke_y,
+            style, box_tail, rgba_tail);
     }
     state->chat_clip_active = false;
     *box_tail = NULL;
@@ -10609,12 +10724,11 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
     }
 
-    free_render_context(state);
-    init_render_context(state, event);
-
     bool chat_cached = false;
     ASS_ChatScene *chat = get_chat_scene(render_priv, event->Text,
                                          &chat_cached);
+    free_render_context(state);
+    init_render_context(state, event, chat != NULL);
     ChatRange *ranges = chat && chat->count ?
         calloc(chat->count, sizeof(*ranges)) : NULL;
     ChatRange title = {0};
@@ -10623,8 +10737,6 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         free_render_context(state);
         return false;
     }
-    state->chat_enabled = chat != NULL;
-
     if (!parse_events(state, event, chat, ranges, &title)) {
         release_chat_scene(chat, chat_cached);
         free(ranges);

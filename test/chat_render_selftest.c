@@ -27,6 +27,12 @@ typedef struct {
     int count;
 } Frame;
 
+typedef struct {
+    Box box;
+    uint32_t color;
+    bool found;
+} ImageSample;
+
 static unsigned char *font_bytes;
 
 static bool add_test_font(ASS_Library *lib)
@@ -149,6 +155,72 @@ static uint64_t render_hash(ASS_Renderer *renderer, ASS_Track *track)
             }
     }
     return hash;
+}
+
+static ImageSample widest_image(ASS_Renderer *renderer, ASS_Track *track,
+                                int type, int rank)
+{
+    int changed = 0;
+    ASS_Image *images = ass_render_frame(renderer, track, 0, &changed);
+    ImageSample result = {0};
+    int width_limit = INT_MAX;
+    for (int pass = 0; pass <= rank; pass++) {
+        result = (ImageSample) {0};
+        for (ASS_Image *image = images; image; image = image->next) {
+            if (image->type != type || image->w >= width_limit ||
+                image->w <= result.box.w)
+                continue;
+            result.found = true;
+            result.color = image->color;
+            result.box = (Box) {image->dst_x, image->dst_y,
+                                image->w, image->h};
+        }
+        width_limit = result.box.w;
+    }
+    return result;
+}
+
+static ImageSample image_by_order(ASS_Renderer *renderer, ASS_Track *track,
+                                  int type, int index)
+{
+    int changed = 0;
+    ImageSample result = {0};
+    for (ASS_Image *image = ass_render_frame(renderer, track, 0, &changed);
+         image; image = image->next) {
+        if (image->type != type)
+            continue;
+        if (index-- != 0)
+            continue;
+        result.found = true;
+        result.color = image->color;
+        result.box = (Box) {image->dst_x, image->dst_y,
+                            image->w, image->h};
+        break;
+    }
+    return result;
+}
+
+static bool has_image_color(ASS_Renderer *renderer, ASS_Track *track,
+                            int type, uint32_t color)
+{
+    int changed = 0;
+    for (ASS_Image *image = ass_render_frame(renderer, track, 0, &changed);
+         image; image = image->next)
+        if (image->type == type && image->color == color)
+            return true;
+    return false;
+}
+
+static uint32_t bubble_color(ASS_Library *lib, ASS_Renderer *renderer,
+                             const char *source)
+{
+    ASS_Track *track = make_track(lib, source);
+    assert(track);
+    ImageSample bubble = widest_image(renderer, track,
+                                       IMAGE_TYPE_SHADOW, 1);
+    assert(bubble.found);
+    ass_free_track(track);
+    return bubble.color;
 }
 
 int main(void)
@@ -295,6 +367,204 @@ int main(void)
     Frame named_ruby = render(renderer, track, 0);
     assert(named_plain.count >= 2 && named_ruby.count >= 2);
     assert(widest(&named_ruby, 1).h > widest(&named_plain, 1).h);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)}"
+        "|{\\1c&HFFFFFF&\\2c&H39C5BB&\\3c&H303030&\\4c&H181818&"
+        "\\1a&H10&\\2a&H20&\\3a&H30&\\4a&H40&}Miku:\\NHello|");
+    assert(track);
+    ImageSample old_panel = widest_image(renderer, track, IMAGE_TYPE_SHADOW, 0);
+    ImageSample old_bubble = widest_image(renderer, track, IMAGE_TYPE_SHADOW, 1);
+    assert(old_panel.found && old_panel.color == UINT32_C(0x18181840));
+    assert(old_bubble.found && old_bubble.color == UINT32_C(0x30303030));
+    assert(has_image_color(renderer, track, IMAGE_TYPE_CHARACTER,
+                           UINT32_C(0xFFFFFF10)));
+    assert(has_image_color(renderer, track, IMAGE_TYPE_CHARACTER,
+                           UINT32_C(0xBBC53920)));
+    ass_free_track(track);
+
+    assert(bubble_color(lib, renderer,
+        "{\\chatmode2\\msgshowname0}|{\\3c&H111111&"
+        "\\bubc&H222222&}Miku:\\NHi|") == UINT32_C(0x22222200));
+    assert(bubble_color(lib, renderer,
+        "{\\chatmode2\\msgshowname0}|{\\bubc&H222222&"
+        "\\3c&H111111&}Miku:\\NHi|") == UINT32_C(0x11111100));
+    assert((bubble_color(lib, renderer,
+        "{\\chatmode2\\msgshowname0}|{\\3a&H80&"
+        "\\buba&H20&}Miku:\\NHi|") & 0xFFu) == 0x20u);
+    assert((bubble_color(lib, renderer,
+        "{\\chatmode2\\msgshowname0}|{\\buba128"
+        "\\3a&H40&}Miku:\\NHi|") & 0xFFu) == 0x40u);
+
+    track = make_track(lib,
+        "{\\chatmode2\\msgshowname0}|{\\bubbs3\\alpha&H40&}Hi|");
+    assert(track);
+    assert((widest_image(renderer, track, IMAGE_TYPE_SHADOW, 1).color &
+            0xFFu) == 0x40u);
+    assert((widest_image(renderer, track, IMAGE_TYPE_OUTLINE, 0).color &
+            0xFFu) == 0x40u);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\bubc&H303030&\\bubbc&H39C5BB&\\bubba&H40&"
+        "\\bubbs4}Miku:\\NHello|");
+    assert(track);
+    ImageSample border_panel = widest_image(renderer, track,
+                                             IMAGE_TYPE_SHADOW, 0);
+    ImageSample border_fill = widest_image(renderer, track,
+                                            IMAGE_TYPE_SHADOW, 1);
+    ImageSample border_ring = widest_image(renderer, track,
+                                            IMAGE_TYPE_OUTLINE, 0);
+    assert(border_panel.found && border_fill.found && border_ring.found);
+    assert(border_ring.color == UINT32_C(0xBBC53940));
+    assert(border_ring.box.w > border_fill.box.w);
+    assert(border_ring.box.x >= border_panel.box.x);
+    assert(border_ring.box.x + border_ring.box.w <=
+           border_panel.box.x + border_panel.box.w);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\bubbc&H39C5BB&\\bubbs0}Miku:\\NHello|");
+    assert(track);
+    assert(!widest_image(renderer, track, IMAGE_TYPE_OUTLINE, 0).found);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\bubbc&H39C5BB&\\bubbs-5}Miku:\\NHello|");
+    assert(track);
+    assert(!widest_image(renderer, track, IMAGE_TYPE_OUTLINE, 0).found);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\bubc&H303030&\\buba&HFF&\\bubbc&H39C5BB&"
+        "\\bubbs8}Miku:\\NHello|");
+    assert(track);
+    assert(widest_image(renderer, track, IMAGE_TYPE_OUTLINE, 0).found);
+    assert(!has_image_color(renderer, track, IMAGE_TYPE_SHADOW,
+                            UINT32_C(0x303030FF)));
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\c&HFFFFFF&\\bc&HFF55CC&\\ba&H40&\\bs3"
+        "\\3c&H303030&\\bubbc&H00FF00&\\bubbs4}Miku:\\NHello|");
+    assert(track);
+    assert(has_image_color(renderer, track, IMAGE_TYPE_OUTLINE,
+                           UINT32_C(0xCC55FF40)));
+    assert(has_image_color(renderer, track, IMAGE_TYPE_OUTLINE,
+                           UINT32_C(0x00FF0000)));
+    assert(widest_image(renderer, track, IMAGE_TYPE_SHADOW, 1).color ==
+           UINT32_C(0x30303000));
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\bubbc&HFFFFFF&\\bubbs80}Miku:\\NHi|");
+    assert(track);
+    ImageSample thick_panel = widest_image(renderer, track,
+                                            IMAGE_TYPE_SHADOW, 0);
+    ImageSample thick_fill = widest_image(renderer, track,
+                                           IMAGE_TYPE_SHADOW, 1);
+    ImageSample thick_ring = widest_image(renderer, track,
+                                           IMAGE_TYPE_OUTLINE, 0);
+    assert(thick_panel.found && thick_fill.found && thick_ring.found);
+    assert(thick_ring.box.w - thick_fill.box.w >
+           border_ring.box.w - border_fill.box.w);
+    assert(thick_ring.box.x >= thick_panel.box.x &&
+           thick_ring.box.x + thick_ring.box.w <=
+           thick_panel.box.x + thick_panel.box.w);
+    assert(thick_ring.box.y >= thick_panel.box.y &&
+           thick_ring.box.y + thick_ring.box.h <=
+           thick_panel.box.y + thick_panel.box.h);
+    ass_free_track(track);
+
+    const char *inherited_styles =
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)\\msgshowname0}"
+        "|{\\bubc&H111111&\\bubbc&H222222&\\bubba&H20&"
+        "\\bubbs2\\bc&H333333&\\ba&H40&\\bs1}Miku:\\NA|"
+        "|B|"
+        "|{\\bubc&H444444&\\bubbs5}Yurf:\\NC|"
+        "|D|";
+    track = make_track(lib, inherited_styles);
+    assert(track);
+    ImageSample inherited_a = image_by_order(renderer, track,
+                                              IMAGE_TYPE_SHADOW, 1);
+    ImageSample inherited_b = image_by_order(renderer, track,
+                                              IMAGE_TYPE_SHADOW, 2);
+    ImageSample inherited_c = image_by_order(renderer, track,
+                                              IMAGE_TYPE_SHADOW, 3);
+    ImageSample inherited_d = image_by_order(renderer, track,
+                                              IMAGE_TYPE_SHADOW, 4);
+    assert(inherited_a.found && inherited_b.found &&
+           inherited_c.found && inherited_d.found);
+    assert(inherited_a.color == UINT32_C(0x11111100));
+    assert(inherited_b.color == inherited_a.color);
+    assert(inherited_c.color == UINT32_C(0x44444400));
+    assert(inherited_d.color == inherited_c.color);
+    uint64_t inherited_hash = render_hash(renderer, track);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)\\msgshowname0}"
+        "|{\\bubc&H111111&\\bubbc&H222222&\\bubba&H20&"
+        "\\bubbs2\\bc&H333333&\\ba&H40&\\bs1}Miku:\\NA|"
+        "|{\\bubc&H111111&\\bubbc&H222222&\\bubba&H20&"
+        "\\bubbs2\\bc&H333333&\\ba&H40&\\bs1}B|"
+        "|{\\bubc&H444444&\\bubbs5}Yurf:\\NC|"
+        "|{\\bubc&H444444&\\bubbc&H222222&\\bubba&H20&"
+        "\\bubbs5\\bc&H333333&\\ba&H40&\\bs1}D|");
+    assert(track);
+    assert(inherited_hash == render_hash(renderer, track));
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|{\\bubc&H123456&\\bubbc&HFFFFFF&\\bubbs4"
+        "\\bc&HFF55CC&\\ba&H40&\\bs3\\r}Hi|");
+    assert(track);
+    uint64_t reset_hash = render_hash(renderer, track);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}|Hi|");
+    assert(track);
+    assert(reset_hash == render_hash(renderer, track));
+    ass_free_track(track);
+
+    const char *all_modes[] = {
+        "{\\an9\\pos(1850,80)\\chatmode1\\msgtitle(Miku)"
+        "\\msgshowname0}{\\msg(Miku)\\bubc&H303030&"
+        "\\bubbc&H00FF00&\\bubbs3\\bc&HFF55CC&\\bs2}Hi",
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgtitle(Miku)"
+        "\\msgshowname0}|{\\bubc&H303030&\\bubbc&H00FF00&"
+        "\\bubbs3\\bc&HFF55CC&\\bs2}Miku:\\NHi|",
+        "{\\an9\\pos(1850,80)\\chatmode3\\msgtitle(Miku)}"
+        "{\\ta7\\bubc&H303030&\\bubbc&H00FF00&\\bubbs3"
+        "\\bc&HFF55CC&\\bs2}Hi",
+    };
+    for (size_t i = 0; i < sizeof(all_modes) / sizeof(*all_modes); i++) {
+        track = make_track(lib, all_modes[i]);
+        assert(track);
+        assert(render(renderer, track, 0).count >= 3);
+        assert(has_image_color(renderer, track, IMAGE_TYPE_OUTLINE,
+                               UINT32_C(0x00FF0000)));
+        assert(has_image_color(renderer, track, IMAGE_TYPE_OUTLINE,
+                               UINT32_C(0xCC55FF00)));
+        assert(has_image_color(renderer, track, IMAGE_TYPE_SHADOW,
+                               UINT32_C(0x30303000)));
+        ass_free_track(track);
+    }
+
+    track = make_track(lib,
+        "{\\chatmode2\\msgshowname0}|{\\t(0,1000,"
+        "\\bubc&H303030&\\bubbc&H00FF00&\\bubbs4"
+        "\\bc&HFF55CC&\\bs2)}Hi|");
+    assert(track);
+    assert(render(renderer, track, 500).count >= 2);
     ass_free_track(track);
 
     track = make_track(lib,
