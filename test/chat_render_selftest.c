@@ -171,17 +171,22 @@ int main(void)
     ASS_Track *track = make_track(lib, lazy);
     assert(track);
     Frame at_zero = render(renderer, track, 0);
-    Frame at_second = render(renderer, track, 1200);
+    /* The new bubble starts below the clipped viewport at its reveal time. */
+    Frame at_reveal = render(renderer, track, 1200);
+    Frame after_transition = render(renderer, track, 1450);
     Frame at_end = render(renderer, track, 4000);
     assert(at_zero.count >= 3);
-    assert(at_second.count >= 4);
+    assert(at_reveal.count >= 3);
+    assert(after_transition.count >= 4);
     Box panel = widest(&at_zero, 0);
     Box header = widest(&at_zero, 1);
     assert(panel.w > header.w && header.w > 0);
     assert(panel.x + panel.w <= 1852);
-    assert(same_box(panel, widest(&at_second, 0)));
+    assert(same_box(panel, widest(&at_reveal, 0)));
+    assert(same_box(panel, widest(&after_transition, 0)));
     assert(same_box(panel, widest(&at_end, 0)));
-    assert(same_box(header, widest(&at_second, 1)));
+    assert(same_box(header, widest(&at_reveal, 1)));
+    assert(same_box(header, widest(&after_transition, 1)));
     assert(same_box(header, widest(&at_end, 1)));
     for (int i = 0; i < at_end.count; i++) {
         Box box = at_end.boxes[i];
