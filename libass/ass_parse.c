@@ -3266,6 +3266,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         if (state->chat_enabled &&
             (chat_structural_name_is(p, name_end, "chatmode1") ||
              chat_structural_name_is(p, name_end, "chatmode2") ||
+             chat_structural_name_is(p, name_end, "chatmode3") ||
              chat_structural_name_is(p, name_end, "msgtitle") ||
              chat_structural_name_is(p, name_end, "msgm") ||
              chat_structural_name_is(p, name_end, "msgshowname0") ||

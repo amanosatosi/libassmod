@@ -163,12 +163,12 @@ int main(void)
     ass_set_fonts(renderer, NULL, "sans-serif",
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
-    const char *lazy =
-        "{\\an9\\pos(1850,80)\\chatmode2\\msgtitle(Miku)"
+    const char *shorthand =
+        "{\\an9\\pos(1850,80)\\chatmode3\\msgtitle(Miku)"
         "\\msgstartcount(1)\\msgtime(1200,2400,3000,3900)\\msganim(250)}"
         "{\\ta7}Hey\\N{\\ta9}What\\N{\\ta7}Look at this"
         "\\N{|}This shit crazy\\N{\\ta9}💀";
-    ASS_Track *track = make_track(lib, lazy);
+    ASS_Track *track = make_track(lib, shorthand);
     assert(track);
     Frame at_zero = render(renderer, track, 0);
     /* The new bubble starts below the clipped viewport at its reveal time. */
@@ -198,7 +198,7 @@ int main(void)
     ass_free_track(track);
 
     track = make_track(lib,
-        "{\\an9\\move(1600,80,1850,80,0,1000)\\chatmode2}"
+        "{\\an9\\move(1600,80,1850,80,0,1000)\\chatmode3}"
         "{\\ta7}Moving");
     assert(track);
     Frame move_start = render(renderer, track, 0);
@@ -221,7 +221,90 @@ int main(void)
     ass_free_track(track);
 
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2\\msgtitle(Miku)}"
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgtitle(Miku)\\msgm(Miku)"
+        "\\msgshowname1\\msgstartcount(1)\\msgtime(1200)\\msganim(250)}"
+        "|Miku:\\NHello|\\N\\N|Yurf:\\NYo|");
+    assert(track);
+    Frame named_start = render(renderer, track, 0);
+    Frame named_complete = render(renderer, track, 1450);
+    assert(named_start.count >= 3 && named_complete.count >= 4);
+    assert(same_box(widest(&named_start, 0), widest(&named_complete, 0)));
+    assert(same_box(widest(&named_start, 1), widest(&named_complete, 1)));
+    uint64_t names_visible = render_hash(renderer, track);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgtitle(Miku)\\msgm(Miku)"
+        "\\msgshowname0\\msgstartcount(1)\\msgtime(1200)\\msganim(250)}"
+        "|Miku:\\NHello|\\N\\N|Yurf:\\NYo|");
+    assert(track);
+    Frame names_hidden = render(renderer, track, 0);
+    assert(names_hidden.count >= 3);
+    assert(names_visible != render_hash(renderer, track));
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)}"
+        "|Miku:\\NHello|");
+    assert(track);
+    uint64_t default_colors = render_hash(renderer, track);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)}"
+        "|{\\c&HFFFFFF&\\2c&H39C5BB&\\3c&H303030&}Miku:\\NHello|");
+    assert(track);
+    assert(default_colors != render_hash(renderer, track));
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|Miku:\\N{\\fs20}Hi|");
+    assert(track);
+    Frame named_small = render(renderer, track, 0);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgshowname0}"
+        "|Miku:\\N{\\fs60}Hi|");
+    assert(track);
+    Frame named_large = render(renderer, track, 0);
+    ass_free_track(track);
+    assert(named_small.count >= 2 && named_large.count >= 2);
+    assert(widest(&named_large, 1).h > widest(&named_small, 1).h);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)}"
+        "|Extremely Long Messaging Account Person:\\NHello|");
+    assert(track);
+    Frame named_long = render(renderer, track, 0);
+    assert(named_long.count >= 2);
+    assert(widest(&named_long, 1).w < widest(&named_long, 0).w * 0.78);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)"
+        "\\msgshowname0\\furi0}"
+        "|Miku:\\N今日はどう？|");
+    assert(track);
+    Frame named_plain = render(renderer, track, 0);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2\\msgm(Miku)"
+        "\\msgshowname0\\furi1}"
+        "|Miku:\\N<今日|きょう>はどう？|");
+    assert(track);
+    Frame named_ruby = render(renderer, track, 0);
+    assert(named_plain.count >= 2 && named_ruby.count >= 2);
+    assert(widest(&named_ruby, 1).h > widest(&named_plain, 1).h);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7}A\\N{\\ta9}B");
+    assert(track);
+    assert(render(renderer, track, 0).count == 0);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\an9\\pos(1850,80)\\chatmode3\\msgtitle(Miku)}"
         "{\\ta7}A\\N{\\ta9}B\\N{|}C");
     assert(track);
     Frame static_frame = render(renderer, track, 0);
@@ -229,7 +312,7 @@ int main(void)
     ass_free_track(track);
 
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2\\msgtitle(A very long title "
+        "{\\an9\\pos(1850,80)\\chatmode3\\msgtitle(A very long title "
         "that must stay within the phone width)}"
         "{\\ta7}Supercalifragilisticexpialidocious"
         "Supercalifragilisticexpialidocious");
@@ -246,12 +329,12 @@ int main(void)
     ass_free_track(track);
 
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7\\fs20}Small");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7\\fs20}Small");
     assert(track);
     Frame small = render(renderer, track, 0);
     ass_free_track(track);
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7\\fs60}Large");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7\\fs60}Large");
     assert(track);
     Frame large = render(renderer, track, 0);
     ass_free_track(track);
@@ -259,23 +342,23 @@ int main(void)
     assert(widest(&large, 1).h > widest(&small, 1).h);
 
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7}Hi");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7}Hi");
     assert(track);
     Frame base = render(renderer, track, 0);
     ass_free_track(track);
     assert(base.count == 2); /* no title means no blank header shape */
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7\\fscx200}Hi");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7\\fscx200}Hi");
     assert(track);
     Frame wide = render(renderer, track, 0);
     ass_free_track(track);
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7\\fscy200}Hi");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7\\fscy200}Hi");
     assert(track);
     Frame tall = render(renderer, track, 0);
     ass_free_track(track);
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7\\fsp10}Hi");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7\\fsp10}Hi");
     assert(track);
     Frame spaced = render(renderer, track, 0);
     ass_free_track(track);
@@ -284,24 +367,24 @@ int main(void)
     assert(widest(&spaced, 1).w > widest(&base, 1).w);
 
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7}First\\Nsecond");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7}First\\Nsecond");
     assert(track);
     Frame multiline = render(renderer, track, 0);
     ass_free_track(track);
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2}{\\ta7}First");
+        "{\\an9\\pos(1850,80)\\chatmode3}{\\ta7}First");
     assert(track);
     Frame one_line = render(renderer, track, 0);
     ass_free_track(track);
     assert(widest(&multiline, 1).h > widest(&one_line, 1).h);
 
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2\\furi0}{\\ta7}今日");
+        "{\\an9\\pos(1850,80)\\chatmode3\\furi0}{\\ta7}今日");
     assert(track);
     Frame plain = render(renderer, track, 0);
     ass_free_track(track);
     track = make_track(lib,
-        "{\\an9\\pos(1850,80)\\chatmode2\\furi1}"
+        "{\\an9\\pos(1850,80)\\chatmode3\\furi1}"
         "{\\ta7}<今日|きょう>");
     assert(track);
     Frame ruby = render(renderer, track, 0);
@@ -311,7 +394,7 @@ int main(void)
 
     track = make_track(lib,
         "{\\an9\\pos(1850,80)\\clip(1300,0,1920,1080)"
-        "\\chatmode2\\msgtitle(Miku)}{\\ta7}A");
+        "\\chatmode3\\msgtitle(Miku)}{\\ta7}A");
     assert(track);
     Frame clipped = render(renderer, track, 0);
     for (int i = 0; i < clipped.count; i++)
@@ -328,6 +411,15 @@ int main(void)
                             "\\3c&H00FF00&\\4c&HFF0000&}A\\NB");
     assert(track);
     assert(ordinary == render_hash(renderer, track));
+    ass_free_track(track);
+
+    track = make_track(lib, "|Miku:\\NHello|");
+    assert(track);
+    uint64_t ordinary_pipe = render_hash(renderer, track);
+    ass_free_track(track);
+    track = make_track(lib, "Miku:\\NHello");
+    assert(track);
+    assert(ordinary_pipe != render_hash(renderer, track));
     ass_free_track(track);
 
     ass_renderer_done(renderer);

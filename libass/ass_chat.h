@@ -5,6 +5,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef enum {
+    ASS_CHAT_MODE_EXPLICIT = 1,
+    ASS_CHAT_MODE_NAMED_LAZY = 2,
+    ASS_CHAT_MODE_ALIGNMENT_SHORTHAND = 3,
+} ASS_ChatMode;
+
 typedef struct {
     char *text;                 /* ASS text, including ordinary inline tags */
     char *speaker;
@@ -13,7 +19,7 @@ typedef struct {
 } ASS_ChatMessage;
 
 typedef struct ass_chat_scene {
-    int mode;
+    ASS_ChatMode mode;
     char *title;
     char *main_speaker;
     bool show_names;

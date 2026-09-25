@@ -59,14 +59,51 @@ static bool parse_integer(const char *start, size_t length, int64_t *value)
     return true;
 }
 
+static bool ascii_space(unsigned char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' ||
+           c == '\n' || c == '\f' || c == '\v';
+}
+
+/* Match Unicode White_Space without applying a byte-oriented locale to UTF-8
+ * continuation bytes. Only names and their optional leading padding use it. */
+static size_t space_prefix(const char *text, size_t length)
+{
+    if (!length)
+        return 0;
+    const unsigned char *p = (const unsigned char *) text;
+    if (ascii_space(p[0]))
+        return 1;
+    if (length >= 2 && p[0] == 0xC2 &&
+        (p[1] == 0x85 || p[1] == 0xA0))
+        return 2;
+    if (length >= 3 &&
+        ((p[0] == 0xE1 && p[1] == 0x9A && p[2] == 0x80) ||
+         (p[0] == 0xE2 && p[1] == 0x80 &&
+          ((p[2] >= 0x80 && p[2] <= 0x8A) ||
+           p[2] == 0xA8 || p[2] == 0xA9 || p[2] == 0xAF)) ||
+         (p[0] == 0xE2 && p[1] == 0x81 && p[2] == 0x9F) ||
+         (p[0] == 0xE3 && p[1] == 0x80 && p[2] == 0x80)))
+        return 3;
+    return 0;
+}
+
 static char *trimmed_span(const char *start, size_t length)
 {
-    while (length && isspace((unsigned char) *start)) {
-        start++;
-        length--;
+    size_t width;
+    while ((width = space_prefix(start, length))) {
+        start += width;
+        length -= width;
     }
-    while (length && isspace((unsigned char) start[length - 1]))
-        length--;
+    for (size_t width = 1; width <= 3 && width <= length;) {
+        size_t matched = space_prefix(start + length - width, width);
+        if (matched == width) {
+            length -= width;
+            width = 1;
+        } else {
+            width++;
+        }
+    }
     return copy_span(start, length);
 }
 
@@ -160,9 +197,11 @@ static bool config_tag(ChatTag tag, void *opaque)
     ConfigScan *scan = opaque;
     ASS_ChatScene *scene = scan->scene;
     if (!scene->mode && !tag.parenthesized && tag_is(tag, "chatmode1"))
-        scene->mode = 1;
+        scene->mode = ASS_CHAT_MODE_EXPLICIT;
     else if (!scene->mode && !tag.parenthesized && tag_is(tag, "chatmode2"))
-        scene->mode = 2;
+        scene->mode = ASS_CHAT_MODE_NAMED_LAZY;
+    else if (!scene->mode && !tag.parenthesized && tag_is(tag, "chatmode3"))
+        scene->mode = ASS_CHAT_MODE_ALIGNMENT_SHORTHAND;
     else if (tag_is(tag, "msgtitle") && tag.parenthesized &&
              !scan->title_seen) {
         /* First successfully parsed title wins, including an empty title. */
@@ -235,31 +274,44 @@ static bool append_message(ASS_ChatScene *scene, const char *start,
 {
     if (scene->count == INT_MAX)
         return false;
+    /* Copy first: an inherited speaker may point into messages, which realloc
+     * can move when the next message is appended. */
+    char *text = copy_span(start, end - start);
+    char *name = speaker ? trimmed_span(speaker, speaker_len) : NULL;
+    if (!text || (speaker && !name)) {
+        free(text);
+        free(name);
+        return false;
+    }
     if (scene->count == scene->capacity) {
-        if (scene->capacity > INT_MAX / 2)
+        if (scene->capacity > INT_MAX / 2) {
+            free(text);
+            free(name);
             return false;
+        }
         int capacity = scene->capacity ? scene->capacity * 2 : 8;
         if (capacity < scene->capacity ||
-            (size_t) capacity > SIZE_MAX / sizeof(*scene->messages))
+            (size_t) capacity > SIZE_MAX / sizeof(*scene->messages)) {
+            free(text);
+            free(name);
             return false;
+        }
         ASS_ChatMessage *messages = realloc(scene->messages,
             (size_t) capacity * sizeof(*messages));
-        if (!messages)
+        if (!messages) {
+            free(text);
+            free(name);
             return false;
+        }
         scene->messages = messages;
         scene->capacity = capacity;
     }
     ASS_ChatMessage *message = &scene->messages[scene->count];
     memset(message, 0, sizeof(*message));
-    message->text = copy_span(start, end - start);
-    message->speaker = speaker ? trimmed_span(speaker, speaker_len) : NULL;
+    message->text = text;
+    message->speaker = name;
     message->side = side;
     message->reveal_ms = INT64_MAX;
-    if (!message->text || (speaker && !message->speaker)) {
-        free(message->text);
-        free(message->speaker);
-        return false;
-    }
     scene->count++;
     return true;
 }
@@ -301,7 +353,7 @@ static bool message_boundary_tag(ChatTag tag, void *opaque)
     return true;
 }
 
-static bool lazy_boundary_tag(ChatTag tag, void *opaque)
+static bool shorthand_boundary_tag(ChatTag tag, void *opaque)
 {
     BoundaryScan *scan = opaque;
     if (tag.parenthesized || tag.name_len != 3 ||
@@ -321,9 +373,197 @@ static bool lazy_boundary_tag(ChatTag tag, void *opaque)
     return true;
 }
 
-static bool parse_messages(const char *source, ASS_ChatScene *scene)
+/* Return the end of a balanced angle group. A pipe within <base|ruby> belongs
+ * to furigana, including when its reading contains override blocks. */
+static const char *skip_furi_group(const char *p, const char *end)
 {
-    /* In lazy mode an ASS \N is pending until the next logical token. A
+    for (const char *q = p + 1; q < end;) {
+        if (*q == '\\' && q + 1 < end &&
+            (q[1] == '<' || q[1] == '>' || q[1] == '|' ||
+             q[1] == '{' || q[1] == '}' || q[1] == '\\')) {
+            q += 2;
+        } else if (*q == '{') {
+            const char *close = memchr(q + 1, '}', end - (q + 1));
+            if (!close)
+                return NULL;
+            q = close + 1;
+        } else if (*q == '<' || *q == '}') {
+            return NULL;
+        } else if (*q == '>') {
+            return q + 1;
+        } else {
+            q++;
+        }
+    }
+    return NULL;
+}
+
+/* Only top-level pipes delimit named chat blocks. This also skips pipe bytes
+ * in ASS overrides and existing escaped furigana punctuation. */
+static const char *next_chat_pipe(const char *p, const char *end)
+{
+    while (p < end) {
+        if (*p == '{') {
+            const char *close = memchr(p + 1, '}', end - (p + 1));
+            if (close) {
+                p = close + 1;
+                continue;
+            }
+        } else if (*p == '\\' && p + 1 < end &&
+                   (p[1] == '|' || p[1] == '<' || p[1] == '{')) {
+            p += 2;
+            continue;
+        } else if (*p == '<') {
+            const char *after = skip_furi_group(p, end);
+            if (after) {
+                p = after;
+                continue;
+            }
+        } else if (*p == '|') {
+            return p;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+/* Only override state before the first pipe is global. Source separators and
+ * stray text outside blocks do not become extra glyphs or messages. */
+static char *named_prefix(const char *source, const char *first_pipe)
+{
+    size_t capacity = first_pipe - source;
+    char *prefix = malloc(capacity + 1);
+    if (!prefix)
+        return NULL;
+    size_t length = 0;
+    for (const char *p = source; p < first_pipe;) {
+        if (*p == '{') {
+            const char *close = memchr(p + 1, '}', first_pipe - (p + 1));
+            if (close) {
+                size_t block_length = close + 1 - p;
+                memcpy(prefix + length, p, block_length);
+                length += block_length;
+                p = close + 1;
+                continue;
+            }
+        }
+        p++;
+    }
+    prefix[length] = 0;
+    return prefix;
+}
+
+/* A valid block has a named :\N boundary or starts with \N and inherits the
+ * preceding logical speaker. Leading overrides are retained as render state. */
+static bool append_named_block(ASS_ChatScene *scene, const char *open,
+                               const char *close)
+{
+    const char *p = open + 1;
+    size_t capacity = close - p;
+    char *text = malloc(capacity + 1);
+    if (!text)
+        return false;
+    size_t length = 0;
+    while (p < close) {
+        size_t width;
+        while ((width = space_prefix(p, close - p)))
+            p += width;
+        if (p == close || *p != '{')
+            break;
+        const char *end = memchr(p + 1, '}', close - (p + 1));
+        if (!end)
+            break;
+        size_t block_length = end + 1 - p;
+        memcpy(text + length, p, block_length);
+        length += block_length;
+        p = end + 1;
+    }
+
+    const char *speaker = NULL;
+    size_t speaker_len = 0;
+    const char *body = NULL;
+    int side = 0;
+    if (p + 1 < close && p[0] == '\\' && p[1] == 'N') {
+        body = p + 2;
+        if (scene->count) {
+            const ASS_ChatMessage *last = &scene->messages[scene->count - 1];
+            speaker = last->speaker;
+            speaker_len = speaker ? strlen(speaker) : 0;
+            side = last->side;
+        }
+    } else {
+        const char *delimiter = NULL;
+        for (const char *q = p; q < close;) {
+            if (*q == '{') {
+                const char *end = memchr(q + 1, '}', close - (q + 1));
+                if (end) {
+                    q = end + 1;
+                    continue;
+                }
+            } else if (*q == '<') {
+                const char *after = skip_furi_group(q, close);
+                if (after) {
+                    q = after;
+                    continue;
+                }
+            } else if (q + 2 < close && q[0] == ':' &&
+                       q[1] == '\\' && q[2] == 'N') {
+                delimiter = q;
+                break;
+            }
+            q++;
+        }
+        if (delimiter) {
+            char *name = trimmed_span(p, delimiter - p);
+            if (!name) {
+                free(text);
+                return false;
+            }
+            if (*name) {
+                speaker = p;
+                speaker_len = delimiter - p;
+                side = scene->main_speaker &&
+                    !strcmp(name, scene->main_speaker);
+                body = delimiter + 3;
+            }
+            free(name);
+        }
+    }
+    if (!body) { /* Ignore malformed or empty-delimiter blocks. */
+        free(text);
+        return true;
+    }
+    size_t body_length = close - body;
+    memcpy(text + length, body, body_length);
+    length += body_length;
+    text[length] = 0;
+    bool ok = append_message(scene, text, text + length,
+                             speaker, speaker_len, side);
+    free(text);
+    return ok;
+}
+
+static bool parse_named_messages(const char *source, ASS_ChatScene *scene)
+{
+    const char *end = source + strlen(source);
+    const char *first = next_chat_pipe(source, end);
+    scene->prefix = named_prefix(source, first ? first : end);
+    if (!scene->prefix)
+        return false;
+    for (const char *p = first; p;) {
+        const char *close = next_chat_pipe(p + 1, end);
+        if (!close)
+            break;
+        if (!append_named_block(scene, p, close))
+            return false;
+        p = next_chat_pipe(close + 1, end);
+    }
+    return true;
+}
+
+static bool parse_shorthand_messages(const char *source, ASS_ChatScene *scene)
+{
+    /* In shorthand mode an ASS \N is pending until the next logical token. A
      * structural \ta or {|} consumes it as a message boundary; otherwise it
      * stays in the body as an ordinary multiline break. */
     const char *start = NULL, *pending_newline = NULL;
@@ -337,15 +577,15 @@ static bool parse_messages(const char *source, ASS_ChatScene *scene)
             if (!end)
                 break;
             BoundaryScan scan = {0};
-            if (scene->mode == 1)
+            if (scene->mode == ASS_CHAT_MODE_EXPLICIT)
                 each_block_tag(p + 1, end, message_boundary_tag, &scan);
             else if (end == p + 2 && p[1] == '|') {
                 scan.boundary = true;
                 scan.side = side; /* {|} starts a message, inheriting side only. */
             } else
-                each_block_tag(p + 1, end, lazy_boundary_tag, &scan);
+                each_block_tag(p + 1, end, shorthand_boundary_tag, &scan);
             bool new_message = scan.boundary &&
-                (scene->mode == 1 || !start || pending_newline);
+                (scene->mode == ASS_CHAT_MODE_EXPLICIT || !start || pending_newline);
             if (new_message) {
                 const char *end_previous = pending_newline ? pending_newline : p;
                 if (start && !append_message(scene, start, end_previous,
@@ -358,7 +598,7 @@ static bool parse_messages(const char *source, ASS_ChatScene *scene)
                 }
                 start = pending_newline ? pending_newline + 2 : p;
                 pending_newline = NULL;
-                if (scene->mode == 1) {
+                if (scene->mode == ASS_CHAT_MODE_EXPLICIT) {
                     speaker = scan.speaker;
                     speaker_len = scan.speaker_len;
                     if (scan.explicit_side)
@@ -375,7 +615,8 @@ static bool parse_messages(const char *source, ASS_ChatScene *scene)
                     side = scan.side;
             }
             p = end + 1;
-        } else if (scene->mode == 2 && p[0] == '\\' && p[1] == 'N') {
+        } else if (scene->mode == ASS_CHAT_MODE_ALIGNMENT_SHORTHAND &&
+                   p[0] == '\\' && p[1] == 'N') {
             if (!start) {
                 start = p;
                 scene->prefix = copy_span(source, p - source);
@@ -427,7 +668,10 @@ ASS_ChatScene *ass_chat_parse(const char *source)
     scene->animation_ms = 250;
     ConfigScan scan = {.scene = scene};
     bool ok = scan_config(source, &scan);
-    if (!ok || !scene->mode || !parse_messages(source, scene)) {
+    if (!ok || !scene->mode ||
+        !(scene->mode == ASS_CHAT_MODE_NAMED_LAZY ?
+          parse_named_messages(source, scene) :
+          parse_shorthand_messages(source, scene))) {
         free(scan.times);
         ass_chat_free(scene);
         return NULL;

@@ -6229,7 +6229,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event,
             ass_parse_override_block(state, body + 1, end);
             body = end + 1;
         }
-        if (chat->mode == 1 && chat->show_names &&
+        if (chat->mode != ASS_CHAT_MODE_ALIGNMENT_SHORTHAND &&
+            chat->show_names &&
             message->speaker && *message->speaker) {
             if (!append_chat_literal(state, message->speaker) ||
                 !append_chat_break(state))

@@ -10,5 +10,9 @@ Style: Chat,sans-serif,42,&H00FFFFFF,&H0000FFFF,&H0000AA00,&H00AA0000,0,0,0,0,10
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,0:00:10.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode2\msgtitle(Miku)\msgstartcount(1)\msgtime(1200,2400,3000,3900)\msganim(250)}{\ta7}Hey\N{\ta9}What\N{\ta7}Look at this\N{|}This shit crazy\N{\ta9}💀
-Dialogue: 0,0:00:00.00,0:00:10.00,Chat,,0,0,0,,{\an7\pos(70,80)\chatmode1\msgtitle(Miku)\msgm(Miku)\msgshowname0\msgstartcount(1)\msgtime(1200,2400,3000,3900)\msganim(250)}{\msg(Yurf)}Hey{\msg(Miku)}What{\msg(Yurf)}Look at this{\msg(Yurf)}This shit crazy{\msg(Miku)}💀
+; Mode 1: explicit \msg boundaries
+Dialogue: 0,0:00:00.00,0:00:10.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode1\msgtitle(Miku)\msgm(Miku)\msgshowname0\msgstartcount(1)\msgtime(1200,2400,3000,3900)\msganim(250)}{\msg(Yurf)}Hey{\msg(Miku)}What{\msg(Yurf)}Look at this{\msg(Yurf)}This shit crazy{\msg(Miku)}💀
+; Mode 2: named |Name:\Nbody| blocks
+Dialogue: 0,0:00:10.00,0:00:20.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode2\msgtitle(Miku)\msgm(Miku)\msgshowname0\msgstartcount(1)\msgtime(1200,2400,3000,3900)\msganim(250)}|Yurf:\NHey|\N\N|Miku:\NWhat|\N\N|Yurf:\NLook at this|\N\N|\NThis shit crazy|\N\N|Miku:\N💀|
+; Mode 3: \ta / {|} alignment shorthand
+Dialogue: 0,0:00:20.00,0:00:30.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode3\msgtitle(Miku)\msgstartcount(1)\msgtime(1200,2400,3000,3900)\msganim(250)}{\ta7}Hey\N{\ta9}What\N{\ta7}Look at this\N{|}This shit crazy\N{\ta9}💀
