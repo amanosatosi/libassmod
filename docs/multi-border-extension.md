@@ -87,9 +87,21 @@ Examples:
 {\1bs2\1bvc(&HFFFFFF&,&HCCCCCC&,&HFFFFFF&,&HCCCCCC&)\2bs7\2bvc(&H0000FF&,&HFF0000&,&H0000FF&,&HFF0000&)\2bva(&H20&,&H80&,&H20&,&H80&)}Text
 ```
 
-For this first version, the layer count is fixed at 10. There are no per-layer
-blur or shadow tags; existing `\blur`, `\be`, `\shad`, `\xshad`, and `\yshad`
-behavior is reused.
+The layer count is fixed at 10. `\Nbblur<value>` and `\Nbbe<value>` set Gaussian
+blur and edge blur for native border layer `N` (1 through 10). Each border
+inherits global `\blur` and `\be` unless that layer has an explicit numbered
+override. Layer 1 is the normal ASS outline; its numbered settings do not
+change the fill or other border layers. Explicit zero disables that filter for
+the selected layer, even when the global value is nonzero. Bare `\Nbblur` and
+`\Nbbe` clear their respective overrides, and `\r` clears all numbered
+overrides.
+
+For example, `{\blur2\bord2\2bs5\2bblur6}Text` blurs layer 2 by 6 while the
+fill and layer 1 inherit 2. `{\blur4\bord2\2bs5\2bblur0}Text` keeps layer 2
+sharp while the other parts inherit 4. Border rings are separated before their
+individual filters are applied, so differently blurred borders have clean
+underlying geometry. The shadow continues to use global blur/BE semantics;
+there are no per-layer shadow tags.
 
 `\shad`, `\xshad`, and `\yshad` cast one shadow from the complete outer
 silhouette of all enabled native border layers.

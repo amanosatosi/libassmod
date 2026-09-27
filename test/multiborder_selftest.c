@@ -34,6 +34,15 @@ typedef struct {
     uint64_t hash;
 } ShadowSig;
 
+typedef struct {
+    int count;
+    int min_x, min_y;
+    int max_x, max_y;
+    uint64_t coverage;
+    uint64_t hash;
+    uint64_t visible_hash;
+} BorderSig;
+
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
 {
     (void) level;
@@ -206,6 +215,133 @@ static void hash_i32(uint64_t *hash, int value)
 {
     for (int i = 0; i < 4; i++)
         hash_u8(hash, (uint8_t) ((unsigned) value >> (8 * i)));
+}
+
+static bool render_border_case_at(ASS_Library *lib, ASS_Renderer *renderer,
+                                  const char *text, long long time,
+                                  uint32_t color, BorderSig *sig)
+{
+    ASS_Track *track = read_case_track(lib, text);
+    if (!track)
+        return false;
+    int change = 0;
+    ASS_Image *img = ass_render_frame(renderer, track, time, &change);
+    (void) change;
+    memset(sig, 0, sizeof(*sig));
+    sig->hash = 1469598103934665603ULL;
+    sig->visible_hash = 1469598103934665603ULL;
+    bool have_pixel = false;
+    for (ASS_Image *cur = img; cur; cur = cur->next) {
+        if (cur->type != IMAGE_TYPE_OUTLINE || cur->color != color)
+            continue;
+        sig->count++;
+        hash_i32(&sig->hash, cur->dst_x);
+        hash_i32(&sig->hash, cur->dst_y);
+        hash_i32(&sig->hash, cur->w);
+        hash_i32(&sig->hash, cur->h);
+        for (int y = 0; y < cur->h; y++) {
+            const uint8_t *row = cur->bitmap + y * cur->stride;
+            for (int x = 0; x < cur->w; x++) {
+                uint8_t value = row[x];
+                hash_u8(&sig->hash, value);
+                if (!value)
+                    continue;
+                int px = cur->dst_x + x;
+                int py = cur->dst_y + y;
+                if (!have_pixel) {
+                    sig->min_x = sig->max_x = px;
+                    sig->min_y = sig->max_y = py;
+                    have_pixel = true;
+                } else {
+                    if (px < sig->min_x)
+                        sig->min_x = px;
+                    if (py < sig->min_y)
+                        sig->min_y = py;
+                    if (px > sig->max_x)
+                        sig->max_x = px;
+                    if (py > sig->max_y)
+                        sig->max_y = py;
+                }
+                sig->coverage += value;
+                hash_i32(&sig->visible_hash, px);
+                hash_i32(&sig->visible_hash, py);
+                hash_u8(&sig->visible_hash, value);
+            }
+        }
+    }
+    ass_free_track(track);
+    return sig->count > 0 && have_pixel;
+}
+
+static bool render_border_case(ASS_Library *lib, ASS_Renderer *renderer,
+                               const char *text, uint32_t color,
+                               BorderSig *sig)
+{
+    return render_border_case_at(lib, renderer, text, 0, color, sig);
+}
+
+static bool same_border(const BorderSig *a, const BorderSig *b)
+{
+    return a->count == b->count && a->coverage == b->coverage &&
+           a->min_x == b->min_x && a->min_y == b->min_y &&
+           a->max_x == b->max_x && a->max_y == b->max_y &&
+           a->hash == b->hash;
+}
+
+static bool same_border_visible(const BorderSig *a, const BorderSig *b)
+{
+    return a->count == b->count && a->coverage == b->coverage &&
+           a->min_x == b->min_x && a->min_y == b->min_y &&
+           a->max_x == b->max_x && a->max_y == b->max_y &&
+           a->visible_hash == b->visible_hash;
+}
+
+static bool expect_border_filter(ASS_Library *lib, ASS_Renderer *renderer,
+                                 const char *first, const char *second,
+                                 uint32_t color, bool equal, const char *name)
+{
+    BorderSig a, b;
+    bool ok = render_border_case(lib, renderer, first, color, &a) &&
+              render_border_case(lib, renderer, second, color, &b);
+    if (ok)
+        ok = same_border(&a, &b) == equal;
+    if (!ok)
+        fprintf(stderr, "%s border filter mismatch\n", name);
+    return ok;
+}
+
+static bool expect_border_visible_same(ASS_Library *lib,
+                                       ASS_Renderer *renderer,
+                                       const char *first,
+                                       const char *second,
+                                       uint32_t color, const char *name)
+{
+    BorderSig a, b;
+    bool ok = render_border_case(lib, renderer, first, color, &a) &&
+              render_border_case(lib, renderer, second, color, &b);
+    if (ok)
+        ok = same_border_visible(&a, &b);
+    if (!ok)
+        fprintf(stderr, "%s changed visible border geometry\n", name);
+    return ok;
+}
+
+static bool expect_border_spread(ASS_Library *lib, ASS_Renderer *renderer,
+                                 const char *sharp_text,
+                                 const char *soft_text, uint32_t color,
+                                 int min_growth, const char *name)
+{
+    BorderSig sharp, soft;
+    bool ok = render_border_case(lib, renderer, sharp_text, color, &sharp) &&
+              render_border_case(lib, renderer, soft_text, color, &soft);
+    if (ok)
+        ok = soft.min_x <= sharp.min_x - min_growth &&
+             soft.max_x >= sharp.max_x + min_growth &&
+             soft.min_y <= sharp.min_y - min_growth &&
+             soft.max_y >= sharp.max_y + min_growth;
+    if (!ok)
+        fprintf(stderr, "%s did not spread the border mask\n", name);
+    return ok;
 }
 
 static bool render_shadow_case(ASS_Library *lib, ASS_Renderer *renderer,
@@ -502,6 +638,202 @@ int main(void)
         ok = false;
     }
 
+    const uint32_t red = 0xFF000000u;
+    const uint32_t green = 0x00FF0000u;
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur2\\bord2\\1bc&H0000FF&\\2bs5\\2bc&H00FF00&}Inherit",
+        "{\\blur2\\bord2\\1bc&H0000FF&\\2bs5\\2bc&H00FF00&\\1bblur2\\2bblur2}Inherit",
+        red, true, "global blur inheritance, layer 1");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur2\\bord2\\1bc&H0000FF&\\2bs5\\2bc&H00FF00&}Inherit",
+        "{\\blur2\\bord2\\1bc&H0000FF&\\2bs5\\2bc&H00FF00&\\1bblur2\\2bblur2}Inherit",
+        green, true, "global blur inheritance, layer 2");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\be2\\bord2\\2bs5\\2bc&H00FF00&}InheritBE",
+        "{\\be2\\bord2\\2bs5\\2bc&H00FF00&\\1bbe2\\2bbe2}InheritBE",
+        green, true, "global BE inheritance");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur1\\bord2\\2bs6\\2bc&H00FF00&\\2bblur1}Override",
+        "{\\blur1\\bord2\\2bs6\\2bc&H00FF00&\\2bblur8}Override",
+        green, false, "layer-2 Gaussian override");
+    ok &= expect_border_spread(lib, renderer,
+        "{\\blur1\\bord2\\2bs6\\2bc&H00FF00&\\2bblur1}Override",
+        "{\\blur1\\bord2\\2bs6\\2bc&H00FF00&\\2bblur8}Override",
+        green, 3, "layer-2 Gaussian radius");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur6\\bord2\\1bc&H0000FF&\\2bs6\\2bc&H00FF00&}Zero",
+        "{\\blur6\\bord2\\1bc&H0000FF&\\2bs6\\2bc&H00FF00&\\2bblur0}Zero",
+        green, false, "explicit zero Gaussian override");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur6\\bord2\\1bc&H0000FF&\\2bs6\\2bc&H00FF00&}Zero",
+        "{\\blur6\\bord2\\1bc&H0000FF&\\2bs6\\2bc&H00FF00&\\2bblur0}Zero",
+        red, true, "layer-1 blur independence");
+    ok &= expect_border_spread(lib, renderer,
+        "{\\blur6\\bord2\\1bc&H0000FF&\\2bs6\\2bc&H00FF00&\\2bblur0}Zero",
+        "{\\blur6\\bord2\\1bc&H0000FF&\\2bs6\\2bc&H00FF00&}Zero",
+        green, 2, "explicit zero keeps the outer border sharp");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur1\\bord4\\1bc&H0000FF&\\2bs5\\2bc&H00FF00&}LayerOne",
+        "{\\blur1\\bord4\\1bc&H0000FF&\\1bblur6\\2bs5\\2bc&H00FF00&}LayerOne",
+        red, false, "layer-1 Gaussian override");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur1\\bord4\\1bc&H0000FF&\\2bs5\\2bc&H00FF00&}LayerOne",
+        "{\\blur1\\bord4\\1bc&H0000FF&\\1bblur6\\2bs5\\2bc&H00FF00&}LayerOne",
+        green, true, "layer-2 blur independence");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur1\\bord4\\1bc&H0000FF&}SoloLayerOne",
+        "{\\blur1\\bord4\\1bc&H0000FF&\\1bblur6}SoloLayerOne",
+        red, false, "single native border override");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur1\\bord4\\1bc&H0000FF&}SoloLayerOne",
+        "{\\blur1\\bord4\\1bc&H0000FF&\\1bblur1}SoloLayerOne",
+        red, true, "equal layer-1 blur preserves legacy rendering");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\be3\\bord4\\1bc&H0000FF&}SoloEdge",
+        "{\\be3\\bord4\\1bc&H0000FF&\\1bbe0}SoloEdge",
+        red, false, "single native border BE override");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord3\\1bc&H0000FF&\\1bblur8\\2bs4\\2bc&H00FF00&\\2bblur1}Inverse",
+        "{\\bord3\\1bc&H0000FF&\\1bblur1\\2bs4\\2bc&H00FF00&\\2bblur1}Inverse",
+        green, true, "inverse blur ring geometry");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord3\\1bc&H0000FF&\\1bblur1\\2bs4\\2bc&H00FF00&\\2bblur1}Opposite",
+        "{\\bord3\\1bc&H0000FF&\\1bblur1\\2bs4\\2bc&H00FF00&\\2bblur8}Opposite",
+        green, false, "outer soft blur");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\be1\\bord2\\2bs5\\2bc&H00FF00&}Edge",
+        "{\\be1\\bord2\\2bs5\\2bc&H00FF00&\\2bbe3}Edge",
+        green, false, "layer-2 BE override");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\be3\\bord2\\2bs5\\2bc&H00FF00&}EdgeZero",
+        "{\\be3\\bord2\\2bs5\\2bc&H00FF00&\\2bbe0}EdgeZero",
+        green, false, "explicit zero BE override");
+    ok &= expect_border_visible_same(lib, renderer,
+        "{\\bord3\\1bbe4\\2bs4\\2bc&H00FF00&\\2bbe1}EdgeInverse",
+        "{\\bord3\\1bbe0\\2bs4\\2bc&H00FF00&\\2bbe1}EdgeInverse",
+        green, "BE ring geometry independent of inner filter");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\blur2\\be1\\bord2\\2bs5\\2bc&H00FF00&}Both",
+        "{\\blur2\\be1\\bord2\\2bs5\\2bc&H00FF00&\\2bblur5\\2bbe3}Both",
+        green, false, "combined Gaussian and BE override");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\xbord3\\ybord2\\2bsx7\\2bsy4\\2bc&H00FF00&}AnisoFilter",
+        "{\\xbord3\\ybord2\\2bsx7\\2bsy4\\2bc&H00FF00&\\2bblur5}AnisoFilter",
+        green, false, "anisotropic border blur");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bs5\\bord2\\2bs5\\2bc&H00FF00&\\3bs4\\3bc&H0000FF&}GeoFilter",
+        "{\\bs5\\bord2\\2bs5\\2bc&H00FF00&\\2bblur6\\3bs4\\3bc&H0000FF&\\3bbe2}GeoFilter",
+        green, false, "geometric border blur");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord2\\10bs4\\10bc&H00FF00&}Tenth",
+        "{\\bord2\\10bs4\\10bc&H00FF00&\\10bblur5}Tenth",
+        green, false, "tenth native border blur");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&}InvalidFilter",
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\11bblur8\\2bblurbad}InvalidFilter",
+        green, true, "malformed numbered blur tags");
+
+    RgbaSig reset_a, reset_b;
+    ok &= render_rgba_case(lib, renderer,
+        "{\\blur2\\bord2\\2bs5\\2bblur7}A{\\2bblur}B", &reset_a);
+    ok &= render_rgba_case(lib, renderer,
+        "{\\blur2\\bord2\\2bs5\\2bblur7}A{\\2bblur2}B", &reset_b);
+    if (ok && !same_rgba_sig(&reset_a, &reset_b)) {
+        fprintf(stderr, "bare numbered blur did not restore global inheritance\n");
+        ok = false;
+    }
+    ok &= render_rgba_case(lib, renderer,
+        "{\\be2\\bord2\\2bs5\\2bbe4}A{\\2bbe}B", &reset_a);
+    ok &= render_rgba_case(lib, renderer,
+        "{\\be2\\bord2\\2bs5\\2bbe4}A{\\2bbe2}B", &reset_b);
+    if (ok && !same_rgba_sig(&reset_a, &reset_b)) {
+        fprintf(stderr, "bare numbered BE did not restore global inheritance\n");
+        ok = false;
+    }
+    ok &= render_rgba_case(lib, renderer,
+        "{\\blur2\\bord2\\2bs5\\2bblur7}A{\\r\\blur2\\bord2\\2bs5}B", &reset_a);
+    ok &= render_rgba_case(lib, renderer,
+        "{\\blur2\\bord2\\2bs5\\2bblur7}A{\\r\\blur2\\bord2\\2bs5\\2bblur2}B", &reset_b);
+    if (ok && !same_rgba_sig(&reset_a, &reset_b)) {
+        fprintf(stderr, "\\r did not clear numbered blur override\n");
+        ok = false;
+    }
+    ok &= render_rgba_case(lib, renderer,
+        "{\\be2\\bord2\\2bs5\\2bbe7}A{\\r\\be2\\bord2\\2bs5}B", &reset_a);
+    ok &= render_rgba_case(lib, renderer,
+        "{\\be2\\bord2\\2bs5\\2bbe7}A{\\r\\be2\\bord2\\2bs5\\2bbe2}B", &reset_b);
+    if (ok && !same_rgba_sig(&reset_a, &reset_b)) {
+        fprintf(stderr, "\\r did not clear numbered BE override\n");
+        ok = false;
+    }
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bblur2\\2bblur+1}Relative",
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bblur3}Relative",
+        green, true, "relative numbered blur");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bblur2\\2bblur-0.5}Relative",
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bblur1.5}Relative",
+        green, true, "negative relative numbered blur");
+
+    BorderSig animated, midpoint;
+    ok &= render_border_case_at(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\t(0,1000,\\2bblur8)}Animate",
+        500, green, &animated);
+    ok &= render_border_case_at(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bblur4}Animate",
+        500, green, &midpoint);
+    if (ok && !same_border(&animated, &midpoint)) {
+        fprintf(stderr, "numbered blur transform did not interpolate\n");
+        ok = false;
+    }
+    ok &= render_border_case_at(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bblur8\\t(0,1000,\\2bblur0)}Animate",
+        500, green, &animated);
+    if (ok && !same_border(&animated, &midpoint)) {
+        fprintf(stderr, "numbered blur transform did not animate toward zero\n");
+        ok = false;
+    }
+    ok &= render_border_case_at(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\t(0,1000,\\2bbe4)}Animate",
+        500, green, &animated);
+    ok &= render_border_case_at(lib, renderer,
+        "{\\bord2\\2bs5\\2bc&H00FF00&\\2bbe2}Animate",
+        500, green, &midpoint);
+    if (ok && !same_border(&animated, &midpoint)) {
+        fprintf(stderr, "numbered BE transform did not interpolate\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+        "{\\blur1\\bord2\\1bc&H0000FF&\\1bblur2"
+        "\\2bs4\\2bc&H00FF00&\\2bblur6"
+        "\\3bs3\\3bc&HFF0000&\\3bblur0}ThreeFilters", &multi);
+    if (ok && (multi.outline_count < 3 ||
+               !has_color(&multi, red) || !has_color(&multi, green) ||
+               !has_color(&multi, 0x0000FF00u))) {
+        fprintf(stderr, "three independently filtered borders disappeared\n");
+        ok = false;
+    }
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord2\\2bs6\\2bc&H00FF00&\\2ba&H80&}AlphaFilter",
+        "{\\bord2\\2bs6\\2bc&H00FF00&\\2ba&H80&\\2bblur5}AlphaFilter",
+        0x00FF0080u, false, "semitransparent outer blur");
+    ok &= expect_border_filter(lib, renderer,
+        "{\\bord2\\2bs4\\2bc&H00FF00&}<Base|ruby>",
+        "{\\bord2\\2bs4\\2bc&H00FF00&\\2bblur5}<Base|ruby>",
+        green, false, "furigana border blur");
+
+    ShadowSig global_shadow, per_border_shadow;
+    ok &= render_shadow_case(lib, renderer,
+        "{\\blur1\\bord2\\2bs6\\3bs4\\shad5}Caster", &global_shadow);
+    ok &= render_shadow_case(lib, renderer,
+        "{\\blur1\\bord2\\2bs6\\2bblur8\\3bs4\\3bblur0\\shad5}Caster",
+        &per_border_shadow);
+    if (ok && !same_shadow(&global_shadow, &per_border_shadow)) {
+        fprintf(stderr, "numbered border blur changed the shadow caster\n");
+        ok = false;
+    }
+
     ok &= render_case(lib, renderer,
                       "{\\bord2\\3c&HFFFFFF&\\3a&H80&}Alias",
                       &legacy);
@@ -733,6 +1065,28 @@ int main(void)
         ok = false;
     }
 
+    ok &= render_case_with_border_style(lib, renderer, 3,
+                                        "{\\bord3\\shad4}Opaque", &legacy);
+    ok &= render_case_with_border_style(lib, renderer, 3,
+                                        "{\\bord3\\shad4\\1bblur6\\2bbe3}Opaque",
+                                        &expected);
+    if (ok && (!same_sig(&legacy, &expected) ||
+               !same_coverage_bounds(&legacy, &expected))) {
+        fprintf(stderr, "numbered native blur changed BorderStyle=3 box\n");
+        ok = false;
+    }
+
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\2bbs4}BoxFilter", &legacy);
+    ok &= render_case(lib, renderer,
+                      "{\\bs4\\boxp12\\2bbs4\\2bblur6\\2bbe3}BoxFilter",
+                      &expected);
+    if (ok && (!same_sig(&legacy, &expected) ||
+               !same_coverage_bounds(&legacy, &expected))) {
+        fprintf(stderr, "native border blur changed box-border rendering\n");
+        ok = false;
+    }
+
     ok &= render_case(lib, renderer,
                       "{\\bs4\\boxp12}Box",
                       &box_base);
@@ -865,6 +1219,47 @@ int main(void)
                !rgba_multi.outline_red ||
                !rgba_multi.outline_blue)) {
         fprintf(stderr, "extra border gradient did not render as RGBA outline\n");
+        ok = false;
+    }
+
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\bord2\\2bs8\\2bvc(&H0000FF&,&HFF0000&,"
+                           "&H0000FF&,&HFF0000&)\\2bva(&H00&,&H80&,"
+                           "&H00&,&H80&)\\2bblur5}OuterGrad",
+                           &rgba_numbered);
+    if (ok && (!rgba_numbered.needs_rgba ||
+               !rgba_numbered.outline_red ||
+               !rgba_numbered.outline_blue ||
+               rgba_numbered.hash == rgba_multi.hash)) {
+        fprintf(stderr, "numbered blur broke or ignored border gradient\n");
+        ok = false;
+    }
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\polc&HFF80C0&\\pols8\\zpol\\bord2\\2bs5"
+                           "\\2bpc&H0000FF&\\2bps3\\2bsp10}Pattern",
+                           &rgba_legacy);
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\polc&HFF80C0&\\pols8\\zpol\\bord2\\2bs5"
+                           "\\2bpc&H0000FF&\\2bps3\\2bsp10"
+                           "\\2bblur5}Pattern",
+                           &rgba_numbered);
+    if (ok && (!rgba_numbered.needs_rgba ||
+               rgba_numbered.outline_count < 2 ||
+               rgba_numbered.hash == rgba_legacy.hash)) {
+        fprintf(stderr, "numbered blur broke or ignored border pattern paint\n");
+        ok = false;
+    }
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\bord2\\2bs5\\2bcyc(1,&H0000FF&,&HFF0000&)}AB",
+                           &rgba_legacy);
+    ok &= render_rgba_case(lib, renderer,
+                           "{\\bord2\\2bs5\\2bcyc(1,&H0000FF&,&HFF0000&)"
+                           "\\2bblur5}AB",
+                           &rgba_numbered);
+    if (ok && (!rgba_numbered.outline_red ||
+               !rgba_numbered.outline_blue ||
+               rgba_numbered.hash == rgba_legacy.hash)) {
+        fprintf(stderr, "numbered blur broke or ignored border color cycling\n");
         ok = false;
     }
 

@@ -4,6 +4,8 @@
     typedef struct structname {
 #define GENERIC(type, member) \
         type member;
+#define ARRAY(type, member, count) \
+        type member[count];
 #define STRING(member) \
         ASS_StringView member;
 #define VECTOR(member) \
@@ -21,6 +23,8 @@
         return // conditions follow
 #define GENERIC(type, member) \
             a->member == b->member &&
+#define ARRAY(type, member, count) \
+            !memcmp(a->member, b->member, sizeof(a->member)) &&
 #define STRING(member) \
             ass_string_equal(a->member, b->member) &&
 #define VECTOR(member) \
@@ -37,6 +41,8 @@
         struct structname *p = buf;
 #define GENERIC(type, member) \
         hval = ass_hash_buf(&p->member, sizeof(p->member), hval);
+#define ARRAY(type, member, count) \
+        hval = ass_hash_buf(p->member, sizeof(p->member), hval);
 #define STRING(member) \
         hval = ass_hash_buf(p->member.str, p->member.len, hval);
 #define VECTOR(member) GENERIC(, member.x); GENERIC(, member.y);
@@ -124,11 +130,15 @@ START(filter, filter_desc)
     GENERIC(int, be)
     GENERIC(int, blur_x)
     GENERIC(int, blur_y)
+    ARRAY(int, border_be, ASS_BORDER_LAYERS_MAX)
+    ARRAY(int, border_blur_x, ASS_BORDER_LAYERS_MAX)
+    ARRAY(int, border_blur_y, ASS_BORDER_LAYERS_MAX)
     VECTOR(shadow)
 END(FilterDesc)
 
 #undef START
 #undef GENERIC
+#undef ARRAY
 #undef STRING
 #undef VECTOR
 #undef END

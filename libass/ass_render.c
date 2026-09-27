@@ -53,6 +53,7 @@ static inline bool border_layer_has_size(const BorderLayerState *layer);
 static bool border_layers_state_equal(const BorderLayerState *a,
                                       const BorderLayerState *b);
 static bool has_multi_border_layers(const BorderLayerState *layers);
+static bool layer1_filter_differs(const GlyphInfo *info);
 static void sync_glyph_layer1_border(GlyphInfo *info);
 static void capture_column_style(RenderContext *state, ColumnStyleState *style,
                                  unsigned fields);
@@ -5327,6 +5328,8 @@ static bool append_glyph_to_target(RenderContext *state,
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
         info->border_layers[i].size_x *= object_scale;
         info->border_layers[i].size_y *= object_scale;
+        if (info->border_layers[i].has_blur)
+            info->border_layers[i].blur *= object_scale;
     }
     sync_glyph_layer1_border(info);
     info->hspacing = hspacing;
@@ -5750,8 +5753,12 @@ static bool border_layer_state_equal(const BorderLayerState *a,
     return a->enabled == b->enabled &&
            a->has_color == b->has_color &&
            a->has_alpha == b->has_alpha &&
+           a->has_blur == b->has_blur &&
+           a->has_be == b->has_be &&
            a->size_x == b->size_x &&
            a->size_y == b->size_y &&
+           (!a->has_blur || a->blur == b->blur) &&
+           (!a->has_be || a->be == b->be) &&
            a->color == b->color &&
            !memcmp(&a->gradient, &b->gradient, sizeof(a->gradient));
 }
@@ -5771,6 +5778,14 @@ static bool has_multi_border_layers(const BorderLayerState *layers)
         if (border_layer_has_size(&layers[i]))
             return true;
     return false;
+}
+
+static bool layer1_filter_differs(const GlyphInfo *info)
+{
+    const BorderLayerState *border = &info->border_layers[0];
+    return (border->has_blur &&
+            (border->blur != info->blur_x || border->blur != info->blur_y)) ||
+           (border->has_be && border->be != info->be);
 }
 
 static void sync_glyph_layer1_border(GlyphInfo *info)
@@ -7937,6 +7952,26 @@ static double restore_blur(int qblur)
     return sigma * sigma;
 }
 
+static void set_border_filters(FilterDesc *filter,
+                               const BorderLayerState *layers,
+                               double blur_scale_x, double blur_scale_y)
+{
+    for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+        const BorderLayerState *border = &layers[layer];
+        filter->border_be[layer] = border->has_be ? border->be : filter->be;
+        if (border->has_blur) {
+            int32_t unused_mask;
+            filter->border_blur_x[layer] =
+                quantize_blur(border->blur * blur_scale_x, &unused_mask);
+            filter->border_blur_y[layer] =
+                quantize_blur(border->blur * blur_scale_y, &unused_mask);
+        } else {
+            filter->border_blur_x[layer] = filter->blur_x;
+            filter->border_blur_y[layer] = filter->blur_y;
+        }
+    }
+}
+
 static void reset_gradient_rects(TextInfo *text_info)
 {
     for (int i = 0; i < text_info->n_lines; i++) {
@@ -8612,7 +8647,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 flags |= FILTER_BORDER_STYLE_3;
             if (glyph_border_max_x(info) || glyph_border_max_y(info))
                 flags |= FILTER_NONZERO_BORDER;
-            if (has_multi_border_layers(info->border_layers) &&
+            if ((has_multi_border_layers(info->border_layers) ||
+                 layer1_filter_differs(info)) &&
                     info->border_style != 3)
                 flags |= FILTER_MULTI_BORDER;
             if (info->shadow_x || info->shadow_y)
@@ -8687,6 +8723,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 double blur_scale_y = state->blur_scale_y * blur_radius_scale;
                 filter->blur_x = quantize_blur(info->blur_x * blur_scale_x, &shadow_mask_x);
                 filter->blur_y = quantize_blur(info->blur_y * blur_scale_y, &shadow_mask_y);
+                set_border_filters(filter, info->border_layers,
+                                   blur_scale_x, blur_scale_y);
                 if (flags & FILTER_NONZERO_SHADOW) {
                     int32_t x = double_to_d6(info->shadow_x * state->border_scale_x);
                     int32_t y = double_to_d6(info->shadow_y * state->border_scale_y);
@@ -8766,7 +8804,8 @@ static int decoration_filter_flags(const GlyphInfo *info)
         flags |= FILTER_BORDER_STYLE_3;
     if (glyph_border_max_x(info) || glyph_border_max_y(info))
         flags |= FILTER_NONZERO_BORDER;
-    if (has_multi_border_layers(info->border_layers) &&
+    if ((has_multi_border_layers(info->border_layers) ||
+         layer1_filter_differs(info)) &&
             info->border_style != 3)
         flags |= FILTER_MULTI_BORDER;
     if (info->shadow_x || info->shadow_y)
@@ -8909,6 +8948,8 @@ static bool append_decoration_bitmap_info(RenderContext *state,
         quantize_blur(deco.blur_x * blur_scale_x, &shadow_mask_x);
     current_info->filter.blur_y =
         quantize_blur(deco.blur_y * blur_scale_y, &shadow_mask_y);
+    set_border_filters(&current_info->filter, deco.border_layers,
+                       blur_scale_x, blur_scale_y);
     if (flags & FILTER_NONZERO_SHADOW) {
         int32_t x = double_to_d6(deco.shadow_x * state->border_scale_x);
         int32_t y = double_to_d6(deco.shadow_y * state->border_scale_y);
@@ -9222,6 +9263,11 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
     }
 
     int bord = ass_be_padding(k->filter.be);
+    if (k->filter.flags & FILTER_MULTI_BORDER)
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++)
+            if (n_bm_o[layer])
+                bord = FFMAX(bord,
+                             ass_be_padding(k->filter.border_be[layer]));
     if (!bord && n_bm == 1) {
         ass_copy_bitmap(&render_priv->engine, &v->bm, last->bm);
         v->bm.left += last->pos.x;
@@ -9330,18 +9376,10 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
 
     double r2x = restore_blur(k->filter.blur_x);
     double r2y = restore_blur(k->filter.blur_y);
-    if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
-        ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
-    ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
-    for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX - 1; layer++)
-        ass_synth_blur(&render_priv->engine, &v->bm_border[layer],
-                       k->filter.be, r2x, r2y);
-
     if (multi_border) {
         /*
-         * Visible multi-border masks become non-overlapping rings below.
-         * Preserve the outermost blurred cumulative mask first: the ASS
-         * shadow is cast by the complete bordered silhouette.
+         * The shadow uses the outer cumulative geometry with the global
+         * filter. It must not inherit any visible border's own blur.
          */
         if ((flags & FILTER_NONZERO_SHADOW) &&
                 (flags & FILTER_NONZERO_BORDER)) {
@@ -9353,10 +9391,10 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                 }
             }
         }
-        // Multi-border uses the existing global blur/be treatment on each
-        // expanded mask, then cuts rings from the blurred masks. This keeps
-        // transparent outer borders from compositing under inner borders
-        // without introducing per-layer blur state.
+        /*
+         * Separate geometric rings before filtering. Differently blurred
+         * cumulative masks cannot be subtracted without corrupting rings.
+         */
         Bitmap covered = {0};
         if (rect_o.x_min <= rect_o.x_max && rect_o.y_min <= rect_o.y_max &&
                 ass_alloc_bitmap(&render_priv->engine, &covered,
@@ -9373,8 +9411,30 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                                       &covered);
             ass_free_bitmap(&covered);
         }
-    } else if (!(flags & FILTER_FILL_IN_BORDER) && !(flags & FILTER_FILL_IN_SHADOW)) {
-        ass_fix_outline(&v->bm, &v->bm_o);
+        ass_synth_blur(&render_priv->engine, &v->bm_s,
+                       k->filter.be, r2x, r2y);
+        ass_synth_blur(&render_priv->engine, &v->bm,
+                       k->filter.be, r2x, r2y);
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            Bitmap *ring = composite_border_bitmap(v, layer);
+            if (!ring->buffer)
+                continue;
+            int blur_x = k->filter.border_blur_x[layer];
+            int blur_y = k->filter.border_blur_y[layer];
+            ass_synth_blur(&render_priv->engine, ring,
+                           k->filter.border_be[layer],
+                           blur_x == k->filter.blur_x ?
+                               r2x : restore_blur(blur_x),
+                           blur_y == k->filter.blur_y ?
+                               r2y : restore_blur(blur_y));
+        }
+    } else {
+        if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
+            ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
+        ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
+        if (!(flags & FILTER_FILL_IN_BORDER) &&
+                !(flags & FILTER_FILL_IN_SHADOW))
+            ass_fix_outline(&v->bm, &v->bm_o);
     }
 
     if (flags & FILTER_NONZERO_SHADOW) {

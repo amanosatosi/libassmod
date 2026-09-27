@@ -274,8 +274,12 @@ typedef struct {
     bool enabled;
     bool has_color;
     bool has_alpha;
+    bool has_blur;
+    bool has_be;
     double size_x;
     double size_y;
+    double blur;
+    int be;
     uint32_t color;
     GradientValues gradient;
 } BorderLayerState;

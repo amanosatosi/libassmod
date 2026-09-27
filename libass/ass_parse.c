@@ -1170,6 +1170,8 @@ typedef enum {
     BORDER_TAG_SIZE,
     BORDER_TAG_SIZE_X,
     BORDER_TAG_SIZE_Y,
+    BORDER_TAG_BLUR,
+    BORDER_TAG_BE,
     BORDER_TAG_COLOR,
     BORDER_TAG_ALPHA,
     BORDER_TAG_COLOR_GRADIENT,
@@ -1233,6 +1235,10 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
         tag = BORDER_TAG_BOX_COLOR;
     else if (match_border_suffix(q, name_end, "bba", &arg_start))
         tag = BORDER_TAG_BOX_ALPHA;
+    else if (match_border_suffix(q, name_end, "bblur", &arg_start))
+        tag = BORDER_TAG_BLUR;
+    else if (match_border_suffix(q, name_end, "bbe", &arg_start))
+        tag = BORDER_TAG_BE;
     else if (match_border_suffix(q, name_end, "bsx", &arg_start))
         tag = BORDER_TAG_SIZE_X;
     else if (match_border_suffix(q, name_end, "bsy", &arg_start))
@@ -1303,6 +1309,8 @@ static bool colorcode_numbered_border_tag_allowed(NumberedBorderTag tag)
     case BORDER_TAG_SIZE:
     case BORDER_TAG_SIZE_X:
     case BORDER_TAG_SIZE_Y:
+    case BORDER_TAG_BLUR:
+    case BORDER_TAG_BE:
     case BORDER_TAG_COLOR:
     case BORDER_TAG_ALPHA:
     case BORDER_TAG_COLOR_GRADIENT:
@@ -2508,6 +2516,38 @@ static void apply_numbered_border_tag(RenderContext *state,
     case BORDER_TAG_BOX_ALPHA:
         apply_box_border_tag(state, tag, layer, arg, pwr);
         break;
+    case BORDER_TAG_BLUR:
+    case BORDER_TAG_BE: {
+        BorderLayerState *border = &state->border_layers[layer];
+        if (!arg.start) {
+            if (tag == BORDER_TAG_BLUR)
+                border->has_blur = false;
+            else
+                border->has_be = false;
+            break;
+        }
+        NumericOperand operand;
+        if (!parse_numeric_operand(arg, NUM_NONNEGATIVE, true, &operand))
+            return;
+        if (tag == BORDER_TAG_BLUR) {
+            double current = border->has_blur ? border->blur : state->blur_x;
+            double target = resolve_numeric_operand(operand, current);
+            if (!isfinite(target))
+                return;
+            double val = current * (1 - pwr) + target * pwr;
+            border->blur = FFMIN(FFMAX(val, 0), BLUR_MAX_RADIUS);
+            border->has_blur = true;
+        } else {
+            double current = border->has_be ? border->be : state->be;
+            double target = resolve_numeric_operand(operand, current);
+            if (!isfinite(target))
+                return;
+            int32_t val = dtoi32(current * (1 - pwr) + target * pwr + 0.5);
+            border->be = FFMIN(FFMAX(val, 0), MAX_BE);
+            border->has_be = true;
+        }
+        break;
+    }
     case BORDER_TAG_SIZE:
     case BORDER_TAG_SIZE_X:
     case BORDER_TAG_SIZE_Y: {
