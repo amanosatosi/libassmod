@@ -9338,6 +9338,21 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
                        k->filter.be, r2x, r2y);
 
     if (multi_border) {
+        /*
+         * Visible multi-border masks become non-overlapping rings below.
+         * Preserve the outermost blurred cumulative mask first: the ASS
+         * shadow is cast by the complete bordered silhouette.
+         */
+        if ((flags & FILTER_NONZERO_SHADOW) &&
+                (flags & FILTER_NONZERO_BORDER)) {
+            for (int layer = ASS_BORDER_LAYERS_MAX - 1; layer >= 0; layer--) {
+                Bitmap *source = composite_border_bitmap(v, layer);
+                if (source->buffer) {
+                    ass_copy_bitmap(&render_priv->engine, &v->bm_s, source);
+                    break;
+                }
+            }
+        }
         // Multi-border uses the existing global blur/be treatment on each
         // expanded mask, then cuts rings from the blurred masks. This keeps
         // transparent outer borders from compositing under inner borders
@@ -9364,7 +9379,8 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
 
     if (flags & FILTER_NONZERO_SHADOW) {
         if (flags & FILTER_NONZERO_BORDER) {
-            ass_copy_bitmap(&render_priv->engine, &v->bm_s, &v->bm_o);
+            if (!multi_border)
+                ass_copy_bitmap(&render_priv->engine, &v->bm_s, &v->bm_o);
             if (!multi_border && (flags & FILTER_FILL_IN_BORDER) &&
                     !(flags & FILTER_FILL_IN_SHADOW))
                 ass_fix_outline(&v->bm, &v->bm_s);

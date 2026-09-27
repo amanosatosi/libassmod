@@ -91,6 +91,9 @@ For this first version, the layer count is fixed at 10. There are no per-layer
 blur or shadow tags; existing `\blur`, `\be`, `\shad`, `\xshad`, and `\yshad`
 behavior is reused.
 
+`\shad`, `\xshad`, and `\yshad` cast one shadow from the complete outer
+silhouette of all enabled native border layers.
+
 Override state is persistent like normal ASS tags. `\r` resets layer 1 to the
 active style outline and disables layers 2 through 10.
 

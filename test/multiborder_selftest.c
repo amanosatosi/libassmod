@@ -26,6 +26,14 @@ typedef struct {
     bool outline_blue;
 } RgbaSig;
 
+typedef struct {
+    int count;
+    int min_x, min_y;
+    int max_x, max_y;
+    uint64_t coverage;
+    uint64_t hash;
+} ShadowSig;
+
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
 {
     (void) level;
@@ -200,6 +208,128 @@ static void hash_i32(uint64_t *hash, int value)
         hash_u8(hash, (uint8_t) ((unsigned) value >> (8 * i)));
 }
 
+static bool render_shadow_case(ASS_Library *lib, ASS_Renderer *renderer,
+                               const char *text, ShadowSig *sig)
+{
+    ASS_Track *track = read_case_track(lib, text);
+    if (!track)
+        return false;
+
+    int change = 0;
+    ASS_Image *img = ass_render_frame(renderer, track, 0, &change);
+    (void) change;
+
+    memset(sig, 0, sizeof(*sig));
+    sig->hash = 1469598103934665603ULL;
+    bool have_pixel = false;
+    for (ASS_Image *cur = img; cur; cur = cur->next) {
+        if (cur->type != IMAGE_TYPE_SHADOW)
+            continue;
+        sig->count++;
+        hash_i32(&sig->hash, cur->dst_x);
+        hash_i32(&sig->hash, cur->dst_y);
+        hash_i32(&sig->hash, cur->w);
+        hash_i32(&sig->hash, cur->h);
+        for (int y = 0; y < cur->h; y++) {
+            const uint8_t *row = cur->bitmap + y * cur->stride;
+            for (int x = 0; x < cur->w; x++) {
+                uint8_t value = row[x];
+                hash_u8(&sig->hash, value);
+                if (!value)
+                    continue;
+                int px = cur->dst_x + x;
+                int py = cur->dst_y + y;
+                if (!have_pixel) {
+                    sig->min_x = sig->max_x = px;
+                    sig->min_y = sig->max_y = py;
+                    have_pixel = true;
+                } else {
+                    if (px < sig->min_x)
+                        sig->min_x = px;
+                    if (py < sig->min_y)
+                        sig->min_y = py;
+                    if (px > sig->max_x)
+                        sig->max_x = px;
+                    if (py > sig->max_y)
+                        sig->max_y = py;
+                }
+                sig->coverage += value;
+            }
+        }
+    }
+
+    ass_free_track(track);
+    return sig->count > 0 && have_pixel;
+}
+
+static bool shadow_grew(const ShadowSig *inner, const ShadowSig *outer,
+                        int min_x, int min_y)
+{
+    return inner->count == outer->count &&
+           outer->coverage > inner->coverage &&
+           outer->min_x <= inner->min_x - min_x &&
+           outer->max_x >= inner->max_x + min_x &&
+           outer->min_y <= inner->min_y - min_y &&
+           outer->max_y >= inner->max_y + min_y;
+}
+
+static bool same_shadow(const ShadowSig *a, const ShadowSig *b)
+{
+    return a->count == b->count && a->coverage == b->coverage &&
+           a->min_x == b->min_x && a->min_y == b->min_y &&
+           a->max_x == b->max_x && a->max_y == b->max_y &&
+           a->hash == b->hash;
+}
+
+static bool expect_shadow_growth(ASS_Library *lib, ASS_Renderer *renderer,
+                                 const char *inner_text,
+                                 const char *outer_text,
+                                 int min_x, int min_y, const char *name)
+{
+    ShadowSig inner, outer;
+    bool ok = render_shadow_case(lib, renderer, inner_text, &inner) &&
+              render_shadow_case(lib, renderer, outer_text, &outer);
+    if (ok)
+        ok = shadow_grew(&inner, &outer, min_x, min_y);
+    if (!ok)
+        fprintf(stderr, "%s did not grow the shadow silhouette\n", name);
+    return ok;
+}
+
+static bool expect_shadow_shift(ASS_Library *lib, ASS_Renderer *renderer,
+                                const char *baseline_text,
+                                const char *shifted_text,
+                                int dx, int dy, const char *name)
+{
+    ShadowSig baseline, shifted;
+    bool ok = render_shadow_case(lib, renderer, baseline_text, &baseline) &&
+              render_shadow_case(lib, renderer, shifted_text, &shifted);
+    if (ok)
+        ok = baseline.count == shifted.count &&
+             baseline.coverage == shifted.coverage &&
+             shifted.min_x == baseline.min_x + dx &&
+             shifted.max_x == baseline.max_x + dx &&
+             shifted.min_y == baseline.min_y + dy &&
+             shifted.max_y == baseline.max_y + dy;
+    if (!ok)
+        fprintf(stderr, "%s changed the shadow mask or offset\n", name);
+    return ok;
+}
+
+static bool expect_shadow_match(ASS_Library *lib, ASS_Renderer *renderer,
+                                const char *single_text,
+                                const char *multi_text, const char *name)
+{
+    ShadowSig single, multi;
+    bool ok = render_shadow_case(lib, renderer, single_text, &single) &&
+              render_shadow_case(lib, renderer, multi_text, &multi);
+    if (ok)
+        ok = same_shadow(&single, &multi);
+    if (!ok)
+        fprintf(stderr, "%s shadow differs from cumulative single border\n", name);
+    return ok;
+}
+
 static bool render_rgba_case(ASS_Library *lib, ASS_Renderer *renderer,
                              const char *text, RgbaSig *sig)
 {
@@ -301,6 +431,76 @@ int main(void)
     RenderSig box_reference, box_small_outer, box_large_outer, box_three_layers;
     RgbaSig rgba_legacy, rgba_numbered, rgba_multi, rgba_flat;
     bool ok = true;
+
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bord2\\2bs0\\shad4}Shadow",
+                               "{\\bord2\\2bs8\\shad4}Shadow",
+                               4, 4, "outer native border");
+    ok &= expect_shadow_match(lib, renderer,
+                              "{\\bord10\\shad4}Shadow",
+                              "{\\bord2\\2bs8\\shad4}Shadow",
+                              "outer native border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bord2\\2bs4\\shad5}TripleShadow",
+                               "{\\bord2\\2bs4\\3bs6\\shad5}TripleShadow",
+                               3, 3, "third native border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bord2\\shad5}SkipLayer",
+                               "{\\bord2\\3bs6\\shad5}SkipLayer",
+                               3, 3, "missing intermediate border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bord2\\xshad-6\\yshad3}NegativeShadow",
+                               "{\\bord2\\2bs5\\xshad-6\\yshad3}NegativeShadow",
+                               2, 2, "negative-offset border");
+    ok &= expect_shadow_shift(lib, renderer,
+                              "{\\bord2\\2bs5\\xshad0\\yshad3}NegativeShadow",
+                              "{\\bord2\\2bs5\\xshad-6\\yshad3}NegativeShadow",
+                              -6, 0, "negative x shadow offset");
+    ok &= expect_shadow_shift(lib, renderer,
+                              "{\\bord2\\2bs6\\xshad5\\yshad0}NegativeY",
+                              "{\\bord2\\2bs6\\xshad5\\yshad-5}NegativeY",
+                              0, -5, "negative y shadow offset");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\xbord3\\ybord2\\shad4}AnisoShadow",
+                               "{\\xbord3\\ybord2\\2bsx7\\2bsy4\\shad4}AnisoShadow",
+                               3, 2, "anisotropic outer border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bord2\\blur3\\shad5}BlurShadow",
+                               "{\\bord2\\2bs6\\blur3\\shad5}BlurShadow",
+                               3, 3, "blurred outer border");
+    ok &= expect_shadow_match(lib, renderer,
+                              "{\\bord8\\blur3\\shad5}BlurShadow",
+                              "{\\bord2\\2bs6\\blur3\\shad5}BlurShadow",
+                              "blurred cumulative border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bord2\\be2\\shad5}BeShadow",
+                               "{\\bord2\\2bs6\\be2\\shad5}BeShadow",
+                               3, 3, "BE outer border");
+    ok &= expect_shadow_match(lib, renderer,
+                              "{\\bord8\\be2\\shad5}BeShadow",
+                              "{\\bord2\\2bs6\\be2\\shad5}BeShadow",
+                              "BE cumulative border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\bs5\\bord2\\2bs5\\shad4}BS5Shadow",
+                               "{\\bs5\\bord2\\2bs5\\3bs3\\shad4}BS5Shadow",
+                               1, 1, "geometric third border");
+    ok &= expect_shadow_growth(lib, renderer,
+                               "{\\furi1\\furipos(0,20)\\bord2\\shad4}<Base|ruby>",
+                               "{\\furi1\\furipos(0,20)\\bord2\\2bs6\\shad4}<Base|ruby>",
+                               2, 2, "furigana outer border");
+
+    ShadowSig legacy_shadow, alias_shadow, zero_layer_shadow;
+    ok &= render_shadow_case(lib, renderer,
+                             "{\\bord3\\shad4}LegacyShadow", &legacy_shadow);
+    ok &= render_shadow_case(lib, renderer,
+                             "{\\bord3\\xshad4\\yshad4}LegacyShadow", &alias_shadow);
+    ok &= render_shadow_case(lib, renderer,
+                             "{\\bord3\\2bs0\\shad4}LegacyShadow", &zero_layer_shadow);
+    if (ok && (!same_shadow(&legacy_shadow, &alias_shadow) ||
+               !same_shadow(&legacy_shadow, &zero_layer_shadow))) {
+        fprintf(stderr, "single-border shadow aliases changed rendering\n");
+        ok = false;
+    }
 
     ok &= render_case(lib, renderer,
                       "{\\bord2\\3c&HFFFFFF&\\3a&H80&}Alias",
