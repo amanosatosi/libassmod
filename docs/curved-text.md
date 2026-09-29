@@ -68,7 +68,18 @@ ignored, and `\ta` inside `\t` has no effect.
 
 ### `\ctan1`–`\ctan9`
 
-`\ctan` anchors curved text relative to the path using the full numpad:
+`\ctan` anchors the completed curved text object relative to the path using
+the full numpad. Without an explicit `\ctan`, it inherits `\an`:
+
+```text
+effective curved alignment = explicit \ctan, otherwise \an
+```
+
+For example, `\an2\ct(...)` attaches exactly like `\an2\ctan2\ct(...)`.
+
+The first visual line has no special anchoring authority. Its baseline may be
+zero while line spacing is calculated, but final placement uses the geometry
+of every curved visual line:
 
 ```text
 7 8 9   top of text on path
@@ -81,25 +92,25 @@ ignored, and `\ta` inside `\t` has no effect.
 ```
 
 For a horizontal path, `\ctan8` centers the text along it and places the
-text's top at the path; `\ctan5` centers its vertical middle there; `\ctan2`
-places its bottom there. For multiline text, the block top is the minimum of
-`baseline − ascent` across all visual lines and the block bottom is the
-maximum of `baseline + descent`. `\ctan` selects the top, midpoint, or bottom
-of that complete block in the path-normal coordinate, then places every line
-relative to the same selected point. Thus `\ctan2` puts the whole block above
-the path and `\ctan8` puts it below. Font metrics, scale, and line spacing
-remain authoritative. A single line retains its previous offsets.
+completed object's top at the path; `\ctan5` places its middle there; `\ctan2`
+places its bottom there. The same rule applies to one line or many. After all
+visual lines have been shaped and curved, Mangetsu measures the resulting glyph
+geometry in the tangent/normal frame at the selected path point. The selected
+left/center/right and top/middle/bottom point of those bounds is attached to
+the path start/center/end, respectively. On a diagonal path, top and bottom
+therefore follow its normal rather than screen Y. For a Bézier path, the basis
+is the tangent at the selected attachment point.
 
-With explicit `\ctan`, the widest shaped visual line defines the text block
-width. The horizontal digit anchors that block at the path start, center, or
-end; `\ta` (or `\an` when `\ta` is absent) aligns shorter lines inside it.
+The widest shaped visual line defines the shared block width before curving.
+The horizontal digit attaches that block to the path start, center, or end;
+`\ta` (or `\an` when `\ta` is absent) aligns shorter lines inside it.
 For example, `\an7\ta2\ctan5` keeps the event top-left anchored, centers
 short lines in the text block, and centers that block on the curved path.
 
-Without `\ctan`, legacy `\ct` stays baseline-based: each visual line is
-placed independently along the path by the horizontal component of `\an`.
-No vertical metric shift is added. The first valid integer 1–9 wins until a
-style reset; invalid values are ignored and `\ctan` inside `\t` has no effect.
+Explicit `\ctan` changes curved attachment only. `\an` still determines the
+event's normal `\pos`/margin anchor. The first valid `\ctan` integer 1–9 wins
+until a style reset; a reset restores inheritance from `\an`. Invalid values
+are ignored and `\ctan` inside `\t` has no effect.
 
 For a manual multiline comparison in a 1920×1080 script, put these on
 separate dialogue events. The longer second line supplies the block width:
@@ -115,9 +126,9 @@ Substitute `1/3`, `4/6`, and `7/9` to compare the left and right attachments.
 
 ### `\ctx<number>`
 
-Moves each shaped line forward or backward along its path. The value
-is a script-unit path-distance offset and participates in Mangetsu's ordinary
-numeric `\t` interpolation:
+Moves each shaped line and its attachment point forward or backward along its
+path. The value is a script-unit path-distance offset and participates in
+Mangetsu's ordinary numeric `\t` interpolation:
 
 ```ass
 {\ct(m -300 0 l 300 0)\t(0,1000,\ctx100)}TEXT
@@ -125,10 +136,11 @@ numeric `\t` interpolation:
 
 ### `\cty<number>`
 
-Offsets the baseline along the local path normal. The normal is consistently
-derived from `N = (-dy, dx)` in ASS's Y-down screen convention. Therefore, on
-a left-to-right horizontal path, positive `\cty` moves text down and negative
-`\cty` moves it up. `\cty` is also interpolatable in `\t`.
+Offsets the curved object along the local path normal, including its
+attachment point. The normal is consistently derived from `N = (-dy, dx)` in
+ASS's Y-down screen convention. Therefore, on a left-to-right horizontal path,
+positive `\cty` moves text down and negative `\cty` moves it up. `\cty` is
+also interpolatable in `\t`.
 
 ## Coordinates and placement
 
@@ -155,14 +167,14 @@ endpoint.
 
 Hard breaks (`\N`), `\n` when WrapStyle treats it as a break, and automatic
 wrapping all produce separate visual lines. Every line starts its own distance
-along the same path. With no `\ctan`, each line uses its own shaped width for
-legacy path alignment; with explicit `\ctan`, the widest line defines the
-path-aligned block and `\ta` aligns shorter lines within it. The first line
-follows the authored baseline. Each later line is
-offset along the local path normal by the renderer's calculated baseline
-advance, including font metrics, scaling, and line spacing. On a horizontal
-left-to-right path, later lines appear below the first; on a diagonal or
-curved path, the offset follows the changing normal rather than screen Y.
+along the same path. The widest line defines the path-aligned block and `\ta`
+aligns shorter lines within it. Line spacing is computed from successive
+baselines; each later line is offset along the local path normal by its
+calculated baseline advance, including font metrics, scaling, and line spacing.
+On a horizontal left-to-right path, later lines appear below the first; on a
+diagonal or curved path, the offset follows the changing normal rather than
+screen Y.
+The final attachment is calculated only after every visual line is curved.
 
 A horizontal left-to-right path has zero local rotation. For other tangents,
 the screen-coordinate tangent angle is converted to libass's existing rotation

@@ -393,6 +393,28 @@ int main(void)
                  block_anchors[8].min_y >= 252 &&
                  block_anchors[8].max_y > 350,
                  "multiline ctan2/8 did not place the entire block above/below the curve");
+    ok &= near(center_y(&block_anchors[8]) - center_y(&block_anchors[2]),
+               height(&block_anchors[2]), 7.0,
+               "multiline top/bottom anchors ignored final text bounds");
+
+    /* An absent ctan is exactly the corresponding an for the completed
+     * three-line object, including its uneven widths and curved bounds. */
+    for (int value = 1; value <= 9; value++) {
+        char implicit[256], explicit[256];
+        const char *format =
+            "{\\an%d\\ta2\\pos(480,270)\\fs44\\bord0\\shad0%s"
+            "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
+            "testing\\Nsuper testing\\Nend";
+        char override[16];
+        snprintf(override, sizeof(override), "\\ctan%d", value);
+        snprintf(implicit, sizeof(implicit), format, value, "");
+        snprintf(explicit, sizeof(explicit), format, value, override);
+        Sample inherited, specified;
+        ok &= render_sample(lib, renderer, implicit, 0, &inherited);
+        ok &= render_sample(lib, renderer, explicit, 0, &specified);
+        ok &= expect(same_sample(&inherited, &specified),
+                     "implicit an-to-ctan inheritance differed from explicit ctan");
+    }
 
     Sample curved_block_bottom = {0}, curved_block_middle = {0},
            curved_block_top = {0};
@@ -422,7 +444,59 @@ int main(void)
                      center_y(&curved_block_top),
                  "strong curve reverted to per-line ctan vertical anchors");
 
-    Sample first_ctan, reset_ctan, ignored_ctan, curved_anchor, diagonal_anchor;
+    Sample override_event_an7, override_event_an5, inherited_an7;
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\ta2\\ctan5\\pos(480,270)\\fs44"
+        "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
+        "testing\\Nsuper testing",
+        0, &override_event_an7);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ta2\\ctan5\\pos(480,270)\\fs44"
+        "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
+        "testing\\Nsuper testing",
+        0, &override_event_an5);
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\ta2\\pos(480,270)\\fs44"
+        "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
+        "testing\\Nsuper testing",
+        0, &inherited_an7);
+    ok &= expect(same_sample(&override_event_an7, &override_event_an5) &&
+                 !same_sample(&override_event_an7, &inherited_an7),
+                 "explicit ctan did not override curved attachment independently of an");
+    Sample margin_an7, margin_an5;
+    ok &= render_sample(lib, renderer,
+        "{\\an7\\ctan5\\ct(m 0 0 l 400 0)}MARGIN",
+        0, &margin_an7);
+    ok &= render_sample(lib, renderer,
+        "{\\an5\\ctan5\\ct(m 0 0 l 400 0)}MARGIN",
+        0, &margin_an5);
+    ok &= expect(center_x(&margin_an7) + 100 < center_x(&margin_an5) &&
+                 center_y(&margin_an7) + 100 < center_y(&margin_an5),
+                 "an stopped controlling the event margin anchor with ctan");
+
+    Sample diagonal_top, diagonal_middle, diagonal_bottom;
+    const char *diagonal_format =
+        "{\\an5\\ta2\\ctan%d\\pos(320,250)\\fs44"
+        "\\ct(m 0 0 l 500 180)}testing\\Nsuper testing";
+    char diagonal_text[180];
+    snprintf(diagonal_text, sizeof(diagonal_text), diagonal_format, 7);
+    ok &= render_sample(lib, renderer, diagonal_text, 0, &diagonal_top);
+    snprintf(diagonal_text, sizeof(diagonal_text), diagonal_format, 4);
+    ok &= render_sample(lib, renderer, diagonal_text, 0, &diagonal_middle);
+    snprintf(diagonal_text, sizeof(diagonal_text), diagonal_format, 1);
+    ok &= render_sample(lib, renderer, diagonal_text, 0, &diagonal_bottom);
+    ok &= expect(center_x(&diagonal_top) + 5 <
+                 center_x(&diagonal_middle) &&
+                 center_x(&diagonal_middle) + 5 <
+                 center_x(&diagonal_bottom) &&
+                 center_y(&diagonal_top) >
+                 center_y(&diagonal_middle) + 15 &&
+                 center_y(&diagonal_middle) >
+                 center_y(&diagonal_bottom) + 15,
+                 "diagonal whole-block anchor did not follow the path normal");
+
+    Sample first_ctan, reset_ctan, reset_default, ignored_ctan,
+           curved_anchor, diagonal_anchor;
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\ctan5\\ctan9\\ct(m 0 0 l 600 0)}ALIGN",
         0, &first_ctan);
@@ -432,10 +506,13 @@ int main(void)
         "{\\an7\\pos(180,260)\\ctan5\\r\\ct(m 0 0 l 600 0)}ALIGN",
         0, &reset_ctan);
     ok &= render_sample(lib, renderer,
+        "{\\an5\\pos(180,260)\\ct(m 0 0 l 600 0)}ALIGN",
+        0, &reset_default);
+    ok &= expect(same_sample(&reset_ctan, &reset_default),
+                 "style reset did not restore inherited curved alignment");
+    ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\ct(m 0 0 l 600 0)}ALIGN",
         0, &default_align);
-    ok &= expect(same_sample(&reset_ctan, &default_align),
-                 "style reset did not restore legacy curved baseline");
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\t(0,1000,\\ctan5)\\ct(m 0 0 l 600 0)}ALIGN",
         500, &ignored_ctan);
@@ -473,22 +550,22 @@ int main(void)
     ok &= expect(center_x(&ctan_left) + 30 < center_x(&ctan_center),
                  "ctan path anchor was overwritten by ta");
 
-    Sample small_baseline, small_top, large_baseline, large_top;
+    Sample small_inherited, small_top, large_inherited, large_top;
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\fs30\\bord0\\shad0\\ct(m 0 0 l 600 0)}METRICS",
-        0, &small_baseline);
+        0, &small_inherited);
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\fs30\\bord0\\shad0\\ctan7\\ct(m 0 0 l 600 0)}METRICS",
         0, &small_top);
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\fs60\\bord0\\shad0\\ct(m 0 0 l 600 0)}METRICS",
-        0, &large_baseline);
+        0, &large_inherited);
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\fs60\\bord0\\shad0\\ctan7\\ct(m 0 0 l 600 0)}METRICS",
         0, &large_top);
-    ok &= expect(center_y(&large_top) - center_y(&large_baseline) >
-                 center_y(&small_top) - center_y(&small_baseline) + 5,
-                 "ctan vertical anchor did not follow scaled line metrics");
+    ok &= expect(same_sample(&small_inherited, &small_top) &&
+                 same_sample(&large_inherited, &large_top),
+                 "single-line ctan did not inherit an7 at either font size");
 
     Sample short0, short1;
     const char *short_path =
@@ -554,8 +631,8 @@ int main(void)
     ok &= render_sample(lib, renderer,
         "{\\an4\\pos(180,150)\\fs80\\ct(m 0 0 l 600 0)}TEST\\NTEST",
         0, &large_two);
-    ok &= expect(2 * (center_y(&large_two) - center_y(&large_one)) >
-                 2 * (center_y(&small_two) - center_y(&small_one)) + 20,
+    ok &= expect(height(&large_two) - height(&large_one) >
+                 height(&small_two) - height(&small_one) + 20,
                  "curved line spacing did not follow font metrics");
 
     const int alignments[] = {4, 5, 6};
@@ -580,10 +657,10 @@ int main(void)
 
     Sample diagonal_one, diagonal_two;
     ok &= render_sample(lib, renderer,
-        "{\\an4\\pos(180,150)\\ct(m 0 0 l 500 180)}TEST",
+        "{\\an7\\pos(180,150)\\ct(m 0 0 l 500 180)}TEST",
         0, &diagonal_one);
     ok &= render_sample(lib, renderer,
-        "{\\an4\\pos(180,150)\\ct(m 0 0 l 500 180)}TEST\\NTEST",
+        "{\\an7\\pos(180,150)\\ct(m 0 0 l 500 180)}TEST\\NTEST",
         0, &diagonal_two);
     ok &= expect(center_x(&diagonal_two) < center_x(&diagonal_one) - 5 &&
                  center_y(&diagonal_two) > center_y(&diagonal_one) + 15,

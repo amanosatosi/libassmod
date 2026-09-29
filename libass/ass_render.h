@@ -858,7 +858,7 @@ struct render_context {
     bool perspective_enabled;
     ASS_PerspectiveParams perspective;
     OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
-    int curved_text_align;                 // 0 = legacy baseline, 1..9 = path anchor
+    int curved_text_align;                 // 0 = inherit \an, 1..9 = path anchor
     double curved_text_x;                  // along-path offset, script units
     double curved_text_y;                  // normal offset, script units
 

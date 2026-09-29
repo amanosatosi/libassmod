@@ -8356,7 +8356,15 @@ bool ass_curved_text_transform_cluster(GlyphInfo *root,
            transform_curved_cluster(root, point, tangent, true);
 }
 
-static bool apply_curved_text(RenderContext *state)
+static int effective_curved_alignment(RenderContext *state)
+{
+    return state->curved_text_align ?
+        numpad2align(state->curved_text_align) : state->alignment;
+}
+
+static bool apply_curved_text(RenderContext *state,
+                              ASS_DVector *attachment,
+                              ASS_DVector *attachment_tangent)
 {
     TextInfo *text_info = &state->text_info;
     if (state->native_vertical || !state->curved_path_outline ||
@@ -8408,62 +8416,45 @@ static bool apply_curved_text(RenderContext *state)
             line_advance[root->line] +=
                 d6_to_double(root->cluster_advance.x);
     }
-    /* Horizontal block extent is path arc length. Vertical extent is in the
-     * pre-curve path-normal coordinate shared by every line baseline. */
+    /* Shaped advances define the common block width before line alignment.
+     * The final anchor is measured only after all clusters are curved. */
     double max_advance = 0.0;
-    double block_top = DBL_MAX;
-    double block_bottom = -DBL_MAX;
     for (size_t line = 0; line < n_lines; line++) {
         if (!isfinite(line_advance[line]) ||
                 !isfinite(line_baseline[line]))
             goto fail;
         max_advance = FFMAX(max_advance, line_advance[line]);
-        if (state->curved_text_align) {
-            if (!isfinite(text_info->lines[line].asc) ||
-                    !isfinite(text_info->lines[line].desc))
-                goto fail;
-            block_top = FFMIN(block_top,
-                              line_baseline[line] - text_info->lines[line].asc);
-            block_bottom = FFMAX(block_bottom,
-                                 line_baseline[line] + text_info->lines[line].desc);
-        }
     }
-    if (state->curved_text_align &&
-            (!isfinite(block_top) || !isfinite(block_bottom)))
-        goto fail;
 
-    int alignment = state->curved_text_align ?
-        (state->curved_text_align - 1) % 3 + 1 : state->alignment & 3;
+    int alignment = effective_curved_alignment(state);
+    int halign = alignment & 3;
     int line_alignment = state->line_alignment ?
         state->line_alignment : state->text_alignment & 3;
+    double path_offset =
+        x2scr_offset(state, state->curved_text_x * object_scale);
     double normal_offset =
         y2scr_offset(state, state->curved_text_y * object_scale);
-    double block_anchor_y = 0.0;
-    if (state->curved_text_align) {
-        int row = (state->curved_text_align - 1) / 3;
-        block_anchor_y = row == 2 ? block_top :
-            row == 1 ? block_top + (block_bottom - block_top) * 0.5 :
-                       block_bottom;
-    }
+    double attach_distance = halign == HALIGN_CENTER ? path.length * 0.5 :
+        halign == HALIGN_RIGHT ? path.length : 0.0;
+    ASS_DVector path_point, path_tangent;
+    if (!ass_curved_path_sample(&path, attach_distance + path_offset,
+                                &path_point, &path_tangent))
+        goto fail;
+    path_point.x -= path_tangent.y * normal_offset;
+    path_point.y += path_tangent.x * normal_offset;
 
     /* Validate every transformed cluster before mutating any of them.  This
      * keeps pathological coordinates on the normal-rendering fallback path. */
     for (int pass = 0; pass < 2; pass++) {
         for (size_t line = 0; line < n_lines; line++) {
-            double aligned_advance = state->curved_text_align ?
-                max_advance : line_advance[line];
-            line_cursor[line] = alignment == HALIGN_CENTER ?
-                (path.length - aligned_advance) * 0.5 :
-                alignment == HALIGN_RIGHT ?
-                    path.length - aligned_advance : 0.0;
-            if (state->curved_text_align) {
-                double spare = max_advance - line_advance[line];
-                line_cursor[line] += line_alignment == HALIGN_CENTER ?
-                    spare * 0.5 :
-                    line_alignment == HALIGN_RIGHT ? spare : 0.0;
-            }
-            line_cursor[line] +=
-                x2scr_offset(state, state->curved_text_x * object_scale);
+            line_cursor[line] = halign == HALIGN_CENTER ?
+                (path.length - max_advance) * 0.5 :
+                halign == HALIGN_RIGHT ? path.length - max_advance : 0.0;
+            double spare = max_advance - line_advance[line];
+            line_cursor[line] += line_alignment == HALIGN_CENTER ?
+                spare * 0.5 :
+                line_alignment == HALIGN_RIGHT ? spare : 0.0;
+            line_cursor[line] += path_offset;
         }
         for (int i = 0; i < text_info->length; i++) {
             GlyphInfo *root = text_info->glyphs + cmap[i];
@@ -8477,8 +8468,6 @@ static bool apply_curved_text(RenderContext *state)
                                         &point, &tangent))
                 goto fail;
             double offset = normal_offset + line_baseline[line];
-            if (state->curved_text_align)
-                offset -= block_anchor_y;
             point.x += -tangent.y * offset;
             point.y +=  tangent.x * offset;
             double advance_x = advance * tangent.x;
@@ -8497,6 +8486,8 @@ static bool apply_curved_text(RenderContext *state)
 
     if (line_data != single_line)
         free(line_data);
+    *attachment = path_point;
+    *attachment_tangent = path_tangent;
     ass_curved_path_free(&path);
     return true;
 
@@ -8507,11 +8498,14 @@ fail:
     return false;
 }
 
-static void compute_curved_string_bbox(TextInfo *text_info, ASS_DRect *bbox)
+static void compute_curved_string_bbox(TextInfo *text_info, ASS_DRect *bbox,
+                                       ASS_DRect *path_bbox,
+                                       ASS_DVector tangent)
 {
     bool seen = false;
     bbox->x_min = bbox->y_min = 0.0;
     bbox->x_max = bbox->y_max = 0.0;
+    *path_bbox = *bbox;
     for (int i = 0; i < text_info->length; i++) {
         GlyphInfo *root = text_info->glyphs + i;
         if (root->skip)
@@ -8529,15 +8523,23 @@ static void compute_curved_string_bbox(TextInfo *text_info, ASS_DRect *bbox)
                 for (int yi = 0; yi < 2; yi++) {
                     double x = px + xs[xi] * c - ys[yi] * s;
                     double y = py + xs[xi] * s + ys[yi] * c;
+                    double along = x * tangent.x + y * tangent.y;
+                    double normal = -x * tangent.y + y * tangent.x;
                     if (!seen) {
                         bbox->x_min = bbox->x_max = x;
                         bbox->y_min = bbox->y_max = y;
+                        path_bbox->x_min = path_bbox->x_max = along;
+                        path_bbox->y_min = path_bbox->y_max = normal;
                         seen = true;
                     } else {
                         bbox->x_min = FFMIN(bbox->x_min, x);
                         bbox->x_max = FFMAX(bbox->x_max, x);
                         bbox->y_min = FFMIN(bbox->y_min, y);
                         bbox->y_max = FFMAX(bbox->y_max, y);
+                        path_bbox->x_min = FFMIN(path_bbox->x_min, along);
+                        path_bbox->x_max = FFMAX(path_bbox->x_max, along);
+                        path_bbox->y_min = FFMIN(path_bbox->y_min, normal);
+                        path_bbox->y_max = FFMAX(path_bbox->y_max, normal);
                     }
                 }
             }
@@ -11081,19 +11083,25 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     apply_baseline_shear(state);
 
-    bool curved_text = apply_curved_text(state);
+    ASS_DVector curved_attachment = {0};
+    ASS_DVector curved_tangent = {0};
+    ASS_DRect curved_bbox;
+    bool curved_text = apply_curved_text(state, &curved_attachment,
+                                         &curved_tangent);
     if (curved_text) {
-        /* The path is already local to the ASS positioning anchor. */
+        /* The path and completed text remain local to the event anchor. */
         if (rotate_baseline)
             origin_x = origin_y = 0.0;
-        compute_curved_string_bbox(text_info, &bbox);
+        compute_curved_string_bbox(text_info, &bbox, &curved_bbox,
+                                   curved_tangent);
         bbox_origin = bbox;
     }
 
     if (rotate_baseline) {
         apply_baseline_rotation(state, origin_x, origin_y);
         if (curved_text)
-            compute_curved_string_bbox(text_info, &bbox);
+            compute_curved_string_bbox(text_info, &bbox, &curved_bbox,
+                                       curved_tangent);
         else
             compute_string_bbox(text_info, &bbox);
     }
@@ -11258,7 +11266,17 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     double object_base_y = 0.0;
     double text_base_x = 0.0;
     double text_base_y = 0.0;
-    if (!curved_text) {
+    if (curved_text) {
+        /* Measure the final curved block in the tangent/normal frame at the
+         * selected path point. No visual line has anchoring authority here. */
+        int curved_alignment = effective_curved_alignment(state);
+        double along = 0.0, normal = 0.0;
+        get_base_point(&curved_bbox, curved_alignment, &along, &normal);
+        text_base_x = along * curved_tangent.x - normal * curved_tangent.y -
+                      curved_attachment.x;
+        text_base_y = along * curved_tangent.y + normal * curved_tangent.x -
+                      curved_attachment.y;
+    } else {
         get_base_point(bbox_for_position, state->alignment,
                        &object_base_x, &object_base_y);
         get_base_point(warp_text_anchor ? &warp_text_bbox : bbox_for_position,
@@ -11286,8 +11304,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         state->evt_type |= EVENT_POSITIONED;
         state->detect_collisions = 0;
     }
-    device_x = object_anchor.x - (curved_text ? 0.0 : text_base_x);
-    device_y = object_anchor.y - (curved_text ? 0.0 : text_base_y);
+    device_x = object_anchor.x - text_base_x;
+    device_y = object_anchor.y - text_base_y;
 
     update_glyph_jitter_offsets(state);
 
