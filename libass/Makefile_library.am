@@ -22,6 +22,8 @@ libass_libass_internal_la_SOURCES = \
     libass/ass_distort.h libass/ass_distort.c \
     libass/ass_perspective.h libass/ass_perspective.c \
     libass/ass_shaper.h libass/ass_shaper.c \
+    libass/ass_vertical.h libass/ass_vertical.c \
+    libass/ass_myanmar.h libass/ass_myanmar.c \
     libass/ass_outline.h libass/ass_outline.c \
     libass/ass_drawing.h libass/ass_drawing.c \
     libass/ass_bitmap.h libass/ass_bitmap.c libass/ass_blur.c \

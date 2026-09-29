@@ -314,13 +314,14 @@ typedef struct {
     int32_t furi_base_start;
     int32_t furi_base_end;
 
-    // during render_and_combine_glyphs: distance in subpixels from the karaoke origin.
-    // after render_and_combine_glyphs: screen coordinate in pixels.
-    // part of the glyph to the left of it is displayed in a different color.
+    // During composition: distance from the karaoke origin in subpixels.
+    // Afterwards: X (horizontal) or Y (native vertical) frontier in pixels.
     int32_t effect_timing;
 
     // karaoke origin: screen coordinate of leftmost post-transform control point x in subpixels
     int32_t leftmost_x;
+    int32_t karaoke_origin_y;
+    bool native_vertical;
 
     size_t bitmap_count, max_bitmap_count;
     BitmapRef *bitmaps;
@@ -397,6 +398,8 @@ typedef struct glyph_info {
     OutlineHashValue *outline;
     ASS_Transform transform;
     ASS_Rect bbox;
+    ASS_Rect fill_bbox;         // base outline before rnd/effect padding
+    bool vertical_substitute;   // use CJK OpenType vertical substitutions
     ASS_Vector pos;
     ASS_Vector offset;
     char linebreak;             // the first (leading) glyph of some line ?
@@ -429,6 +432,7 @@ typedef struct glyph_info {
     double frx, fry, frz;       // rotation
     double frs;                 // baseline rotation
     double curved_angle;        // local curved-baseline rotation, degrees
+    bool native_vertical;       // Mangetsu owns this glyph's vertical placement
     double z;                   // 3D translation along camera Z
     bool ortho;                 // orthographic projection toggle
     double fax, fay;            // text shearing
@@ -655,6 +659,8 @@ typedef struct {
     KaraokeSegment *karaoke_segments;
     int n_karaoke_segments;
     int max_karaoke_segments;
+    bool native_vertical;
+    ASS_DRect vertical_bbox;
 } TextInfo;
 
 typedef struct {
@@ -725,6 +731,7 @@ struct render_context {
     int alignment;              // object anchor; if zero, style value will be used
     int text_alignment;         // text horizontal alignment; vertical follows alignment
     int line_alignment;         // explicit \ta horizontal line alignment; 0 = legacy
+    int vertical_text_alignment; // explicit full \ta for native columns; 0 = inherit
     int warp_text_alignment;    // explicit \wtan visual warped-block anchor; 0 = legacy
     int justify;                // justify instructions
     double frx, fry, frz;
@@ -841,6 +848,11 @@ struct render_context {
     bool karaoke_clip_enabled;
     int karaoke_clip_x0;
     int karaoke_clip_x1;
+    bool native_vertical;
+    int vertical_profile;       // 0 mixed automatic, 1 CJK, 2 optical, 3 Myanmar
+    int vertical_direction;     // 0 automatic, 1 left, 2 right
+    double vertical_spacing;
+    double vertical_column_spacing;
     bool distort_enabled;
     ASS_DistortParams distort;
     bool perspective_enabled;

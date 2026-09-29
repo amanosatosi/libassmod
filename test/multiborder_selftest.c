@@ -32,6 +32,7 @@ typedef struct {
     int max_x, max_y;
     uint64_t coverage;
     uint64_t hash;
+    uint64_t visible_hash;
 } ShadowSig;
 
 typedef struct {
@@ -357,6 +358,7 @@ static bool render_shadow_case(ASS_Library *lib, ASS_Renderer *renderer,
 
     memset(sig, 0, sizeof(*sig));
     sig->hash = 1469598103934665603ULL;
+    sig->visible_hash = 1469598103934665603ULL;
     bool have_pixel = false;
     for (ASS_Image *cur = img; cur; cur = cur->next) {
         if (cur->type != IMAGE_TYPE_SHADOW)
@@ -375,6 +377,9 @@ static bool render_shadow_case(ASS_Library *lib, ASS_Renderer *renderer,
                     continue;
                 int px = cur->dst_x + x;
                 int py = cur->dst_y + y;
+                hash_i32(&sig->visible_hash, px);
+                hash_i32(&sig->visible_hash, py);
+                hash_u8(&sig->visible_hash, value);
                 if (!have_pixel) {
                     sig->min_x = sig->max_x = px;
                     sig->min_y = sig->max_y = py;
@@ -414,7 +419,7 @@ static bool same_shadow(const ShadowSig *a, const ShadowSig *b)
     return a->count == b->count && a->coverage == b->coverage &&
            a->min_x == b->min_x && a->min_y == b->min_y &&
            a->max_x == b->max_x && a->max_y == b->max_y &&
-           a->hash == b->hash;
+           a->visible_hash == b->visible_hash;
 }
 
 static bool expect_shadow_growth(ASS_Library *lib, ASS_Renderer *renderer,
@@ -456,13 +461,25 @@ static bool expect_shadow_match(ASS_Library *lib, ASS_Renderer *renderer,
                                 const char *single_text,
                                 const char *multi_text, const char *name)
 {
-    ShadowSig single, multi;
+    ShadowSig single = {0}, multi = {0};
     bool ok = render_shadow_case(lib, renderer, single_text, &single) &&
               render_shadow_case(lib, renderer, multi_text, &multi);
     if (ok)
         ok = same_shadow(&single, &multi);
-    if (!ok)
+    if (!ok) {
         fprintf(stderr, "%s shadow differs from cumulative single border\n", name);
+        fprintf(stderr,
+                "single: count=%d coverage=%llu bounds=(%d,%d)-(%d,%d) hash=%llu visible=%llu\n"
+                "multi:  count=%d coverage=%llu bounds=(%d,%d)-(%d,%d) hash=%llu visible=%llu\n",
+                single.count, (unsigned long long) single.coverage,
+                single.min_x, single.min_y, single.max_x, single.max_y,
+                (unsigned long long) single.hash,
+                (unsigned long long) single.visible_hash,
+                multi.count, (unsigned long long) multi.coverage,
+                multi.min_x, multi.min_y, multi.max_x, multi.max_y,
+                (unsigned long long) multi.hash,
+                (unsigned long long) multi.visible_hash);
+    }
     return ok;
 }
 

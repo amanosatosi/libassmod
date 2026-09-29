@@ -69,6 +69,8 @@ libass_src = files(
     'ass_render_rgba.c',
     'ass_render_api.c',
     'ass_shaper.c',
+    'ass_vertical.c',
+    'ass_myanmar.c',
     'ass_string.c',
     'ass_strtod.c',
     'ass_utils.c',

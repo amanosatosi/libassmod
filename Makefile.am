@@ -15,6 +15,9 @@ AM_CFLAGS = -std=gnu99 -D_GNU_SOURCE -D_XPLATFORM_SOURCE
 
 EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
              docs/curved-text.md docs/perspective-tag.md \
+             docs/native-vertical.md test/native_vertical_render_selftest.c \
+             test/native_vertical_layout_selftest.c \
+             test/myanmar_syllable_selftest.c \
              test/curved_text_selftest.c test/perspective_test.c \
              test/perspective_selftest.c \
              docs/blend-tag.md test/blend_selftest.c \

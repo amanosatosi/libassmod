@@ -183,6 +183,16 @@ mangetsu_motion_scale_unit = executable(
 # where the test links against libass internals; shared Windows exports only
 # the public libass ABI.
 if get_option('default_library') != 'shared'
+    native_vertical_layout_unit = executable(
+        'native_vertical_layout_unit',
+        files('native_vertical_layout_selftest.c'),
+        install: false,
+        include_directories: incs,
+        dependencies: deps,
+        link_with: libass_for_tools,
+    )
+    test('native-vertical-layout', native_vertical_layout_unit)
+
     rgba_ownership_unit = executable(
         'rgba_ownership_unit',
         files('rgba_ownership_selftest.c'),
@@ -243,6 +253,24 @@ test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)
 test('mangetsu-motion-scale', mangetsu_motion_scale_unit)
+
+myanmar_syllable_unit = executable(
+    'myanmar_syllable_unit',
+    files('myanmar_syllable_selftest.c', '../libass/ass_myanmar.c'),
+    install: false,
+    include_directories: incs,
+)
+test('myanmar-layout-syllables', myanmar_syllable_unit)
+
+native_vertical_render_unit = executable(
+    'native_vertical_render_unit',
+    files('native_vertical_render_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+test('native-vertical-render', native_vertical_render_unit, timeout: 120)
 test('vsfiltermod-blend', blend_unit)
 
 chat_unit = executable(
