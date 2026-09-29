@@ -11010,6 +11010,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
             free(ranges);
             return false;
         }
+        /* Later effect passes use the shaper's logical-to-visual map even
+         * though native vertical placement has already positioned units. */
+        if (!ass_shaper_reorder(state->shaper, text_info)) {
+            ass_shaper_cleanup(state->shaper, text_info);
+            free_render_context(state);
+            release_chat_scene(chat, chat_cached);
+            free(ranges);
+            return false;
+        }
         ass_process_karaoke_effects(state);
     } else {
         // Horizontal wrapping and placement retain their existing path.
