@@ -22,6 +22,8 @@ static void init(Fixture *f, const uint32_t *symbols, int length,
     f->state.native_vertical = true;
     f->state.vertical_profile = profile;
     f->state.vertical_direction = direction;
+    f->state.alignment = VALIGN_CENTER | HALIGN_CENTER;
+    f->state.text_alignment = f->state.alignment;
     f->state.object_scale = 1;
     f->state.screen_scale_x = 1;
     f->state.screen_scale_y = 1;
@@ -54,6 +56,26 @@ static double center_y(const GlyphInfo *g)
         d6_to_double(g->fill_bbox.y_min + g->fill_bbox.y_max) * 0.5;
 }
 
+static double ink_left(const GlyphInfo *g)
+{
+    return d6_to_double(g->pos.x + g->fill_bbox.x_min);
+}
+
+static double ink_right(const GlyphInfo *g)
+{
+    return d6_to_double(g->pos.x + g->fill_bbox.x_max);
+}
+
+static double ink_top(const GlyphInfo *g)
+{
+    return d6_to_double(g->pos.y + g->fill_bbox.y_min);
+}
+
+static double ink_bottom(const GlyphInfo *g)
+{
+    return d6_to_double(g->pos.y + g->fill_bbox.y_max);
+}
+
 int main(void)
 {
     bool ok = true;
@@ -63,7 +85,7 @@ int main(void)
     static const uint32_t cjk[] = {0x4e00, 0x3002, 0x53e3};
     init(f, cjk, 3, 0, 0);
     f->glyphs[1].fill_bbox = (ASS_Rect) {0, -8 * 64, 8 * 64, 0};
-    ok &= expect(f->state.vertical_profile == 1 &&
+    ok &= expect(f->state.vertical_profile == 0 &&
                  f->state.vertical_direction == 1, "CJK auto profile/direction");
     ok &= expect(ass_vertical_layout(&f->state, 300), "CJK layout allocation");
     ok &= expect(fabs(center_y(&f->glyphs[1]) - center_y(&f->glyphs[0]) - 40) < 1 &&
@@ -80,7 +102,7 @@ int main(void)
     f->glyphs[0].fill_bbox = (ASS_Rect) {0, -18 * 64, 5 * 64, 0};
     f->glyphs[1].fill_bbox = (ASS_Rect) {0, -28 * 64, 5 * 64, 0};
     f->glyphs[3].fill_bbox = (ASS_Rect) {0, -18 * 64, 22 * 64, 8 * 64};
-    ok &= expect(f->state.vertical_profile == 2 &&
+    ok &= expect(f->state.vertical_profile == 0 &&
                  f->state.vertical_direction == 2, "Latin auto profile/direction");
     ok &= expect(ass_vertical_layout(&f->state, 300), "Latin layout allocation");
     ok &= expect(d6_to_double(f->glyphs[0].cluster_advance.y) > 14 &&
@@ -92,7 +114,7 @@ int main(void)
     static const uint32_t myanmar[] =
         {0x1019, 0x103c, 0x1014, 0x103a, 0x1019, 0x102c};
     init(f, myanmar, 6, 0, 0);
-    ok &= expect(f->state.vertical_profile == 3 &&
+    ok &= expect(f->state.vertical_profile == 0 &&
                  f->state.vertical_direction == 2, "Myanmar auto profile/direction");
     ok &= expect(ass_vertical_layout(&f->state, 300), "Myanmar layout allocation");
     ok &= expect(f->glyphs[0].pos.y == f->glyphs[1].pos.y &&
@@ -138,17 +160,19 @@ int main(void)
 
     static const uint32_t mixed[] = {0x65e5, 'T', 'V', 0x30a2, 0x30cb, 0x30e1};
     init(f, mixed, 6, 0, 0);
-    ok &= expect(f->state.vertical_profile == 1 &&
+    ok &= expect(f->state.vertical_profile == 0 &&
                  f->state.vertical_direction == 1,
-                 "embedded Latin reversed CJK event profile");
+                 "mixed text reversed CJK-dominant column direction");
     ok &= expect(ass_vertical_layout(&f->state, 300) &&
                  f->glyphs[0].curved_angle == 0 &&
-                 f->glyphs[1].curved_angle == -90 &&
-                 f->glyphs[3].curved_angle == 0,
-                 "mixed CJK unit orientation is wrong");
+                 f->glyphs[1].curved_angle == 0 &&
+                 f->glyphs[3].curved_angle == 0 &&
+                 f->glyphs[0].cluster_advance.y >
+                     f->glyphs[1].cluster_advance.y,
+                 "mixed CJK/Latin unit policy is wrong");
     init(f, mixed, 6, 2, 0);
     ok &= expect(f->state.vertical_profile == 2 &&
-                 f->state.vertical_direction == 2,
+                 f->state.vertical_direction == 1,
                  "explicit vtype did not override strong CJK text");
 
     static const uint32_t jamo[] = {0x1100, 0x1161, 0x11ab, 0x4e00};
@@ -185,6 +209,96 @@ int main(void)
     ok &= expect(ass_vertical_layout(&f->state, 300) &&
                  f->glyphs[2].pos.y == base_y,
                  "paint effects changed base vertical positions");
+
+    static const uint32_t mixed_scripts[] = {
+        0x1019, 0x103c, 0x1014, 0x103a, 0x1019, 0x102c,
+        0x65e5, 0x672c, 'n', 'g', 'a', 'r', ' ', 'h', 'a', 'r',
+        0x1014, 0x102d, 0x102f, 0x1004, 0x103a, 0x1004, 0x1036,
+    };
+    init(f, mixed_scripts, 23, 0, 0);
+    ok &= expect(ass_vertical_layout(&f->state, 900) &&
+                 f->state.vertical_profile == 0 &&
+                 f->state.vertical_direction == 2 &&
+                 f->glyphs[0].pos.y == f->glyphs[3].pos.y &&
+                 f->glyphs[4].pos.y > f->glyphs[3].pos.y &&
+                 f->glyphs[6].cluster_advance.y == 40 * 64 &&
+                 f->glyphs[8].cluster_advance.y < 40 * 64 &&
+                 f->glyphs[16].pos.y == f->glyphs[19].pos.y &&
+                 f->glyphs[21].pos.y > f->glyphs[19].pos.y,
+                 "mixed scripts lost Myanmar groups or CJK/Latin policies");
+
+    static const uint32_t optical[] = {'i', 'g', 'I'};
+    init(f, optical, 3, 0, 0);
+    f->glyphs[0].fill_bbox = (ASS_Rect) {0, -6 * 64, 8 * 64, 20 * 64};
+    f->glyphs[1].fill_bbox = (ASS_Rect) {0, -35 * 64, 20 * 64, -25 * 64};
+    f->glyphs[2].fill_bbox = (ASS_Rect) {0, 10 * 64, 8 * 64, 30 * 64};
+    ok &= expect(ass_vertical_layout(&f->state, 300) &&
+                 ink_top(&f->glyphs[1]) - ink_bottom(&f->glyphs[0]) > 5.5 &&
+                 ink_top(&f->glyphs[2]) - ink_bottom(&f->glyphs[1]) > 5.5,
+                 "Latin units with different bearings overlapped");
+    static const uint32_t myanmar_optical[] = {0x1000, 0x1001};
+    init(f, myanmar_optical, 2, 0, 0);
+    f->glyphs[0].fill_bbox = (ASS_Rect) {0, -4 * 64, 25 * 64, 22 * 64};
+    f->glyphs[1].fill_bbox = (ASS_Rect) {0, -33 * 64, 45 * 64, -23 * 64};
+    ok &= expect(ass_vertical_layout(&f->state, 300) &&
+                 ink_top(&f->glyphs[1]) - ink_bottom(&f->glyphs[0]) > 7.1,
+                 "Myanmar units with different bearings overlapped");
+
+    static const uint32_t wide_columns[] = {0x1000, '\n', 0x1001};
+    init(f, wide_columns, 3, 0, 0);
+    f->glyphs[0].fill_bbox.x_max = 90 * 64;
+    f->glyphs[2].fill_bbox.x_max = 70 * 64;
+    f->state.vertical_column_spacing = 7;
+    ok &= expect(ass_vertical_layout(&f->state, 300) &&
+                 ink_left(&f->glyphs[2]) - ink_right(&f->glyphs[0]) > 6.9,
+                 "wide Myanmar units overlapped adjacent columns");
+
+    static const uint32_t uneven_columns[] =
+        {0x65e5, 0x672c, 0x8a9e, '\n', 0x6b21};
+    const int vertical_alignments[] = {
+        VALIGN_TOP | HALIGN_CENTER,
+        VALIGN_CENTER | HALIGN_CENTER,
+        VALIGN_SUB | HALIGN_CENTER,
+    };
+    for (int mode = 0; mode < 3; mode++) {
+        init(f, uneven_columns, 5, 0, 0);
+        f->state.vertical_text_alignment = vertical_alignments[mode];
+        ok &= expect(ass_vertical_layout(&f->state, 300) &&
+                     fabs(d6_to_double(f->glyphs[4].pos.y -
+                                      f->glyphs[0].pos.y) - 40 * mode) < 0.1,
+                     "ta vertical alignment of short column is wrong");
+    }
+
+    const int horizontal_alignments[] = {
+        VALIGN_CENTER | HALIGN_LEFT,
+        VALIGN_CENTER | HALIGN_CENTER,
+        VALIGN_CENTER | HALIGN_RIGHT,
+    };
+    ASS_DRect reference_bbox = {0};
+    for (int mode = 0; mode < 3; mode++) {
+        init(f, myanmar_optical, 2, 0, 0);
+        f->glyphs[0].fill_bbox.x_max = 35 * 64;
+        f->glyphs[1].fill_bbox.x_max = 70 * 64;
+        f->state.vertical_text_alignment = horizontal_alignments[mode];
+        ok &= expect(ass_vertical_layout(&f->state, 300),
+                     "ta horizontal unit alignment layout");
+        double first = mode == 0 ? ink_left(&f->glyphs[0]) :
+            mode == 1 ? (ink_left(&f->glyphs[0]) + ink_right(&f->glyphs[0])) * 0.5 :
+                        ink_right(&f->glyphs[0]);
+        double second = mode == 0 ? ink_left(&f->glyphs[1]) :
+            mode == 1 ? (ink_left(&f->glyphs[1]) + ink_right(&f->glyphs[1])) * 0.5 :
+                        ink_right(&f->glyphs[1]);
+        ok &= expect(fabs(first - second) < 0.1,
+                     "ta horizontal alignment of unequal Myanmar units is wrong");
+        if (!mode)
+            reference_bbox = f->state.text_info.vertical_bbox;
+        else
+            ok &= expect(fabs(reference_bbox.x_min -
+                              f->state.text_info.vertical_bbox.x_min) < 0.1 &&
+                         fabs(reference_bbox.x_max -
+                              f->state.text_info.vertical_bbox.x_max) < 0.1,
+                         "ta changed completed block bounds");
+    }
 
     free(f);
     return ok ? 0 : 1;

@@ -12,11 +12,11 @@ effects, and final transforms run after layout.
 | --- | --- |
 | `\vert0` | Horizontal ASS layout (default). |
 | `\vert1` | Mangetsu native vertical layout. |
-| `\vtype0` | Select one profile from the event's strong scripts (default). |
-| `\vtype1` | CJK full-em cell profile. |
-| `\vtype2` | Latin optical fill-bounds profile. |
-| `\vtype3` | Myanmar syllable profile. |
-| `\vdir0` | Use the profile's default column direction (default). |
+| `\vtype0` | Classify each layout unit by script (default). |
+| `\vtype1` | Override unit spacing/orientation with CJK cells. |
+| `\vtype2` | Override unit spacing with Latin optical policy. |
+| `\vtype3` | Override unit spacing with Myanmar optical policy. |
+| `\vdir0` | Choose one column direction from the event's strong scripts (default). |
 | `\vdir1` | New columns advance left. |
 | `\vdir2` | New columns advance right. |
 | `\vspN` | Add `N` script pixels between vertical units. |
@@ -27,16 +27,20 @@ Changes after text has begun and changes inside `\t` are ignored. `\r` style
 resets do not change the event's vertical layout selection. `\vert0` preserves
 ordinary ASS behavior and legacy `\fn@FontName` rendering.
 
-Automatic profile selection checks the whole event, with CJK strong scripts
-(Han, Hiragana, Katakana, Hangul) taking priority over Myanmar, then Latin.
-The selected profile and default direction remain fixed across font fallback
-and mixed text. An explicit `\vtype` always wins.
+Native vertical text has one shared flow. In `\vtype0`, each shaped cluster or
+Myanmar syllable selects its own CJK, Latin, or Myanmar layout policy. A CJK
+character does not disable Myanmar syllable grouping elsewhere in the event.
+Explicit `\vtype1`–`3` override the unit spacing policy, while shaped clusters
+and Myanmar combining sequences remain intact. Font fallback cannot change the
+classification. `\vdir0` independently chooses a single direction for the
+block: CJK-dominant text goes left, and other text goes right. `\vdir1` and
+`\vdir2` override that direction for the whole block.
 
-| Profile | Layout unit | Spacing | Default new column |
-| --- | --- | --- | --- |
-| CJK | Complete shaped cluster | Approximately full-em cell | Left |
-| Latin | Complete shaped cluster | Fill height plus gap, with a minimum | Right |
-| Myanmar | Linguistic/layout syllable containing complete shaped clusters | Fill height plus gap, with a minimum | Right |
+| Unit type | Layout unit | Spacing |
+| --- | --- | --- |
+| CJK | Complete shaped cluster | Approximately full-em cell |
+| Latin | Complete shaped cluster | Fill ink edges plus gap and minimum cell |
+| Myanmar | Grammatical syllable containing complete shaped clusters | Fill ink edges plus gap and minimum cell |
 
 CJK uses `vert`/`vkna` substitutions for eligible upright characters and
 punctuation. Han, Kana, Hangul, and vertical punctuation remain upright.
@@ -49,8 +53,11 @@ consonants are never individually rotated or advanced down the column.
 with the usable frame height and starts another column at a legal break when
 possible. `WrapStyle=2` suppresses automatic wrapping, as in horizontal ASS.
 Existing `\an1`–`\an9`, margins, `\pos`, and `\move` anchor the final block
-bbox in ordinary ASS coordinates. Progressive `\kf`/`\K` karaoke wipes from
-top to bottom in native vertical mode.
+bbox in ordinary ASS coordinates, including events without `\pos`. `\ta1`–`9`
+separately align shorter columns vertically and differently sized units
+horizontally inside each column. Without `\ta`, internal alignment inherits
+`\an`. Progressive `\kf`/`\K` karaoke wipes from top to bottom in native
+vertical mode.
 
 ## Examples
 
@@ -60,11 +67,13 @@ top to bottom in native vertical mode.
 {\an5\vert1}한국어세로쓰기
 {\an5\vert1\vtype2\vsp2}minimum
 {\an5\vert1\vtype3}မြန်မာနိုင်ငံ
+{\an5\ta5\vert1}မြန်မာ日本ngar harနိုင်ငံ\N次列
 ```
 
-In a CJK event such as `TVアニメ` or `日本2026年`, the embedded Latin characters
-do not switch the spacing profile or reverse the column direction. `\vdir2`
-overrides the CJK leftward default.
+In `TVアニメ` or `日本2026年`, Kana/Han use CJK cells while Latin letters and
+digits use optical units. The chosen column direction stays fixed for the
+whole event. Myanmar syllables remain grouped even when Japanese is present.
+`\vdir2` overrides a CJK block's leftward default.
 
 Proper native vertical furigana placement is outside this first version.
 Furigana markup in a native vertical event is rendered as literal text;

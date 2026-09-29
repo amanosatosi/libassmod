@@ -731,6 +731,7 @@ struct render_context {
     int alignment;              // object anchor; if zero, style value will be used
     int text_alignment;         // text horizontal alignment; vertical follows alignment
     int line_alignment;         // explicit \ta horizontal line alignment; 0 = legacy
+    int vertical_text_alignment; // explicit full \ta for native columns; 0 = inherit
     int warp_text_alignment;    // explicit \wtan visual warped-block anchor; 0 = legacy
     int justify;                // justify instructions
     double frx, fry, frz;
@@ -848,7 +849,7 @@ struct render_context {
     int karaoke_clip_x0;
     int karaoke_clip_x1;
     bool native_vertical;
-    int vertical_profile;       // 0 automatic, 1 CJK, 2 optical, 3 Myanmar
+    int vertical_profile;       // 0 mixed automatic, 1 CJK, 2 optical, 3 Myanmar
     int vertical_direction;     // 0 automatic, 1 left, 2 right
     double vertical_spacing;
     double vertical_column_spacing;

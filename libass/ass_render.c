@@ -3178,6 +3178,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     /* These alignment controls are override-level, unlike the event-wide
      * positioning tags. A style reset restores their legacy fallbacks. */
     state->line_alignment = 0;
+    state->vertical_text_alignment = 0;
     state->warp_text_alignment = 0;
     state->curved_text_align = 0;
 
@@ -3379,6 +3380,7 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->native_vertical = false;
     state->vertical_profile = 0;
     state->vertical_direction = 0;
+    state->vertical_text_alignment = 0;
     state->vertical_spacing = 0.0;
     state->vertical_column_spacing = 0.0;
     state->text_info.native_vertical = false;
@@ -11218,6 +11220,40 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
 
+    if (state->native_vertical && !curved_text) {
+        /* Native columns have a completed block bbox.  Use its ASS base
+         * point for ordinary margin placement as well as explicit \pos. */
+        double base_x = 0.0, base_y = 0.0;
+        get_base_point(bbox_for_position, state->alignment,
+                       &base_x, &base_y);
+        if (!(state->evt_type & (EVENT_POSITIONED | EVENT_HSCROLL))) {
+            int halign = state->alignment & 3;
+            double left = x2scr_left(state, MarginL);
+            double right = x2scr_right(state,
+                render_priv->track->PlayResX - MarginR);
+            double anchor_x = halign == HALIGN_LEFT ? left :
+                halign == HALIGN_RIGHT ? right : (left + right) * 0.5;
+            device_x = anchor_x - base_x;
+        }
+        if (!(state->evt_type & (EVENT_POSITIONED | EVENT_VSCROLL))) {
+            double anchor_y;
+            if (valign == VALIGN_TOP)
+                anchor_y = y2scr_top(state, MarginV);
+            else if (valign == VALIGN_CENTER)
+                anchor_y = y2scr(state,
+                    render_priv->track->PlayResY / 2.0);
+            else {
+                double line_pos = state->explicit ?
+                    0 : render_priv->settings.line_position;
+                double bottom = y2scr_sub(state,
+                    render_priv->track->PlayResY - MarginV);
+                double top = y2scr_top(state, 0);
+                anchor_y = bottom + (top - bottom) * line_pos / 100.0;
+            }
+            device_y = anchor_y - base_y;
+        }
+    }
+
     double object_base_x = 0.0;
     double object_base_y = 0.0;
     double text_base_x = 0.0;
@@ -11226,7 +11262,9 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         get_base_point(bbox_for_position, state->alignment,
                        &object_base_x, &object_base_y);
         get_base_point(warp_text_anchor ? &warp_text_bbox : bbox_for_position,
-                       warp_text_anchor ? warp_alignment : state->text_alignment,
+                       warp_text_anchor ? warp_alignment :
+                           state->native_vertical ? state->alignment :
+                           state->text_alignment,
                        &text_base_x, &text_base_y);
         object_anchor.x = device_x + object_base_x;
         object_anchor.y = device_y + object_base_y;

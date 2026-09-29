@@ -124,6 +124,10 @@ int main(void)
         "{\\vert1}မြန်မာ\\Nနိုင်ငံ", "{\\vert1}A B​C",
         "{\\vert1}A\\N\\NB", "{\\vert1}A<base|ruby>B",
         "{\\vert1}A{\\t(\\bord20)}BC",
+        "{\\an5\\vert1}မြန်မာ日本ngar harနိုင်ငံ",
+        "{\\an5\\ta5\\vert1\\vdir1}မြန်မာ日本ngar harနိုင်ငံ\\N次列",
+        "{\\an5\\ta5\\vert1\\vdir2}မြန်မာ日本ngar harနိုင်ငံ\\N次列",
+        "{\\vert1}မင့်မြန်မာ",
     };
     for (size_t i = 0; i < sizeof(smoke) / sizeof(smoke[0]); i++)
         ok &= expect(render(lib, renderer, smoke[i], 500, &a),
@@ -184,6 +188,33 @@ int main(void)
         "{\\fn@sans-serif}日本語", 0, &c), "legacy @font after native");
     ok &= expect(a.fill_hash == c.fill_hash,
                  "legacy @font changed after a native vertical event");
+
+    const int anchor_x[] = {20, 400, 780};
+    const int anchor_y[] = {480, 250, 20};
+    for (int an = 1; an <= 9; an++) {
+        char ordinary[128], positioned[160];
+        snprintf(ordinary, sizeof(ordinary),
+                 "{\\an%d\\vert1}A\\NB", an);
+        snprintf(positioned, sizeof(positioned),
+                 "{\\an%d\\pos(%d,%d)\\vert1}A\\NB", an,
+                 anchor_x[(an - 1) % 3], anchor_y[(an - 1) / 3]);
+        bool anchor_ok = render(lib, renderer, ordinary, 0, &a) &&
+                         render(lib, renderer, positioned, 0, &b) &&
+                         a.fill_hash == b.fill_hash;
+        if (!anchor_ok)
+            fprintf(stderr, "native vertical an%d margin/pos anchor mismatch\n", an);
+        ok &= anchor_ok;
+    }
+    ok &= expect(render(lib, renderer,
+        "{\\an9\\ta1\\vert1}ကမြန်\\Nနိုင်", 0, &a) &&
+        render(lib, renderer,
+        "{\\an9\\ta9\\vert1}ကမြန်\\Nနိုင်", 0, &b) &&
+        a.fill_hash != b.fill_hash,
+        "ta did not change internal unit alignment");
+    ok &= expect(render(lib, renderer,
+        "{\\an9\\ta1\\pos(780,20)\\vert1}ကမြန်\\Nနိုင်", 0, &c) &&
+        a.fill_hash == c.fill_hash,
+        "ta changed the an9 block anchor");
     ok &= expect(render(lib, renderer,
         "{\\an5\\pos(400,250)}horizontal after vertical", 0, &c),
                  "horizontal render after native vertical");

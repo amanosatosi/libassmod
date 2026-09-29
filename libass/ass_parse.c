@@ -4106,10 +4106,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (tag("ta")) {
             int32_t val;
-            if (!nested && !state->line_alignment && nargs == 1 &&
+            if (!nested && !state->vertical_text_alignment && nargs == 1 &&
                     parse_int32_arg_strict(*args, &val) &&
-                    val >= 1 && val <= 9)
+                    val >= 1 && val <= 9) {
                 state->line_alignment = numpad2align(val) & 3;
+                state->vertical_text_alignment = numpad2align(val);
+            }
         } else if (tag("a")) {
             int32_t val = argtoi32(*args);
             if ((state->parsed_tags & PARSED_A) == 0) {
