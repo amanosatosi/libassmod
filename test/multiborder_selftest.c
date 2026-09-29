@@ -456,13 +456,23 @@ static bool expect_shadow_match(ASS_Library *lib, ASS_Renderer *renderer,
                                 const char *single_text,
                                 const char *multi_text, const char *name)
 {
-    ShadowSig single, multi;
+    ShadowSig single = {0}, multi = {0};
     bool ok = render_shadow_case(lib, renderer, single_text, &single) &&
               render_shadow_case(lib, renderer, multi_text, &multi);
     if (ok)
         ok = same_shadow(&single, &multi);
-    if (!ok)
+    if (!ok) {
         fprintf(stderr, "%s shadow differs from cumulative single border\n", name);
+        fprintf(stderr,
+                "single: count=%d coverage=%llu bounds=(%d,%d)-(%d,%d) hash=%llu\n"
+                "multi:  count=%d coverage=%llu bounds=(%d,%d)-(%d,%d) hash=%llu\n",
+                single.count, (unsigned long long) single.coverage,
+                single.min_x, single.min_y, single.max_x, single.max_y,
+                (unsigned long long) single.hash,
+                multi.count, (unsigned long long) multi.coverage,
+                multi.min_x, multi.min_y, multi.max_x, multi.max_y,
+                (unsigned long long) multi.hash);
+    }
     return ok;
 }
 
