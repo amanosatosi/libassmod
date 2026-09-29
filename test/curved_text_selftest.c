@@ -495,7 +495,7 @@ int main(void)
                  center_y(&diagonal_bottom) + 15,
                  "diagonal whole-block anchor did not follow the path normal");
 
-    Sample first_ctan, reset_ctan, reset_default, ignored_ctan,
+    Sample first_ctan, reset_ctan, ignored_ctan,
            curved_anchor, diagonal_anchor;
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\ctan5\\ctan9\\ct(m 0 0 l 600 0)}ALIGN",
@@ -506,13 +506,10 @@ int main(void)
         "{\\an7\\pos(180,260)\\ctan5\\r\\ct(m 0 0 l 600 0)}ALIGN",
         0, &reset_ctan);
     ok &= render_sample(lib, renderer,
-        "{\\an5\\pos(180,260)\\ct(m 0 0 l 600 0)}ALIGN",
-        0, &reset_default);
-    ok &= expect(same_sample(&reset_ctan, &reset_default),
-                 "style reset did not restore inherited curved alignment");
-    ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\ct(m 0 0 l 600 0)}ALIGN",
         0, &default_align);
+    ok &= expect(same_sample(&reset_ctan, &default_align),
+                 "style reset did not restore inheritance from event an7");
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,260)\\t(0,1000,\\ctan5)\\ct(m 0 0 l 600 0)}ALIGN",
         500, &ignored_ctan);
