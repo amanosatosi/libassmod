@@ -39,6 +39,7 @@
 #include "ass_perspective.h"
 #include "ass_shaper.h"
 #include "ass_chat.h"
+#include "ass_vertical.h"
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
 size_t ass_composite_construct(void *key, void *value, void *priv);
@@ -991,6 +992,62 @@ static unsigned char *copy_bitmap_region(const Bitmap *bm, int x0, int y0,
     return buf;
 }
 
+/* Split a progressive native karaoke bitmap on the inline (Y) axis.  Both
+ * ordinary and inverse clipping pass their already-clipped rectangles here. */
+static ASS_Image **render_vertical_karaoke_rect(RenderContext *state,
+        CombinedBitmapInfo *combined, Bitmap *bm, int dst_x, int dst_y,
+        Rect rect, int brk, uint32_t color, uint32_t color2,
+        int layer1, int layer2, unsigned type, CompositeHashValue *source,
+        ASS_Image **tail, ASS_ImageRGBA ***rgba_tail,
+        uint8_t rgba_sub_x, uint8_t rgba_sub_y)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    if (rect.x1 <= rect.x0 || rect.y1 <= rect.y0)
+        return tail;
+    for (int half = 0; half < 2; half++) {
+        Rect part = rect;
+        if (!half)
+            part.y1 = FFMIN(part.y1, brk);
+        else
+            part.y0 = FFMAX(part.y0, brk);
+        if (part.y1 <= part.y0)
+            continue;
+        int w = part.x1 - part.x0, h = part.y1 - part.y0;
+        int stride = bm->stride;
+        unsigned char *buffer = bm->buffer +
+            (ptrdiff_t) part.y0 * bm->stride + part.x0;
+        if (!source) {
+            buffer = copy_bitmap_region(bm, part.x0, part.y0, w, h,
+                        1 << render_priv->engine.align_order, &stride);
+            if (!buffer)
+                continue;
+        }
+        int layer = half ? layer2 : layer1;
+        uint32_t paint = finalize_legacy_color(combined,
+                                               half ? color2 : color);
+        if (rgba_tail && combined && render_layer_uses_image(combined, layer))
+            paint = (paint & 0xffffff00u) | 0xffu;
+        ASS_Image *img = my_draw_bitmap(render_priv, buffer, w, h, stride,
+                          dst_x + part.x0, dst_y + part.y0, paint, source);
+        if (!img) {
+            if (!source)
+                ass_aligned_free_tagged(buffer,
+                    ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
+            continue;
+        }
+        img->type = type;
+        *tail = img;
+        tail = &img->next;
+        if (rgba_tail)
+            append_rgba_tail(rgba_tail,
+                render_bitmap_rgba(state, combined, buffer, w, h, stride,
+                    dst_x + part.x0, dst_y + part.y0, part.x0, part.y0,
+                    bm->logical_w, bm->logical_h, rgba_sub_x, rgba_sub_y,
+                    layer, type));
+    }
+    return tail;
+}
+
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -1020,7 +1077,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
 
     dst_x += bm->left;
     dst_y += bm->top;
-    brk -= dst_x;
+    brk -= combined && combined->native_vertical &&
+           combined->effect_type == EF_KARAOKE_KF ? dst_y : dst_x;
 
     // we still need to clip against screen boundaries
     zx = x2scr_pos_scaled(render_priv, 0);
@@ -1084,6 +1142,15 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
             r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
         }
+    }
+
+    if (combined && combined->native_vertical &&
+            combined->effect_type == EF_KARAOKE_KF) {
+        for (j = 0; j < i; j++)
+            tail = render_vertical_karaoke_rect(state, combined, bm,
+                dst_x, dst_y, r[j], brk, color, color2, layer1, layer2,
+                type, source, tail, rgba_tail, rgba_sub_x, rgba_sub_y);
+        return tail;
     }
 
         // draw the rectangles
@@ -1216,7 +1283,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
 
     dst_x += bm->left;
     dst_y += bm->top;
-    brk -= dst_x;
+    brk -= combined && combined->native_vertical &&
+           combined->effect_type == EF_KARAOKE_KF ? dst_y : dst_x;
 
     // clipping
     clip_x0 = FFMINMAX(state->clip_x0, 0, render_priv->width);
@@ -1255,6 +1323,14 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
 
     if ((b_y0 >= b_y1) || (b_x0 >= b_x1))
         return tail;
+
+    if (combined && combined->native_vertical &&
+            combined->effect_type == EF_KARAOKE_KF) {
+        Rect rect = {b_x0, b_y0, b_x1, b_y1};
+        return render_vertical_karaoke_rect(state, combined, bm,
+            dst_x, dst_y, rect, brk, color, color2, layer1, layer2,
+            type, source, tail, rgba_tail, rgba_sub_x, rgba_sub_y);
+    }
 
     if (brk > b_x0) {           // draw left part
         if (brk > b_x1)
@@ -2541,6 +2617,10 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 
 static void compute_string_bbox(TextInfo *text, ASS_DRect *bbox)
 {
+    if (text->native_vertical) {
+        *bbox = text->vertical_bbox;
+        return;
+    }
     if (text->length > 0) {
         bbox->x_min = +32000;
         bbox->x_max = -32000;
@@ -3296,6 +3376,12 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->karaoke_clip_enabled = false;
     state->karaoke_clip_x0 = 0;
     state->karaoke_clip_x1 = 0;
+    state->native_vertical = false;
+    state->vertical_profile = 0;
+    state->vertical_direction = 0;
+    state->vertical_spacing = 0.0;
+    state->vertical_column_spacing = 0.0;
+    state->text_info.native_vertical = false;
     state->fade_color = (FadeColorState) {0};
     state->distort_enabled = false;
     state->distort = (ASS_DistortParams) {
@@ -4253,7 +4339,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     }
     memcpy(m, m2, sizeof(m));
 
-    if (info->effect_type == EF_KARAOKE_KF || info->furi_base_karaoke)
+    if ((info->effect_type == EF_KARAOKE_KF && !info->native_vertical) ||
+            info->furi_base_karaoke)
         ass_outline_update_min_transformed_x(&outline->outline[0], m, leftmost_x);
 
     BitmapHashKey key = {0};
@@ -5110,6 +5197,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
             last->drawing_text.str ||
             !ass_string_equal(last->font->desc.family, info->font->desc.family) ||
             last->font->desc.vertical != info->font->desc.vertical ||
+            last->vertical_substitute != info->vertical_substitute ||
             last->font_size != info->font_size ||
             last->c[0] != info->c[0] ||
             last->c[1] != info->c[1] ||
@@ -5361,6 +5449,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->fry = state->fry;
     info->frs = state->frs;
     info->frz = state->frz + info->frs;
+    info->native_vertical = state->native_vertical;
     info->z = state->z;
     info->ortho = state->ortho;
     info->fax = state->fax;
@@ -6153,7 +6242,7 @@ static bool parse_event_fragment(RenderContext *state, char *p)
                 apply_column_cell_style(state);
                 p++;
             } else {
-                if (state->furi_enabled && *p == '<') {
+                if (state->furi_enabled && !state->native_vertical && *p == '<') {
                     FuriCandidate candidate;
                     FuriCandidateType type = parse_furi_candidate(p, &candidate);
                     if (type == FURI_CANDIDATE_GROUP) {
@@ -6285,6 +6374,7 @@ static void retrieve_glyphs_from_list(RenderContext *state,
             info->distort_enabled = root->distort_enabled;
             info->distort = root->distort;
             get_outline_glyph(state, info);
+            info->fill_bbox = info->bbox;
             if (info->has_rnd) {
                 // Pad metrics so bbox/collision/clipping include rnd jitter plus stroke/shadow
                 double rnd_pad_x = FFMIN(fabs(info->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
@@ -8267,7 +8357,8 @@ bool ass_curved_text_transform_cluster(GlyphInfo *root,
 static bool apply_curved_text(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
-    if (!state->curved_path_outline || text_info->n_lines < 1 ||
+    if (state->native_vertical || !state->curved_path_outline ||
+            text_info->n_lines < 1 ||
             text_info->n_furi_groups || state->column_event ||
             (state->evt_type & (EVENT_HSCROLL | EVENT_VSCROLL)))
         return false;
@@ -8704,6 +8795,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                     ass_apply_fade(&current_info->c[j], info->fade);
 
                 current_info->effect_type = info->effect_type;
+                current_info->native_vertical = info->native_vertical;
+                current_info->karaoke_origin_y = info->pos.y;
                 current_info->karaoke_reverse = info->karaoke_reverse;
                 current_info->effect_timing = info->effect_timing;
                 current_info->furi_base_karaoke = info->furi_base_karaoke;
@@ -9055,9 +9148,15 @@ static void render_and_combine_glyphs(RenderContext *state)
             continue;
         }
 
-        if (info->effect_type == EF_KARAOKE_KF)
-            info->effect_timing = lround(d6_to_double(info->leftmost_x) +
-                d6_to_double(info->effect_timing) * render_priv->par_scale_x);
+        if (info->effect_type == EF_KARAOKE_KF) {
+            if (info->native_vertical)
+                info->effect_timing = lround(
+                    d6_to_double(info->karaoke_origin_y) +
+                    d6_to_double(info->effect_timing));
+            else
+                info->effect_timing = lround(d6_to_double(info->leftmost_x) +
+                    d6_to_double(info->effect_timing) * render_priv->par_scale_x);
+        }
         for (int j = 0; j < info->bitmap_count; j++) {
             info->bitmaps[j].pos.x -= info->x;
             info->bitmaps[j].pos.y -= info->y;
@@ -10847,7 +10946,9 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         }
     }
 
+    ass_vertical_prepare(state);
     split_style_runs(state);
+    ass_vertical_mark_syllables(state);
 
     // Find shape runs and shape text
     ass_shaper_set_base_direction(state->shaper,
@@ -10898,18 +10999,28 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (chat)
         max_text_width = chat_metrics.max_text_width;
 
-    // wrap lines
-    wrap_lines_smart(state, max_text_width);
-
-    // depends on glyph x coordinates being monotonous within runs, so it should be done before reorder
-    ass_process_karaoke_effects(state);
-
-    reorder_text(state);
-    if (text_info->n_furi_groups)
-        resolve_furi_group_collisions(state);
-
-    align_lines(state, max_text_width);
-    apply_column_layout(state);
+    if (state->native_vertical) {
+        double max_height = y2scr_sub(state,
+            render_priv->track->PlayResY - MarginV) -
+            y2scr_top(state, MarginV);
+        if (!ass_vertical_layout(state, max_height)) {
+            ass_shaper_cleanup(state->shaper, text_info);
+            free_render_context(state);
+            release_chat_scene(chat, chat_cached);
+            free(ranges);
+            return false;
+        }
+        ass_process_karaoke_effects(state);
+    } else {
+        // Horizontal wrapping and placement retain their existing path.
+        wrap_lines_smart(state, max_text_width);
+        ass_process_karaoke_effects(state);
+        reorder_text(state);
+        if (text_info->n_furi_groups)
+            resolve_furi_group_collisions(state);
+        align_lines(state, max_text_width);
+        apply_column_layout(state);
+    }
 
     if (text_info->n_furi_groups)
         position_furi_groups(state);

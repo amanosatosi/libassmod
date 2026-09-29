@@ -175,7 +175,7 @@ static bool init_features(ASS_Shaper *shaper)
 static void set_run_features(ASS_Shaper *shaper, GlyphInfo *info)
 {
     // enable vertical substitutions for @font runs
-    if (info->font->desc.vertical)
+    if (info->font->desc.vertical || info->vertical_substitute)
         shaper->features[VERT].value = shaper->features[VKNA].value = 1;
     else
         shaper->features[VERT].value = shaper->features[VKNA].value = 0;

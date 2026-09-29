@@ -230,7 +230,7 @@ void ass_update_font(RenderContext *state)
     if (!desc.family.str)
         return;
     if (desc.family.len && desc.family.str[0] == '@') {
-        desc.vertical = 1;
+        desc.vertical = !state->native_vertical;
         desc.family.str++;
         desc.family.len--;
     } else {
@@ -2851,7 +2851,8 @@ static void set_karaoke_boundary(GlyphInfo *glyphs, int start, int end,
     for (int i = start; i < end; i++) {
         for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
             info->effect_type = effect_type;
-            info->effect_timing = x - info->pos.x;
+            info->effect_timing = x - (info->native_vertical ?
+                                          info->pos.y : info->pos.x);
             info->karaoke_reverse = reverse;
             if (reverse) {
                 uint32_t color = info->c[0];
@@ -2860,6 +2861,24 @@ static void set_karaoke_boundary(GlyphInfo *glyphs, int start, int end,
             }
         }
     }
+}
+
+static void vertical_karaoke_bounds(const GlyphInfo *start,
+                                    const GlyphInfo *end,
+                                    int32_t *top, int32_t *bottom)
+{
+    *top = INT_MAX;
+    *bottom = INT_MIN;
+    for (const GlyphInfo *root = start; root < end; root++) {
+        if (root->skip)
+            continue;
+        *top = FFMIN(*top, root->pos.y);
+        int64_t edge = (int64_t) root->pos.y + root->cluster_advance.y;
+        edge = FFMAX(INT_MIN, FFMIN(edge, INT_MAX));
+        *bottom = FFMAX(*bottom, (int32_t) edge);
+    }
+    if (*top == INT_MAX)
+        *top = *bottom = 0;
 }
 
 static inline bool arg_equals(struct arg arg, const char *value)
@@ -2888,9 +2907,14 @@ static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
             first++;
         while (first < last && last->skip)
             last--;
-        int32_t x_start = first->pos.x;
-        int32_t x_end = last->pos.x + last->advance.x;
-        if (first->karaoke_rtl) {
+        bool vertical = first->native_vertical;
+        int32_t x_start = vertical ? first->pos.y : first->pos.x;
+        int32_t x_end = vertical ? last->pos.y + last->cluster_advance.y :
+                                 last->pos.x + last->advance.x;
+        if (vertical)
+            vertical_karaoke_bounds(glyphs + start, glyphs + end,
+                                    &x_start, &x_end);
+        if (!vertical && first->karaoke_rtl) {
             x_start = INT_MAX;
             x_end = INT_MIN;
             for (int i = start; i < end; i++) {
@@ -2907,7 +2931,8 @@ static void apply_karaoke_segment(RenderContext *state, GlyphInfo *glyphs,
         double progress = (double) (now - segment->start) /
                           (segment->end - segment->start);
         double frz = fmod(glyphs[start].frz, 360);
-        reverse = first->karaoke_rtl ^ (frz > 90 && frz < 270);
+        reverse = !vertical &&
+                  (first->karaoke_rtl ^ (frz > 90 && frz < 270));
         if (reverse)
             progress = 1 - progress;
         x = x_start + ass_lrint((x_end - x_start) * progress);
@@ -3368,6 +3393,36 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             push_arg(args, &nargs, p + strlen("3sgrd"), name_end);
             apply_secondary_outline_gradient(state, name_end, q, args, nargs,
                                              pwr, nested);
+        } else if (tag("vert")) {
+            /* Layout controls are fixed before the first visible event unit.
+             * Recursive \t parsing and mid-event changes cannot reflow it. */
+            if (!nested && !state->text_info.length) {
+                int32_t value = nargs ? argtoi32(*args) : 0;
+                if (value == 0 || value == 1) {
+                    state->native_vertical = value != 0;
+                    ass_update_font(state);
+                }
+            }
+        } else if (tag("vtype")) {
+            if (!nested && !state->text_info.length) {
+                int32_t value = nargs ? argtoi32(*args) : 0;
+                if (value >= 0 && value <= 3)
+                    state->vertical_profile = value;
+            }
+        } else if (tag("vdir")) {
+            if (!nested && !state->text_info.length) {
+                int32_t value = nargs ? argtoi32(*args) : 0;
+                if (value >= 0 && value <= 2)
+                    state->vertical_direction = value;
+            }
+        } else if (tag("vcolsp")) {
+            if (!nested && !state->text_info.length)
+                state->vertical_column_spacing = nargs ?
+                    numeric_argtod(*args, 0.0, NUM_SIGNED) : 0.0;
+        } else if (tag("vsp")) {
+            if (!nested && !state->text_info.length)
+                state->vertical_spacing = nargs ?
+                    numeric_argtod(*args, 0.0, NUM_SIGNED) : 0.0;
         } else if (tag("ctan")) {
             if (!nested && !state->curved_text_align) {
                 int32_t value;
@@ -5041,11 +5096,16 @@ void ass_process_karaoke_effects(RenderContext *state)
             while (first_visible < last_visible && last_visible->skip)
                 --last_visible;
 
-            int x_start = first_visible->pos.x;
-            int x_end = last_visible->pos.x + last_visible->advance.x;
+            bool vertical = start->native_vertical;
+            int x_start = vertical ? first_visible->pos.y : first_visible->pos.x;
+            int x_end = vertical ?
+                last_visible->pos.y + last_visible->cluster_advance.y :
+                last_visible->pos.x + last_visible->advance.x;
+            if (vertical)
+                vertical_karaoke_bounds(start, end, &x_start, &x_end);
             double dt = (double) (tm_current - tm_start) / (tm_end - tm_start);
             double frz = fmod(start->frz, 360);
-            if (frz > 90 && frz < 270) {
+            if (!vertical && frz > 90 && frz < 270) {
                 // Fill from right to left
                 reverse = true;
                 dt = 1 - dt;
@@ -5060,7 +5120,8 @@ void ass_process_karaoke_effects(RenderContext *state)
 
         for (GlyphInfo *info = start; info < end; info++) {
             info->effect_type = effect_type;
-            info->effect_timing = x - info->pos.x;
+            info->effect_timing = x - (info->native_vertical ?
+                                          info->pos.y : info->pos.x);
             info->karaoke_reverse = reverse;
         }
     }

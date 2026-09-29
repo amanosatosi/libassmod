@@ -66,6 +66,10 @@ This project favors **working previews** over exact matching.
 
 All of the above are animatable via `\t`.
 
+Mangetsu native vertical layout uses `\vert1`, with `\vtype`, `\vdir`, `\vsp`,
+and `\vcolsp` controlling profile, columns, and spacing. These layout controls
+are not animated. See [native vertical text](docs/native-vertical.md).
+
 ---
 
 ### Projection & blur
