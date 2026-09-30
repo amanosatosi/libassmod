@@ -11,5 +11,5 @@ Style: Default,sans-serif,36,&H00FFFFFF,&H0000FFFF,&H00222222,&H60000000,0,0,0,0
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\an7\scrollsl5\scrollt300\scroll(2000,1,3000,1,4000|800,1,5000,1)}Message 1\NMessage 2\N{\fs48}Message 3\N{\fs36}Message 4\NMessage 5\NMessage 6\NMessage 7\NMessage 8\N{\scroll0\1c&H00FFFF&}Typing...
-Dialogue: 0,0:00:10.00,0:00:20.00,Default,,0,0,0,,{\pos(200,200)\clip(200,200,800,600)\scroll(2000,1,3000|700,1,4000,1)}Pixel viewport\N<世界|せかい>\NAutomatically wrapped rows also participate in the scrolling sequence.\N{\fs60}Large row\N{\fs36}Last row
+Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\an7\scrollsl5\scrollt300\scroll(ue,2000,+1,3000,+1,4000|700,-1,5500,+2)}Message 1\NMessage 2\N{\fs48}Message 3\N{\fs36}Message 4\NMessage 5\NMessage 6\NMessage 7\NMessage 8\N{\scroll0\1c&H00FFFF&}Typing...
+Dialogue: 0,0:00:10.00,0:00:20.00,Default,,0,0,0,,{\pos(200,200)\clip(200,200,800,600)\scroll(shita,2000,+1,3000|700,+1,4000,-1)}Pixel viewport\N<世界|せかい>\NAutomatically wrapped rows also participate in the scrolling sequence.\N{\fs60}Large row\N{\fs36}Last row

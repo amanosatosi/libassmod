@@ -1,4 +1,5 @@
 #include <math.h>
+#include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +19,70 @@ static void near(ASS_ScrollDefinition *def, int64_t time, double expected)
     CHECK(fabs(ass_scroll_evaluate(def, time) - expected) < 1e-9);
 }
 
+static void directions(void)
+{
+    const double rows[] = {10, 20, 40, 80, 160, 320};
+    const char *names[] = {"ue", "shita", "sita"};
+    char source[256];
+    for (size_t i = 0; i < 3; i++) {
+        double sign = i ? -1 : 1;
+        snprintf(source, sizeof(source), "%s,3000,6", names[i]);
+        ASS_ScrollDefinition *d = parse(source, 300);
+        CHECK(d && d->direction == (i ? ASS_SCROLL_DOWN : ASS_SCROLL_UP));
+        CHECK(!strcmp(d->source, source) && ass_scroll_map(d, rows, 6));
+        near(d, 2999, 0); near(d, 3000, 0); near(d, 3150, sign * 315);
+        near(d, 3300, sign * 630); near(d, 3301, sign * 630);
+        ass_scroll_free(d);
+
+        snprintf(source, sizeof(source), "%s,1000,+3,2000|200,-1,3000,+2", names[i]);
+        d = parse(source, 500);
+        CHECK(d && d->count == 3 && ass_scroll_map(d, rows, 6));
+        CHECK(d->cues[0].lines == 3 && d->cues[1].lines == -1);
+        CHECK(d->cues[0].duration == 500 && d->cues[1].duration == 200 &&
+              d->cues[2].duration == 500);
+        CHECK(d->cues[0].distance == sign * 70 &&
+              d->cues[1].distance == sign * -40 &&
+              d->cues[2].distance == sign * 120);
+        near(d, 1500, sign * 70); near(d, 2100, sign * 50);
+        near(d, 2200, sign * 30); near(d, 3250, sign * 90);
+        near(d, 3500, sign * 150);
+        ass_scroll_free(d);
+
+        snprintf(source, sizeof(source), "%s,3000|1000,+4,3500|500,-1", names[i]);
+        d = parse(source, 300);
+        CHECK(d && ass_scroll_map(d, rows, 6));
+        near(d, 3500, sign * 75);
+        near(d, 3750, sign * (150 * .75 - 80 * .5));
+        near(d, 4000, sign * 70);
+        ass_scroll_free(d);
+
+        snprintf(source, sizeof(source), "%s,1000,-2147483648,2000,+2147483647,"
+                 "3000,-2147483648,4000,+0,5000,-0,6000,+2", names[i]);
+        d = parse(source, 0);
+        CHECK(d && ass_scroll_map(d, rows, 6));
+        near(d, 1000, 0); near(d, 2000, sign * 630);
+        near(d, 3000, 0); near(d, 5000, 0); near(d, 6000, sign * 30);
+        double *cached = d->advances;
+        CHECK(ass_scroll_map(d, rows, 6) && cached == d->advances);
+        const double bad[] = {DBL_MAX, DBL_MAX};
+        CHECK(!ass_scroll_map(d, bad, 2) && d->advances == cached);
+        near(d, 6000, sign * 30); // failed mapping leaves valid state intact
+        CHECK(ass_scroll_map(d, NULL, 0)); near(d, 6000, 0);
+        ass_scroll_free(d);
+    }
+    ASS_ScrollDefinition *d = parse(" shita , 1000 | 0 , +2 , 2000 , -1 ", 300);
+    CHECK(d && ass_scroll_map(d, rows, 6));
+    near(d, 1000, -30); near(d, 2150, -20);
+    ass_scroll_free(d);
+    d = parse("ue,2000,+3,1000|0,-1,5000,+2", 300);
+    CHECK(d && ass_scroll_map(d, rows, 6));
+    near(d, 1000, -40); near(d, 2300, 30); near(d, 5300, 150);
+    ass_scroll_free(d);
+}
+
 int main(void)
 {
+    directions();
     double rows[64];
     for (int i = 0; i < 64; i++) rows[i] = 10;
     ASS_ScrollDefinition *def = parse("3000,6", 300);
@@ -77,9 +140,14 @@ int main(void)
     ass_scroll_free(def);
 
     const char *invalid[] = {"", "3000", "3000,6,5000", "abc,6",
-        "3000,abc", "3000|-5,6", "3000|abc,6", "3000,-3",
-        "3000|1|2,3", "3000,", ",3", "3000,0", "3000,2,", "2147483648,1",
-        "1,2147483648", "1|2147483648,1", "1.5,1", "1,1.5"};
+        "3000,abc", "3000|-5,6", "3000|abc,6",
+        "3000|1|2,3", "3000,", ",3", "3000,2,", "2147483648,1",
+        "1,2147483648", "1|2147483648,1", "1.5,1", "1,1.5",
+        "ue", "shita", "sita", "ue,", "nope,3000,1", "UE,3000,1",
+        "ue,3000", "ue,3000,1,5000", "ue,abc,1", "ue,3000,abc",
+        "ue,3000|abc,1", "ue,3000|-5,1", "shita,-1,2", "sita,1,+",
+        "ue,1,-", "ue,1,--1", "ue,1,+-1", "ue,1,-2147483649",
+        "shita,1,+2147483648", "ue,1,+ 1", "ue,1,-1.5"};
     for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); i++)
         CHECK(!parse(invalid[i], 300));
     int32_t value;
@@ -96,6 +164,16 @@ int main(void)
     def = parse(long_list, 300);
     CHECK(def && def->count == 1024 && ass_scroll_map(def, rows, 64));
     near(def, 2000, 640);
+    ass_scroll_free(def);
+    /* Signed oscillation must stay O(rows + cues) when mapping long lists. */
+    used = snprintf(long_list, 20000, "sita,");
+    for (int i = 0; i < 1024; i++)
+        used += snprintf(long_list + used, 20000 - used, "%s%d|500,%s",
+                         i ? "," : "", i, i % 2 ? "-1" : "+1");
+    def = parse(long_list, 300);
+    CHECK(def && def->count == 1024 && ass_scroll_map(def, rows, 64));
+    near(def, 2000, 0);
+    CHECK(def->cues[1022].distance == -10 && def->cues[1023].distance == 10);
     ass_scroll_free(def);
     free(long_list);
     return 0;

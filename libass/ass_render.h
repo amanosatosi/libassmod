@@ -317,13 +317,17 @@ typedef struct {
     int32_t furi_base_end;
 
     // During composition: distance from the karaoke origin in subpixels.
-    // Afterwards: X (horizontal) or Y (native vertical) frontier in pixels.
+    // Afterwards: X (horizontal) or Y (native vertical) frontier in pixels;
+    // curved karaoke retains the local inline distance and uses karaoke_wipe.
     int32_t effect_timing;
 
     // karaoke origin: screen coordinate of leftmost post-transform control point x in subpixels
     int32_t leftmost_x;
     int32_t karaoke_origin_y;
     bool native_vertical;
+    bool curved_karaoke;
+    // Screen-space half-plane: primary paint where ax + by + c < 0.
+    double karaoke_wipe[3];
 
     size_t bitmap_count, max_bitmap_count;
     BitmapRef *bitmaps;
@@ -422,6 +426,7 @@ typedef struct glyph_info {
     Effect effect_type;
     bool karaoke_reverse;
     int32_t effect_timing;          // time duration of current karaoke word
+    int32_t curved_effect_timing;   // shaped inline frontier, before path placement
     // after ass_process_karaoke_effects: distance in subpixels from the karaoke origin.
     // part of the glyph to the left of it is displayed in a different color.
     int32_t effect_skip_timing;     // delay after the end of last karaoke word
@@ -435,6 +440,7 @@ typedef struct glyph_info {
     double frx, fry, frz;       // rotation
     double frs;                 // baseline rotation
     double curved_angle;        // local curved-baseline rotation, degrees
+    bool curved_karaoke;        // successful path placement of progressive karaoke
     bool native_vertical;       // Mangetsu owns this glyph's vertical placement
     double z;                   // 3D translation along camera Z
     bool ortho;                 // orthographic projection toggle

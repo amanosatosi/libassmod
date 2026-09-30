@@ -201,6 +201,14 @@ placed on the path; `\ct` itself never bends or raster-warps glyph interiors.
 
 When `\ct` is absent, no curved-path code changes glyph positions or matrices.
 
+Progressive `\kf` and `\K` karaoke use cumulative shaped advances along the
+path. Each glyph's inline wipe is transformed with its cluster and the usual
+event projection, so it follows the local tangent even on vertical or returning
+paths. `\ctan`, `\ta`, complete-block alignment, `\ctx` and `\cty` move text
+and paint together without changing syllable timing. The same wipe applies to
+secondary outline paint and RGBA output. Only glyphs intersecting the frontier
+need temporary masks; raster and composite caches do not depend on progress.
+
 ## Invalid input and current limits
 
 - An invalid or unusable path falls back to ordinary flat rendering. No path
@@ -211,10 +219,9 @@ When `\ct` is absent, no curved-path code changes glyph positions or matrices.
 - Column layout, furigana layout, and scroll effects still fall back to
   normal rendering for the whole event; text is never deleted. Native
   furigana has the same fallback for one-line and multiline events.
-- Existing karaoke timing and shaping data are preserved. Karaoke never
-  causes this feature to split a HarfBuzz cluster, but advanced sweep/reveal
-  paint remains based on the existing renderer's karaoke model and is not a
-  new curved-distance karaoke engine.
+- Existing karaoke timing and shaping data are preserved. Karaoke paint never
+  splits or independently places members of a HarfBuzz cluster. Furigana and
+  other layouts listed above retain their ordinary karaoke fallback.
 - BorderStyle 4/5 boxes and decorations retain their existing event-level
   geometry model; this version does not construct a separate curved box or a
   continuously bent underline.

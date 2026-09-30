@@ -85,8 +85,9 @@ static void select_scroll_clip(RenderContext *state, int id)
     if (!ctx->show_lines || !ctx->rows)
         return;
     state->scroll_clip_active = true;
-    /* Clamp before conversion; clipping uses frame pixels, layout and motion
-     * retain fractional precision until the usual rasterizer quantization. */
+    /* The viewport stays at normal layout coordinates for either direction:
+     * positive displacement exits its top, negative exits its bottom. Clamp
+     * before conversion; motion retains fractional rasterizer precision. */
     state->scroll_clip_y0 = (int) floor(FFMINMAX(ctx->top, 0, state->renderer->height));
     state->scroll_clip_y1 = (int) ceil(FFMINMAX(ctx->bottom, 0, state->renderer->height));
 }
@@ -1133,6 +1134,86 @@ static ASS_Image **render_vertical_karaoke_rect(RenderContext *state,
     return tail;
 }
 
+/* Mask only the glyphs intersected by a curved frontier. Completed/waiting
+ * glyphs continue to reference cached bitmaps. Row spans avoid per-pixel path
+ * sampling and keep the two paint masks exactly complementary. */
+static ASS_Image **render_curved_karaoke_rect(RenderContext *state,
+        CombinedBitmapInfo *combined, Bitmap *bm, int dst_x, int dst_y,
+        Rect rect, uint32_t color, uint32_t color2, int layer1, int layer2,
+        unsigned type, CompositeHashValue *source, ASS_Image **tail,
+        ASS_ImageRGBA ***rgba_tail, uint8_t rgba_sub_x, uint8_t rgba_sub_y)
+{
+    if (rect.x1 <= rect.x0 || rect.y1 <= rect.y0)
+        return tail;
+    ASS_Renderer *render_priv = state->renderer;
+    const double *wipe = combined->karaoke_wipe;
+    double x0 = dst_x + rect.x0 + 0.5, x1 = dst_x + rect.x1 - 0.5;
+    double y0 = dst_y + rect.y0 + 0.5, y1 = dst_y + rect.y1 - 0.5;
+    double low = fmin(wipe[0] * x0, wipe[0] * x1) +
+                 fmin(wipe[1] * y0, wipe[1] * y1) + wipe[2];
+    double high = fmax(wipe[0] * x0, wipe[0] * x1) +
+                  fmax(wipe[1] * y0, wipe[1] * y1) + wipe[2];
+    int w = rect.x1 - rect.x0, h = rect.y1 - rect.y0;
+    for (int half = 0; half < 2; half++) {
+        if (half ? high < 0 : low >= 0)
+            continue;
+        bool masked = half ? low < 0 : high >= 0;
+        int stride = bm->stride;
+        unsigned char *buffer = bm->buffer +
+            (ptrdiff_t) rect.y0 * bm->stride + rect.x0;
+        CompositeHashValue *owner = source;
+        if (masked || !source) {
+            buffer = copy_bitmap_region(bm, rect.x0, rect.y0, w, h,
+                        1 << render_priv->engine.align_order, &stride);
+            if (!buffer)
+                continue;
+            owner = NULL;
+        }
+        if (masked) {
+            for (int y = 0; y < h; y++) {
+                double row = wipe[1] * (y0 + y) + wipe[2];
+                int cut;
+                bool primary_left = wipe[0] >= 0;
+                if (wipe[0] == 0) {
+                    cut = row < 0 ? w : 0;
+                } else {
+                    double edge = -row / wipe[0] - x0;
+                    /* Strict primary half-plane; equality belongs to waiting. */
+                    double split = primary_left ? ceil(edge) : floor(edge) + 1;
+                    cut = (int) FFMINMAX(split, 0, w);
+                }
+                bool keep_left = primary_left != (bool) half;
+                unsigned char *line = buffer + (ptrdiff_t) y * stride;
+                if (keep_left)
+                    memset(line + cut, 0, w - cut);
+                else
+                    memset(line, 0, cut);
+            }
+        }
+        int layer = half ? layer2 : layer1;
+        uint32_t paint = finalize_legacy_color(combined, half ? color2 : color);
+        if (rgba_tail && render_layer_uses_image(combined, layer))
+            paint = (paint & 0xffffff00u) | 0xffu;
+        ASS_Image *img = my_draw_bitmap(render_priv, buffer, w, h, stride,
+                          dst_x + rect.x0, dst_y + rect.y0, paint, owner);
+        if (!img) {
+            if (!owner)
+                ass_aligned_free_tagged(buffer, ASS_ALIGNED_ALLOC_LEGACY_IMAGE, bm);
+            continue;
+        }
+        img->type = type;
+        *tail = img;
+        tail = &img->next;
+        if (rgba_tail)
+            append_rgba_tail(rgba_tail,
+                render_bitmap_rgba(state, combined, buffer, w, h, stride,
+                    dst_x + rect.x0, dst_y + rect.y0, rect.x0, rect.y0,
+                    bm->logical_w, bm->logical_h, rgba_sub_x, rgba_sub_y,
+                    layer, type));
+    }
+    return tail;
+}
+
 /*
  * \brief Convert bitmap glyphs into ASS_Image list with inverse clipping
  *
@@ -1231,6 +1312,14 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
             r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
         }
+    }
+
+    if (combined && combined->curved_karaoke && layer1 != layer2) {
+        for (j = 0; j < i; j++)
+            tail = render_curved_karaoke_rect(state, combined, bm,
+                dst_x, dst_y, r[j], color, color2, layer1, layer2,
+                type, source, tail, rgba_tail, rgba_sub_x, rgba_sub_y);
+        return tail;
     }
 
     if (combined && combined->native_vertical &&
@@ -1416,6 +1505,13 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
 
     if ((b_y0 >= b_y1) || (b_x0 >= b_x1))
         return tail;
+
+    if (combined && combined->curved_karaoke && layer1 != layer2) {
+        Rect rect = {b_x0, b_y0, b_x1, b_y1};
+        return render_curved_karaoke_rect(state, combined, bm,
+            dst_x, dst_y, rect, color, color2, layer1, layer2,
+            type, source, tail, rgba_tail, rgba_sub_x, rgba_sub_y);
+    }
 
     if (combined && combined->native_vertical &&
             combined->effect_type == EF_KARAOKE_KF) {
@@ -4449,8 +4545,8 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     }
     memcpy(m, m2, sizeof(m));
 
-    if ((info->effect_type == EF_KARAOKE_KF && !info->native_vertical) ||
-            info->furi_base_karaoke)
+    if (leftmost_x && ((info->effect_type == EF_KARAOKE_KF &&
+                       !info->native_vertical) || info->furi_base_karaoke))
         ass_outline_update_min_transformed_x(&outline->outline[0], m, leftmost_x);
 
     BitmapHashKey key = {0};
@@ -8521,6 +8617,8 @@ static bool transform_curved_cluster(GlyphInfo *root,
                         d6_to_double(root->offset.y) -
                         d6_to_double(root->vshift);
     double ass_angle = -atan2(s, c) * 180.0 / ASS_PI;
+    bool karaoke = root->effect_type == EF_KARAOKE_KF;
+    double frontier = root->curved_effect_timing;
 
     for (GlyphInfo *info = root; info; info = info->next) {
         double local_x = d6_to_double(info->pos.x) - baseline_x;
@@ -8532,9 +8630,24 @@ static bool transform_curved_cluster(GlyphInfo *root,
         double ax = advance_x * c - advance_y * s;
         double ay = advance_x * s + advance_y * c;
         if (!curved_d6_value(x) || !curved_d6_value(y) ||
-                !curved_d6_value(ax) || !curved_d6_value(ay))
+                !curved_d6_value(ax) || !curved_d6_value(ay) ||
+                (karaoke && !curved_d6_value(frontier / 64 - local_x)))
             return false;
         if (apply) {
+            if (karaoke) {
+                /* The timing pass measured from the shaped cluster pen.
+                 * Include each member's shaping offset in the same frame. */
+                info->curved_effect_timing = ass_lrint(frontier - local_x * 64);
+                info->effect_type = EF_KARAOKE_KF;
+                info->effect_timing = info->curved_effect_timing;
+                info->curved_karaoke = true;
+                if (info == root && info->karaoke_reverse) {
+                    uint32_t color = info->c[0];
+                    info->c[0] = info->c[1];
+                    info->c[1] = color;
+                }
+                info->karaoke_reverse = false;
+            }
             info->pos.x = double_to_d6(x);
             info->pos.y = double_to_d6(y);
             info->curved_angle = ass_angle;
@@ -8909,6 +9022,42 @@ static void position_glyphs_for_render(RenderContext *state,
     }
 }
 
+/* Transform the local inline frontier with the same matrix as the glyph.
+ * A projective transform maps a straight wipe to a screen-space half-plane;
+ * this also covers event rotation, shear, PAR and ordinary perspective. */
+static bool curved_karaoke_wipe(RenderContext *state, GlyphInfo *info,
+                                double wipe[3])
+{
+    if (!info->curved_karaoke)
+        return false;
+    if (info->effect_timing < -50000000 || info->effect_timing > 50000000) {
+        wipe[0] = wipe[1] = 0;
+        wipe[2] = info->effect_timing < 0 ? 1 : -1;
+        return true;
+    }
+    double m[3][3], p[3];
+    calc_transform_matrix(state, info, m);
+    for (int i = 0; i < 3; i++)
+        p[i] = m[i][0] * info->effect_timing + m[i][2];
+    double a = m[1][1] * p[2] - m[2][1] * p[1];
+    double b = m[2][1] * p[0] - m[0][1] * p[2];
+    double c = m[0][1] * p[1] - m[1][1] * p[0];
+    double length = hypot(a, b);
+    double w = p[2] - 64 * m[2][0];
+    if (!(length > 0) || !isfinite(length) || !isfinite(c) ||
+            !isfinite(w) || w == 0)
+        return false;
+    double side = -(a * m[0][0] + b * m[1][0] + c * m[2][0]) / w;
+    if (!isfinite(side) || side == 0)
+        return false;
+    if (side > 0)
+        length = -length;
+    wipe[0] = a / length;
+    wipe[1] = b / length;
+    wipe[2] = c / (64 * length);
+    return true;
+}
+
 static void render_glyph_list_to_bitmaps(RenderContext *state,
                                          GlyphInfo *glyphs, int length,
                                          unsigned *nb_bitmaps,
@@ -8932,6 +9081,10 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             continue;
 
         for (; info; info = info->next) {
+            /* Curved progressive glyphs have independent local wipe frames.
+             * Raster and composite caches remain independent of progress. */
+            if (info->curved_karaoke)
+                new_run = true;
             /* Different shaped glyphs can carry different cycle colors even
              * within one HarfBuzz cluster. Never union their paint masks. */
             if (info->pattern.has_cycle)
@@ -9003,6 +9156,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info->karaoke_origin_y = info->pos.y;
                 current_info->karaoke_reverse = info->karaoke_reverse;
                 current_info->effect_timing = info->effect_timing;
+                current_info->curved_karaoke = curved_karaoke_wipe(
+                    state, info, current_info->karaoke_wipe);
                 current_info->furi_base_karaoke = info->furi_base_karaoke;
                 current_info->furi_base_reverse = info->furi_base_reverse;
                 current_info->furi_group = info->furi_group;
@@ -9057,7 +9212,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info->draw_sub_x = (uint8_t) ((info->pos.x >> 3) & 7);
                 current_info->draw_sub_y = (uint8_t) ((info->pos.y >> 3) & 7);
             }
-            get_bitmap_glyph(state, info, &current_info->leftmost_x, &pos, &pos_o,
+            get_bitmap_glyph(state, info, current_info->curved_karaoke ? NULL :
+                             &current_info->leftmost_x, &pos, &pos_o,
                              &offset, !current_info->bitmap_count, flags);
 
             if (info->has_distort_bitmap || info->distorted_outline)
@@ -9190,7 +9346,9 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     ASS_Vector pos, pos_o;
     ASS_DVector offset;
     int32_t leftmost_x = OUTLINE_MAX;
-    get_bitmap_glyph(state, &deco, &leftmost_x, &pos, &pos_o,
+    double wipe[3];
+    bool curved_karaoke = curved_karaoke_wipe(state, &deco, wipe);
+    get_bitmap_glyph(state, &deco, curved_karaoke ? NULL : &leftmost_x, &pos, &pos_o,
                      &offset, true, flags);
 
     bool has_bitmap = deco.bm || deco.bm_o;
@@ -9229,6 +9387,9 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     current_info->effect_type = deco.effect_type;
     current_info->karaoke_reverse = deco.karaoke_reverse;
     current_info->effect_timing = deco.effect_timing;
+    current_info->curved_karaoke = curved_karaoke;
+    if (curved_karaoke)
+        memcpy(current_info->karaoke_wipe, wipe, sizeof(wipe));
     current_info->furi_base_karaoke = deco.furi_base_karaoke;
     current_info->furi_base_reverse = deco.furi_base_reverse;
     current_info->furi_group = deco.furi_group;
@@ -9353,7 +9514,7 @@ static void render_and_combine_glyphs(RenderContext *state)
             continue;
         }
 
-        if (info->effect_type == EF_KARAOKE_KF) {
+        if (info->effect_type == EF_KARAOKE_KF && !info->curved_karaoke) {
             if (info->native_vertical)
                 info->effect_timing = lround(
                     d6_to_double(info->karaoke_origin_y) +

@@ -94,8 +94,9 @@ For `\ortho` semantics and examples, see:
 
 ### Transform & movement
 
-- `\scroll(time,lines,...)`, `\scrollt<N>`, `\scrollsl<N>`, `\scroll0`
-  Native animated upward scrolling through measured wrapped rows, with arbitrary
+- `\scroll(direction,time,signed_lines,...)`, `\scrollt<N>`, `\scrollsl<N>`, `\scroll0`
+  Native animated scrolling through measured wrapped rows: `ue` moves upward,
+  `shita`/`sita` downward, and signed cues allow reversals. Supports arbitrary
   cue lists, per-cue durations, logical viewports, and fixed content in one event.
   See [native multiline scrolling](docs/native-scroll.md).
 

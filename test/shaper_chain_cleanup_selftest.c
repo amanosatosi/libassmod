@@ -75,6 +75,11 @@ int main(void)
     root.next->pos = (ASS_Vector) {832, 1024};    // (13, 16)
     root.next->next->pos = (ASS_Vector) {512, 960}; // (8, 15)
     root.next->next->next->pos = (ASS_Vector) {704, 896}; // (11, 14)
+    root.effect_type = EF_KARAOKE_KF;
+    root.curved_effect_timing = 128;
+    root.karaoke_reverse = true;
+    root.c[0] = 0x0000ff00u;
+    root.c[1] = 0xff000000u;
     if (!ass_curved_text_transform_cluster(&root,
             (ASS_DVector) {100, 200}, (ASS_DVector) {0, 1})) {
         fprintf(stderr, "curved cluster transform rejected finite positions\n");
@@ -84,14 +89,22 @@ int main(void)
     const ASS_Vector expected[] = {
         {6400, 12800}, {6656, 12992}, {6720, 12672}, {6784, 12864},
     };
+    const int32_t frontiers[] = {128, -64, 256, 64};
     GlyphInfo *glyph = &root;
     for (int i = 0; i < 4; i++, glyph = glyph->next) {
         if (!glyph || glyph->pos.x != expected[i].x ||
                 glyph->pos.y != expected[i].y ||
-                fabs(glyph->curved_angle + 90.0) > 1e-9) {
+                fabs(glyph->curved_angle + 90.0) > 1e-9 ||
+                glyph->effect_type != EF_KARAOKE_KF ||
+                !glyph->curved_karaoke || glyph->karaoke_reverse ||
+                glyph->effect_timing != frontiers[i]) {
             fprintf(stderr, "curved layout detached a shaped cluster member\n");
             return 1;
         }
+    }
+    if (root.c[0] != 0xff000000u || root.c[1] != 0x0000ff00u) {
+        fprintf(stderr, "curved karaoke retained legacy screen-X paint reversal\n");
+        return 1;
     }
 
     TextInfo text_info = {

@@ -171,6 +171,163 @@ static bool expect(bool condition, const char *label)
     return condition;
 }
 
+typedef struct {
+    uint16_t *primary, *secondary;
+    uint64_t active, waiting;
+    long double active_x, active_y, waiting_x, waiting_y;
+} KaraokeFrame;
+
+static void free_karaoke_frame(KaraokeFrame *frame)
+{
+    free(frame->primary);
+    *frame = (KaraokeFrame) {0};
+}
+
+/* Compare paint coverage, independent of how the renderer tiles ASS_Image.
+ * Fixtures use opaque red primary and blue secondary, without border/shadow. */
+static bool karaoke_frame(ASS_Library *lib, ASS_Renderer *renderer,
+                          const char *text, long long now, KaraokeFrame *frame,
+                          bool rgba)
+{
+    *frame = (KaraokeFrame) {0};
+    ASS_Track *track = read_track(lib, text);
+    if (!track)
+        return false;
+    frame->primary = calloc(2 * WIDTH * HEIGHT, sizeof(*frame->primary));
+    if (!frame->primary) {
+        ass_free_track(track);
+        return false;
+    }
+    frame->secondary = frame->primary + WIDTH * HEIGHT;
+    int change;
+    if (rgba) {
+        ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, now, &change);
+        for (ASS_ImageRGBA *img = images; img; img = img->next) {
+            if (img->type != IMAGE_TYPE_CHARACTER)
+                continue;
+            for (int y = 0; y < img->h; y++) {
+                int py = img->dst_y + y;
+                for (int x = 0; x < img->w; x++) {
+                    int px = img->dst_x + x;
+                    if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT)
+                        continue;
+                    const uint8_t *pixel = img->rgba + (ptrdiff_t) y * img->stride + 4 * x;
+                    frame->primary[py * WIDTH + px] += pixel[0];
+                    frame->secondary[py * WIDTH + px] += pixel[2];
+                    frame->active += pixel[0];
+                    frame->waiting += pixel[2];
+                }
+            }
+        }
+        ass_free_images_rgba(images);
+        ass_free_track(track);
+        return expect(frame->active + frame->waiting > 0,
+                      "RGBA karaoke fixture produced no text");
+    }
+    ASS_Image *images = ass_render_frame(renderer, track, now, &change);
+    bool ok = true;
+    for (ASS_Image *img = images; img; img = img->next) {
+        if (img->type != IMAGE_TYPE_CHARACTER)
+            continue;
+        bool primary = img->color == 0xff000000u;
+        ok &= expect(primary || img->color == 0x0000ff00u,
+                     "karaoke fixture received unexpected paint");
+        uint16_t *plane = primary ? frame->primary : frame->secondary;
+        for (int y = 0; y < img->h; y++) {
+            int py = img->dst_y + y;
+            for (int x = 0; x < img->w; x++) {
+                int px = img->dst_x + x;
+                if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT)
+                    continue;
+                unsigned value = img->bitmap[(ptrdiff_t) y * img->stride + x];
+                plane[py * WIDTH + px] += value;
+                if (primary) {
+                    frame->active += value;
+                    frame->active_x += value * (px + 0.5L);
+                    frame->active_y += value * (py + 0.5L);
+                } else {
+                    frame->waiting += value;
+                    frame->waiting_x += value * (px + 0.5L);
+                    frame->waiting_y += value * (py + 0.5L);
+                }
+            }
+        }
+    }
+    ass_free_track(track);
+    return ok && expect(frame->active + frame->waiting > 0,
+                        "karaoke fixture produced no text");
+}
+
+static bool same_karaoke_frame(const KaraokeFrame *a, const KaraokeFrame *b)
+{
+    return a->primary && b->primary &&
+        !memcmp(a->primary, b->primary, 2 * WIDTH * HEIGHT * sizeof(*a->primary));
+}
+
+static bool karaoke_progression(ASS_Library *lib, ASS_Renderer *renderer,
+                                const char *geometry, const char *word,
+                                bool vertical)
+{
+    char text[1024], alias[1024];
+    const char *format = "{\\bord0\\shad0\\1c&H0000FF&\\2c&HFF0000&%s"
+                         "\\kt500\\%s100}%s";
+    snprintf(text, sizeof(text), format, geometry, "kf", word);
+    snprintf(alias, sizeof(alias), format, geometry, "K", word);
+    KaraokeFrame start = {0}, end = {0}, previous = {0};
+    bool ok = karaoke_frame(lib, renderer, text, 0, &start, false);
+    ok &= karaoke_frame(lib, renderer, text, 1600, &end, false);
+    if (!ok)
+        goto done;
+    ok &= expect(start.active == 0 && end.waiting == 0 &&
+                 start.waiting == end.active,
+                 "karaoke endpoints changed coverage or paint");
+    const int times[] = {750, 1000, 1250};
+    for (size_t t = 0; t < sizeof(times) / sizeof(times[0]); t++) {
+        KaraokeFrame current = {0}, upper = {0}, repeated = {0}, rgba = {0};
+        bool rendered = karaoke_frame(lib, renderer, text, times[t], &current, false);
+        rendered &= karaoke_frame(lib, renderer, alias, times[t], &upper, false);
+        /* Revisiting an earlier time after a completed frame exercises caches. */
+        rendered &= karaoke_frame(lib, renderer, text, times[t], &repeated, false);
+        rendered &= karaoke_frame(lib, renderer, text, times[t], &rgba, true);
+        ok &= rendered;
+        if (rendered) {
+            ok &= expect(current.active > 0 && current.waiting > 0 &&
+                         current.active > previous.active,
+                         "progressive karaoke did not advance through shaped text");
+            ok &= expect(same_karaoke_frame(&current, &upper) &&
+                         same_karaoke_frame(&current, &repeated) &&
+                         same_karaoke_frame(&current, &rgba),
+                         "curved kf/K progression, RGBA or cached paint differed");
+            bool stable = true;
+            for (int p = 0; p < WIDTH * HEIGHT; p++) {
+                stable &= current.primary[p] + current.secondary[p] == start.secondary[p];
+                stable &= current.primary[p] == 0 || start.secondary[p] > 0;
+                if (previous.primary)
+                    stable &= current.primary[p] >= previous.primary[p];
+            }
+            ok &= expect(stable, "karaoke masks moved text, lost coverage or regressed");
+            if (vertical && current.active && current.waiting)
+                ok &= expect(current.active_y / current.active + 10 <
+                             current.waiting_y / current.waiting,
+                             "vertical curved wipe progressed on screen X");
+            if (!strstr(geometry, "\\ct") && current.active && current.waiting)
+                ok &= expect(current.active_x / current.active + 10 <
+                             current.waiting_x / current.waiting,
+                             "horizontal control stopped wiping from left to right");
+        }
+        free_karaoke_frame(&previous);
+        previous = current;
+        free_karaoke_frame(&upper);
+        free_karaoke_frame(&repeated);
+        free_karaoke_frame(&rgba);
+    }
+done:
+    free_karaoke_frame(&start);
+    free_karaoke_frame(&end);
+    free_karaoke_frame(&previous);
+    return ok;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -188,6 +345,72 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     bool ok = true;
+    /* The horizontal control retains the legacy screen-X wipe. Curved paths
+     * must progress by shaped distance even when X is constant or reverses. */
+    ok &= karaoke_progression(lib, renderer, "\\an5\\pos(480,270)",
+                              "MMMMMMMM", false);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,270)\\ct(m 0 0 l 0 440)",
+        "MMMMMMMM", true);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,270)\\ct(m 0 0 l 160 0 160 160 0 160)",
+        "MMMMMMMMMMMM", false);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,300)\\ct(m -300 0 b -220 -180 220 -180 300 0)",
+        "MMMMMMMM", false);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,270)\\ct(m 0 0 l 180 300)",
+        "M", false);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,270)\\frz180\\fscx120\\fscy85\\fax0.2"
+        "\\ct(m -300 0 b -220 -100 220 -100 300 0)",
+        "MMMMMMMM", false);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,270)\\clip(350,100,650,450)"
+        "\\ct(m 0 0 l 0 440)", "MMMMMMMM", true);
+    ok &= karaoke_progression(lib, renderer,
+        "\\an5\\ctan5\\pos(480,270)\\iclip(0,0,100,100)"
+        "\\ct(m 0 0 l 0 440)", "MMMMMMMM", true);
+
+    KaraokeFrame offset = {0}, translated = {0};
+    ok &= karaoke_frame(lib, renderer,
+        "{\\an5\\ctan5\\pos(480,270)\\ctx35\\cty20"
+        "\\1c&H0000FF&\\2c&HFF0000&\\ct(m -300 0 l 300 0)\\kf100}MMMMMMMM",
+        500, &offset, false);
+    ok &= karaoke_frame(lib, renderer,
+        "{\\an5\\ctan5\\pos(515,290)"
+        "\\1c&H0000FF&\\2c&HFF0000&\\ct(m -300 0 l 300 0)\\kf100}MMMMMMMM",
+        500, &translated, false);
+    ok &= expect(same_karaoke_frame(&offset, &translated),
+                 "ctx/cty moved karaoke independently of its glyphs");
+    free_karaoke_frame(&offset);
+    free_karaoke_frame(&translated);
+
+    KaraokeFrame explicit_anchor = {0}, inherited_anchor = {0};
+    ok &= karaoke_frame(lib, renderer,
+        "{\\an7\\ctan5\\ta2\\pos(480,270)\\1c&H0000FF&\\2c&HFF0000&"
+        "\\ct(m -300 0 b -220 -100 220 -100 300 0)\\kf100}MMMMMMMM\\NMMM",
+        500, &explicit_anchor, false);
+    ok &= karaoke_frame(lib, renderer,
+        "{\\an5\\ta2\\pos(480,270)\\1c&H0000FF&\\2c&HFF0000&"
+        "\\ct(m -300 0 b -220 -100 220 -100 300 0)\\kf100}MMMMMMMM\\NMMM",
+        500, &inherited_anchor, false);
+    ok &= expect(same_karaoke_frame(&explicit_anchor, &inherited_anchor),
+                 "ctan override and inherited an disagreed on karaoke attachment");
+    free_karaoke_frame(&explicit_anchor);
+    free_karaoke_frame(&inherited_anchor);
+    /* Uneven visual lines exercise the complete-block attachment and ta;
+     * every row retains its own baseline while sharing karaoke timing. */
+    for (int anchor = 1; anchor <= 9; anchor++) {
+        char geometry[256];
+        snprintf(geometry, sizeof(geometry),
+            "\\an5\\ctan%d\\ta%d\\pos(480,300)\\ctx27\\cty19"
+            "\\ct(m -300 0 b -220 -100 220 -100 300 0)",
+            anchor, (anchor - 1) % 3 + 1);
+        ok &= karaoke_progression(lib, renderer, geometry,
+                                  "MMMMMMMM\\NMMM", false);
+    }
+
     Sample flat, horizontal, diagonal, cubic;
     ok &= render_sample(lib, renderer,
         "{\\an7\\pos(180,180)}CURVED TEXT", 0, &flat);

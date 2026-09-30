@@ -5,7 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Positive renderer displacement moves upward; aliases share DOWN. */
+typedef enum {
+    ASS_SCROLL_UP = 1,
+    ASS_SCROLL_DOWN = -1,
+} ASS_ScrollDirection;
+
 typedef struct {
+    /* Signed relative row delta; distance is positive upward, negative down. */
     int32_t start, duration, lines;
     double distance;
 } ASS_ScrollCue;
@@ -17,6 +24,7 @@ typedef struct ass_scroll_definition {
     char *source;
     size_t source_len, count, users;
     int32_t default_duration;
+    ASS_ScrollDirection direction;
     ASS_ScrollCue *cues;
     double *advances;
     size_t rows;

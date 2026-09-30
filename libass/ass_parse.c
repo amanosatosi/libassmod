@@ -5116,7 +5116,7 @@ void ass_process_karaoke_effects(RenderContext *state)
         if (effect_type != EF_KARAOKE_KF)
             tm_end = tm_start;
 
-        int x;
+        int x, curved_x;
         bool reverse = false;
         if (tm_current < tm_start)
             x = -100000000;
@@ -5137,6 +5137,11 @@ void ass_process_karaoke_effects(RenderContext *state)
             if (vertical)
                 vertical_karaoke_bounds(start, end, &x_start, &x_end);
             double dt = (double) (tm_current - tm_start) / (tm_end - tm_start);
+            /* Curved wipes use shaped distance and are rotated with the text.
+             * Keep the legacy screen-X frontier untouched for flat fallback. */
+            curved_x = state->curved_path_outline ?
+                first_visible->pos.x + ass_lrint((last_visible->pos.x +
+                    last_visible->cluster_advance.x - first_visible->pos.x) * dt) : 0;
             double frz = fmod(start->frz, 360);
             if (!vertical && frz > 90 && frz < 270) {
                 // Fill from right to left
@@ -5151,10 +5156,15 @@ void ass_process_karaoke_effects(RenderContext *state)
             x = x_start + ass_lrint((x_end - x_start) * dt);
         }
 
+        if (tm_current < tm_start || tm_current >= tm_end)
+            curved_x = x;
+
         for (GlyphInfo *info = start; info < end; info++) {
             info->effect_type = effect_type;
             info->effect_timing = x - (info->native_vertical ?
                                           info->pos.y : info->pos.x);
+            if (state->curved_path_outline)
+                info->curved_effect_timing = curved_x - info->pos.x;
             info->karaoke_reverse = reverse;
         }
     }
