@@ -28,6 +28,9 @@ EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
              docs/native-chat.md samples/chat-modes.ass \
              test/chat_selftest.c test/chat_render_selftest.c
 
+EXTRA_DIST += docs/native-scroll.md samples/scroll-lines.ass \
+              test/scroll_selftest.c test/scroll_render_selftest.c
+
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \
               libass/meson.build libass/ass/meson.build \

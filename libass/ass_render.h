@@ -38,6 +38,7 @@
 #include "ass_library.h"
 #include "ass_drawing.h"
 #include "ass_curved_text.h"
+#include "ass_scroll.h"
 #include "ass_distort.h"
 #include "ass_perspective.h"
 #include "ass_bitmap.h"
@@ -304,6 +305,7 @@ typedef struct ass_tag_image_entry {
 typedef struct {
     FilterDesc filter;
     int chat_part;              // 0 = header/normal, positive = message index + 1
+    int scroll_id;              // 0 = fixed; positive = context index + 1
     uint32_t c[4];              // colors (with fade applied)
     Effect effect_type;
     bool karaoke_reverse;
@@ -384,6 +386,7 @@ static inline JitterState ass_jitter_default_state(void)
 typedef struct glyph_info {
     unsigned symbol;
     int chat_part;
+    int scroll_id;
     bool skip;                  // skip glyph when layouting text
     bool is_trimmed_whitespace;
     bool has_jitter;
@@ -790,6 +793,12 @@ struct render_context {
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
     char clip_mode;             // 1 = iclip
     bool chat_clip_active;       // internal viewport, composed after user clip
+    bool scroll_clip_active;
+    int scroll_clip_y0, scroll_clip_y1;
+    int scroll_id, scroll_show_lines;
+    int32_t scroll_duration;
+    ASS_ScrollContext *scroll_contexts;
+    int n_scroll_contexts, max_scroll_contexts;
     bool chat_enabled;
     int chat_clip_x0, chat_clip_x1;
     int chat_clip_y0, chat_clip_y1;
@@ -929,6 +938,7 @@ struct ass_renderer {
         struct ass_chat_scene *scene;
     } chat_cache[8];
     unsigned chat_cache_next;
+    ASS_ScrollDefinition *scroll_cache;
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
@@ -966,6 +976,7 @@ typedef struct {
 } Rect;
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
+bool ass_scroll_start(RenderContext *state, const char *start, const char *end);
 void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
                                        bool explicit_style_reset);
 void ass_column_set_mode(RenderContext *state, bool active);

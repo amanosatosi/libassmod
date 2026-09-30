@@ -8,6 +8,10 @@ the event's local layout coordinate system and then follows the event's normal
 geometry. A rotated or projected sign therefore has a rotated or projected box,
 not a new axis-aligned screen-space rectangle around its final pixel bounds.
 
+Events using [native multiline scrolling](native-scroll.md) give each contiguous
+scrolling or fixed participation region its own background, allowing a fixed
+footer box to remain stationary. Other events retain the single event box.
+
 Line-level BorderStyle overrides such as `\bs3`, `\bs4`, and `\bs5` are
 documented in `docs/borderstyle-tags.md`.
 

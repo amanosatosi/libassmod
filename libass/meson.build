@@ -53,6 +53,7 @@ libass_src = files(
     'ass_blur.c',
     'ass_cache.c',
     'ass_chat.c',
+    'ass_scroll.c',
     'ass_curved_text.c',
     'ass_drawing.c',
     'ass_filesystem.c',

@@ -1,5 +1,18 @@
 test_src = files('test.c')
 
+scroll_unit = executable('scroll_unit',
+    files('scroll_selftest.c', '../libass/ass_scroll.c'),
+    include_directories: incs, dependencies: deps, install: false)
+test('native-scroll-cues', scroll_unit)
+
+scroll_render_unit = executable('scroll_render_unit',
+    files('scroll_render_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    link_with: libass_for_tools, install: false)
+test('native-scroll-render', scroll_render_unit,
+    env: {'SCROLL_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    timeout: 120)
+
 libass_test = executable(
     'libass_test',
     test_src,

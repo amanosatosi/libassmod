@@ -94,6 +94,11 @@ For `\ortho` semantics and examples, see:
 
 ### Transform & movement
 
+- `\scroll(time,lines,...)`, `\scrollt<N>`, `\scrollsl<N>`, `\scroll0`
+  Native animated upward scrolling through measured wrapped rows, with arbitrary
+  cue lists, per-cue durations, logical viewports, and fixed content in one event.
+  See [native multiline scrolling](docs/native-scroll.md).
+
 - `\pos(x,y)` inside `\t(...)`
   Deterministic animated positioning. Overlapping transformed positions are
   simultaneous competing motion intents rather than last-transform-wins.

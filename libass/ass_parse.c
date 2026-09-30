@@ -3219,6 +3219,37 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 
         char *name_end = q;
 
+        /* Scroll lists bypass the legacy bounded argument array. Consume the
+         * complete tag even on failure, and publish state only after validation. */
+        if (name_end - p >= 6 && !memcmp(p, "scroll", 6)) {
+            char *scroll_end = name_end;
+            while (scroll_end > p && (scroll_end[-1] == ' ' || scroll_end[-1] == '\t'))
+                scroll_end--;
+            if (*q == '(') {
+                char *close = memchr(q + 1, ')', end - (q + 1));
+                if (scroll_end - p == 6 && close && !nested &&
+                        !state->karaoke_only_parse && !state->colorcode_parse)
+                    ass_scroll_start(state, q + 1, close);
+                q = close ? close + 1 : end;
+            } else if (!nested && !state->karaoke_only_parse &&
+                       !state->colorcode_parse) {
+                int32_t value;
+                if (scroll_end - p == 7 && p[6] == '0') {
+                    state->scroll_id = 0;
+                } else if (name_end - p >= 8 && p[6] == 's' && p[7] == 'l') {
+                    if (ass_scroll_integer(p + 8, name_end, &value) && value > 0) {
+                        state->scroll_show_lines = value;
+                        if (state->scroll_id)
+                            state->scroll_contexts[state->scroll_id - 1].show_lines = value;
+                    }
+                } else if (name_end - p >= 7 && p[6] == 't') {
+                    if (ass_scroll_integer(p + 7, name_end, &value))
+                        state->scroll_duration = value;
+                }
+            }
+            continue;
+        }
+
         // Store one extra element to be able to detect excess arguments
         struct arg args[MAX_VALID_NARGS + 1];
         int nargs = 0;

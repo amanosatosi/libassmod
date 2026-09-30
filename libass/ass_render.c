@@ -63,6 +63,85 @@ static double glyph_border_max_y(const GlyphInfo *info);
 static Bitmap *combined_border_bitmap(CombinedBitmapInfo *info, int layer);
 static Bitmap *composite_border_bitmap(CompositeHashValue *value, int layer);
 
+static void free_scroll_contexts(RenderContext *state)
+{
+    for (int i = 0; i < state->n_scroll_contexts; i++) {
+        state->scroll_contexts[i].definition->users--;
+        free(state->scroll_contexts[i].advances);
+    }
+    free(state->scroll_contexts);
+    state->scroll_contexts = NULL;
+    state->n_scroll_contexts = state->max_scroll_contexts = 0;
+    state->scroll_id = 0;
+    state->scroll_clip_active = false;
+}
+
+static void select_scroll_clip(RenderContext *state, int id)
+{
+    state->scroll_clip_active = false;
+    if (id <= 0 || id > state->n_scroll_contexts)
+        return;
+    ASS_ScrollContext *ctx = &state->scroll_contexts[id - 1];
+    if (!ctx->show_lines || !ctx->rows)
+        return;
+    state->scroll_clip_active = true;
+    /* Clamp before conversion; clipping uses frame pixels, layout and motion
+     * retain fractional precision until the usual rasterizer quantization. */
+    state->scroll_clip_y0 = (int) floor(FFMINMAX(ctx->top, 0, state->renderer->height));
+    state->scroll_clip_y1 = (int) ceil(FFMINMAX(ctx->bottom, 0, state->renderer->height));
+}
+
+bool ass_scroll_start(RenderContext *state, const char *start, const char *end)
+{
+    ASS_Renderer *priv = state->renderer;
+    ASS_ScrollDefinition *def;
+    size_t length = end - start;
+    for (def = priv->scroll_cache; def; def = def->next)
+        if (def->source_len == length &&
+                def->default_duration == state->scroll_duration &&
+                !memcmp(def->source, start, length))
+            break;
+    if (!def) {
+        def = ass_scroll_parse(start, end, state->scroll_duration);
+        if (!def)
+            return false;
+        /* Retain at least the current definition even if it is very large.
+         * Evict only unused entries, so arbitrary many contexts stay valid. */
+        size_t bytes = length + def->count * sizeof(*def->cues);
+        ASS_ScrollDefinition **link = &priv->scroll_cache;
+        while (*link) {
+            ASS_ScrollDefinition *old = *link;
+            bytes += old->source_len + old->count * sizeof(*old->cues) +
+                     old->rows * sizeof(*old->advances);
+            if (bytes > MEGABYTE && !old->users) {
+                *link = old->next;
+                ass_scroll_free(old);
+            } else {
+                link = &old->next;
+            }
+        }
+        def->next = priv->scroll_cache;
+        priv->scroll_cache = def;
+    }
+    if (state->n_scroll_contexts == state->max_scroll_contexts) {
+        int capacity = state->max_scroll_contexts;
+        if (capacity > INT_MAX / 2)
+            return false;
+        capacity = capacity ? capacity * 2 : 4;
+        if (!ASS_REALLOC_ARRAY(state->scroll_contexts, capacity))
+            return false;
+        state->max_scroll_contexts = capacity;
+    }
+    state->scroll_contexts[state->n_scroll_contexts++] = (ASS_ScrollContext) {
+        .definition = def,
+        .last_line = -1,
+        .show_lines = state->scroll_show_lines,
+    };
+    def->users++;
+    state->scroll_id = state->n_scroll_contexts;
+    return true;
+}
+
 #define BS4_ROUNDED_BOX_SCALE 4096
 static Bitmap *bitmap_ref_border_bitmap(BitmapRef *ref, int layer);
 static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
@@ -237,6 +316,7 @@ static bool render_context_init(RenderContext *state, ASS_Renderer *priv)
 
 static void render_context_done(RenderContext *state)
 {
+    free_scroll_contexts(state);
     ass_rasterizer_done(&state->rasterizer);
 
     if (state->shaper)
@@ -349,6 +429,11 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     for (int i = 0; i < 8; i++) {
         free(render_priv->chat_cache[i].source);
         ass_chat_free(render_priv->chat_cache[i].scene);
+    }
+    while (render_priv->scroll_cache) {
+        ASS_ScrollDefinition *next = render_priv->scroll_cache->next;
+        ass_scroll_free(render_priv->scroll_cache);
+        render_priv->scroll_cache = next;
     }
 
     free(render_priv->settings.default_font);
@@ -1138,6 +1223,10 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             r[j].y0 = FFMAX(r[j].y0, state->chat_clip_y0 - dst_y);
             r[j].y1 = FFMIN(r[j].y1, state->chat_clip_y1 - dst_y);
         }
+        if (state->scroll_clip_active) {
+            r[j].y0 = FFMAX(r[j].y0, state->scroll_clip_y0 - dst_y);
+            r[j].y1 = FFMIN(r[j].y1, state->scroll_clip_y1 - dst_y);
+        }
         if (state->karaoke_clip_enabled) {
             r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
             r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
@@ -1296,6 +1385,10 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
         clip_x1 = FFMIN(clip_x1, state->chat_clip_x1);
         clip_y0 = FFMAX(clip_y0, state->chat_clip_y0);
         clip_y1 = FFMIN(clip_y1, state->chat_clip_y1);
+    }
+    if (state->scroll_clip_active) {
+        clip_y0 = FFMAX(clip_y0, state->scroll_clip_y0);
+        clip_y1 = FFMIN(clip_y1, state->scroll_clip_y1);
     }
     if (state->karaoke_clip_enabled) {
         clip_x0 = FFMAX(clip_x0, state->karaoke_clip_x0);
@@ -2529,6 +2622,7 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
         state->chat_clip_x0 = state->chat_clips[part].x0; \
         state->chat_clip_x1 = state->chat_clips[part].x1; \
     } \
+    select_scroll_clip(state, (info)->scroll_id); \
 } while (0)
 
     for (unsigned i = 0; i < n_bitmaps; i++) {
@@ -2605,6 +2699,7 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
 
     *tail = 0;
     state->chat_clip_active = false;
+    state->scroll_clip_active = false;
     blend_vector_clip(state, head);
     if (out_rgba) {
         blend_vector_clip_rgba(state, rgba_head);
@@ -3181,6 +3276,9 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->vertical_text_alignment = 0;
     state->warp_text_alignment = 0;
     state->curved_text_align = 0;
+    state->scroll_duration = 300;
+    state->scroll_show_lines = 0;
+    state->scroll_id = 0;
 
     init_font_scale(state);
 
@@ -3335,6 +3433,7 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->clip_mode = 0;
     state->chat_clip_active = false;
     state->chat_enabled = chat_enabled;
+    state->scroll_clip_active = false;
     state->chat_visible = INT_MAX;
     state->chat_clips = NULL;
     state->detect_collisions = 1;
@@ -3836,6 +3935,7 @@ static void free_distortion_resources(RenderContext *state)
 
 static void free_render_context(RenderContext *state)
 {
+    free_scroll_contexts(state);
     free_distortion_resources(state);
     free_furi_groups(&state->text_info);
     free_column_layout(&state->text_info);
@@ -4179,10 +4279,18 @@ static void calc_transform_matrix(RenderContext *state,
 
     double result[3][3] = {{0}};
     const double (*h)[3] = info->perspective_homography.m;
+    double scroll = info->scroll_id ?
+        state->scroll_contexts[info->scroll_id - 1].displacement * 64.0 : 0.0;
+    if (scroll)
+        for (int col = 0; col < 3; col++)
+            m[1][col] += scroll * m[2][col];
     for (int row = 0; row < 3; row++)
         for (int col = 0; col < 3; col++)
             for (int k = 0; k < 3; k++)
                 result[row][col] += h[row][k] * m[k][col];
+    if (scroll)
+        for (int col = 0; col < 3; col++)
+            result[1][col] -= scroll * result[2][col];
     memcpy(m, result, sizeof(result));
 }
 
@@ -5191,6 +5299,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
         GlyphInfo *last = glyphs + (i - 1);
         Effect effect_type = info->effect_type;
         info->starts_new_run =
+            info->scroll_id != last->scroll_id ||
             info->effect_timing ||  // but ignore effect_skip_timing
             (unified_karaoke &&
              info->karaoke_segment != last->karaoke_segment) ||
@@ -5378,6 +5487,7 @@ static bool append_glyph_to_target(RenderContext *state,
     }
 
     info->symbol = code;
+    info->scroll_id = state->scroll_id;
     info->font = state->font;
     for (int i = 0; i < 4; i++)
         info->c[i] = state->c[i];
@@ -7185,6 +7295,88 @@ static void compute_line_baselines(RenderContext *state, double *baselines)
     }
 }
 
+static bool prepare_scroll_layout(RenderContext *state, double device_y)
+{
+    if (!state->n_scroll_contexts)
+        return true;
+    TextInfo *text = &state->text_info;
+    double *baselines = ass_realloc_array(NULL, text->n_lines, sizeof(*baselines));
+    if (!baselines)
+        return false;
+    compute_line_baselines(state, baselines);
+    /* Glyphs remain in logical order; final line IDs incorporate wrapping.
+     * Blank explicit rows count too. Ruby is deliberately not enumerated. */
+    for (int i = 0; i < text->length; i++) {
+        GlyphInfo *glyph = &text->glyphs[i];
+        if (!glyph->scroll_id)
+            continue;
+        ASS_ScrollContext *ctx = &state->scroll_contexts[glyph->scroll_id - 1];
+        int row = glyph->line;
+        if (row < 0 || row >= text->n_lines || row == ctx->last_line)
+            continue;
+        if (ctx->rows == ctx->capacity) {
+            size_t capacity = ctx->capacity ? ctx->capacity * 2 : 16;
+            if (capacity < ctx->capacity ||
+                    !ASS_REALLOC_ARRAY(ctx->advances, capacity)) {
+                free(baselines);
+                return false;
+            }
+            ctx->capacity = capacity;
+        }
+        double top = baselines[row] - text->lines[row].asc;
+        double advance = text->lines[row].asc + text->lines[row].desc;
+        if (row + 1 < text->n_lines)
+            advance += line_spacing(state);
+        advance = FFMAX(0.0, advance);
+        if (!ctx->rows)
+            ctx->top = device_y + top;
+        if (ctx->show_lines > 0 && ctx->rows < (size_t) ctx->show_lines)
+            ctx->bottom = device_y + top + text->lines[row].asc + text->lines[row].desc;
+        ctx->advances[ctx->rows++] = advance;
+        ctx->last_line = row;
+    }
+    free(baselines);
+    int64_t now = state->renderer->time - state->event->Start;
+    for (int i = 0; i < state->n_scroll_contexts; i++) {
+        ASS_ScrollContext *ctx = &state->scroll_contexts[i];
+        if (!ass_scroll_map(ctx->definition, ctx->advances, ctx->rows))
+            return false;
+        ctx->displacement = ass_scroll_evaluate(ctx->definition, now);
+    }
+    /* A scrolling event has stable author placement. Collision movement would
+     * also move its viewport/footer and introduce frame-dependent snapping. */
+    state->detect_collisions = 0;
+    return true;
+}
+
+static void displace_scroll_list(RenderContext *state, GlyphInfo *glyphs, int length)
+{
+    for (int i = 0; i < length; i++)
+        for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
+            if (!info->scroll_id)
+                continue;
+            double dy = state->scroll_contexts[info->scroll_id - 1].displacement;
+            double y = info->pos.y - dy * 64.0;
+            info->pos.y = (int32_t) ass_lrint(FFMINMAX(y, INT_MIN, INT_MAX));
+        }
+}
+
+static void displace_scroll_glyphs(RenderContext *state)
+{
+    if (!state->n_scroll_contexts)
+        return;
+    TextInfo *text = &state->text_info;
+    displace_scroll_list(state, text->glyphs, text->length);
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        int id = text->glyphs[group->base_start].scroll_id;
+        for (int j = 0; j < group->length; j++)
+            for (GlyphInfo *info = &group->glyphs[j]; info; info = info->next)
+                info->scroll_id = id;
+        displace_scroll_list(state, group->glyphs, group->length);
+    }
+}
+
 static void update_text_height(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
@@ -8223,11 +8415,13 @@ static void compute_mangetsu_gradient_rect_for_layer(
         if (!layer)
             continue;
         if (layer->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+            double scroll = info->scroll_id ?
+                state->scroll_contexts[info->scroll_id - 1].displacement : 0.0;
             ass_mangetsu_gradient_prepare_positioned(
                 layer, x2scr_pos_scaled(render_priv, layer->script_x1),
-                y2scr_pos(render_priv, layer->script_y1),
+                y2scr_pos(render_priv, layer->script_y1) - scroll,
                 x2scr_pos_scaled(render_priv, layer->script_x2),
-                y2scr_pos(render_priv, layer->script_y2));
+                y2scr_pos(render_priv, layer->script_y2) - scroll);
         } else {
             layer->rect = (GradientRect) {0};
         }
@@ -8250,7 +8444,8 @@ static void compute_mangetsu_gradient_rect_for_layer(
                                                  target, layer_index);
             if (!other_layer->active || other_layer->coordinate_mode !=
                     MANGETSU_GRADIENT_ATTACHED ||
-                    other_layer->segment_id != layer->segment_id)
+                    other_layer->segment_id != layer->segment_id ||
+                    other->scroll_id != info->scroll_id)
                 continue;
             update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
         }
@@ -8280,6 +8475,7 @@ static void compute_mangetsu_gradient_rects(RenderContext *state)
         layer->rect = (GradientRect) {0};
     }
     for (unsigned i = 0; i < text_info->n_bitmaps; i++) {
+        CombinedBitmapInfo *info = &text_info->combined_bitmaps[i];
         MangetsuGradientLayer *layer =
             &text_info->combined_bitmaps[i].secondary_outline.gradient;
         if (!layer->active || layer->coordinate_mode !=
@@ -8292,7 +8488,8 @@ static void compute_mangetsu_gradient_rects(RenderContext *state)
                 &other->secondary_outline.gradient;
             if (other_layer->active && other_layer->coordinate_mode ==
                     MANGETSU_GRADIENT_ATTACHED &&
-                    other_layer->segment_id == layer->segment_id)
+                    other_layer->segment_id == layer->segment_id &&
+                    other->scroll_id == info->scroll_id)
                 update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
         }
         layer->rect = rect;
@@ -8729,6 +8926,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
             new_run = true;
         if (current_info && info->chat_part != current_info->chat_part)
             new_run = true;
+        if (current_info && info->scroll_id != current_info->scroll_id)
+            new_run = true;
         if (info->skip)
             continue;
 
@@ -8778,6 +8977,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info = &(*combined_info)[*nb_bitmaps];
 
                 current_info->chat_part = info->chat_part;
+                current_info->scroll_id = info->scroll_id;
 
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
@@ -9021,6 +9221,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
            sizeof(current_info->border_layers));
     current_info->fade = deco.fade;
     current_info->chat_part = deco.chat_part;
+    current_info->scroll_id = deco.scroll_id;
     current_info->fade_color = deco.fade_color;
     current_info->line = deco.line;
     for (int j = 0; j < 4; j++)
@@ -9725,6 +9926,60 @@ static void capture_bs4_box_geometry(RenderContext *state,
 
     box->geometry = *info;
     box->valid = true;
+}
+
+static BS4BoxGeometry *capture_scroll_boxes(RenderContext *state,
+                                            double device_x, double device_y,
+                                            int *count)
+{
+    TextInfo *text = &state->text_info;
+    *count = 1;
+    for (int i = 1; i < text->length; i++)
+        *count += text->glyphs[i].scroll_id != text->glyphs[i - 1].scroll_id;
+    BS4BoxGeometry *boxes = ass_realloc_array(NULL, *count, sizeof(*boxes));
+    if (!boxes)
+        return NULL;
+    int index = 0;
+    for (int start = 0; start < text->length;) {
+        int end = start + 1;
+        while (end < text->length &&
+               text->glyphs[end].scroll_id == text->glyphs[start].scroll_id)
+            end++;
+        BS4BoxGeometry *box = &boxes[index++];
+        *box = (BS4BoxGeometry) { .device_x = device_x, .device_y = device_y };
+        GlyphInfo *fallback = NULL;
+        GlyphInfo *info = find_bs4_geometry_in_list(state, text->glyphs + start,
+                                                   end - start, &fallback);
+        if (!info && fallback && !karaoke_reveal_hidden(state, fallback))
+            info = fallback;
+        if (info) {
+            box->geometry = *info;
+            box->valid = true;
+            box->layout_bounds = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+            for (int j = start; j < end; j++) {
+                GlyphInfo *g = &text->glyphs[j];
+                if (g->skip) continue;
+                double x = d6_to_double(g->pos.x), y = d6_to_double(g->pos.y);
+                box->layout_bounds.x_min = FFMIN(box->layout_bounds.x_min, x);
+                box->layout_bounds.x_max = FFMAX(box->layout_bounds.x_max,
+                                                x + d6_to_double(g->cluster_advance.x));
+                box->layout_bounds.y_min = FFMIN(box->layout_bounds.y_min,
+                                                y - text->lines[g->line].asc);
+                box->layout_bounds.y_max = FFMAX(box->layout_bounds.y_max,
+                                                y + text->lines[g->line].desc);
+            }
+            for (int j = 0; j < text->n_furi_groups; j++) {
+                FuriGroup *group = &text->furi_groups[j];
+                if (group->base_start >= start && group->base_start < end)
+                    add_glyph_list_visual_bbox(group->glyphs, group->length,
+                                               &box->layout_bounds);
+            }
+            if (info->scroll_id)
+                box->device_y -= state->scroll_contexts[info->scroll_id - 1].displacement;
+        }
+        start = end;
+    }
+    return boxes;
 }
 
 static void sync_bs4_perspective_from_list(BS4BoxGeometry *box,
@@ -11348,17 +11603,43 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         state->clip_y1 = FFMIN(state->clip_y1, y1);
     }
 
+    if (!prepare_scroll_layout(state, device_y)) {
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return false;
+    }
+
     calculate_rotation_params(state, bbox_for_origin, device_x, device_y,
                               &object_anchor);
 
+    int n_scroll_boxes = 0;
+    BS4BoxGeometry *scroll_boxes = NULL;
     if (state->bs4_box_mode)
         capture_bs4_box_geometry(state, &bs4_box_geometry, &bs4_layout_bbox,
                                  device_x, device_y);
+    if (state->bs4_box_mode && state->n_scroll_contexts) {
+        scroll_boxes = capture_scroll_boxes(state, device_x, device_y, &n_scroll_boxes);
+        if (!scroll_boxes) {
+            ass_shaper_cleanup(state->shaper, text_info);
+            free_render_context(state);
+            release_chat_scene(chat, chat_cached);
+            free(ranges);
+            return false;
+        }
+    }
 
     position_glyphs_for_render(state, device_x, device_y);
     prepare_perspective(state, &object_anchor);
     if (state->bs4_box_mode)
         sync_bs4_perspective(state, &bs4_box_geometry);
+    for (int i = 0; i < n_scroll_boxes; i++)
+        sync_bs4_perspective(state, &scroll_boxes[i]);
+    /* Rotation origins and perspective are resolved from normal layout first.
+     * Translating the glyph position now moves the complete raster result
+     * vertically without rotating the scroll vector or changing \org. */
+    displace_scroll_glyphs(state);
 
     render_and_combine_glyphs(state);
     compute_line_gradient_rects(state);
@@ -11393,10 +11674,17 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     ASS_ImageRGBA **rgba_ptr = want_rgba ? &event_images->imgs_rgba : NULL;
     event_images->imgs = render_text(state, rgba_ptr);
 
-    if (state->bs4_box_mode)
+    if (state->bs4_box_mode && !scroll_boxes)
         add_background(state, event_images,
                        rgba_out ? &event_images->imgs_rgba : NULL,
                        &bs4_box_geometry);
+    for (int i = n_scroll_boxes - 1; i >= 0; i--) {
+        select_scroll_clip(state, scroll_boxes[i].geometry.scroll_id);
+        add_background(state, event_images,
+                       rgba_out ? &event_images->imgs_rgba : NULL, &scroll_boxes[i]);
+    }
+    state->scroll_clip_active = false;
+    free(scroll_boxes);
 
     if (rgba_out)
         *rgba_out = event_images->imgs_rgba;
