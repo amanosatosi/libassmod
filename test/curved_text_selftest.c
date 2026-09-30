@@ -300,9 +300,15 @@ static bool karaoke_progression(ASS_Library *lib, ASS_Renderer *renderer,
         rendered &= karaoke_frame(lib, renderer, text, times[t], &rgba, true);
         ok &= rendered;
         if (rendered) {
-            ok &= expect(current.active > 0 && current.waiting > 0 &&
-                         current.active > previous.active,
+            bool advanced = current.active > 0 && current.waiting > 0 &&
+                            current.active > previous.active;
+            ok &= expect(advanced,
                          "progressive karaoke did not advance through shaped text");
+            if (!advanced)
+                fprintf(stderr, "time=%d ms, active=%llu, waiting=%llu, previous=%llu\n",
+                        times[t], (unsigned long long) current.active,
+                        (unsigned long long) current.waiting,
+                        (unsigned long long) previous.active);
             ok &= expect(same_karaoke_frame(&current, &upper) &&
                          same_karaoke_frame(&current, &repeated) &&
                          same_karaoke_frame(&current, &rgba),
@@ -360,8 +366,10 @@ int main(void)
      * must progress by shaped distance even when X is constant or reverses. */
     ok &= karaoke_progression(lib, renderer, "\\an5\\pos(480,270)",
                               "MMMMMMMM", false);
+    /* Path coordinates are local to pos: center the vertical path at zero
+     * so the entire word stays on screen throughout the sampled sweep. */
     ok &= karaoke_progression(lib, renderer,
-        "\\an5\\ctan5\\pos(480,270)\\ct(m 0 0 l 0 440)",
+        "\\an5\\ctan5\\pos(480,270)\\ct(m 0 -220 l 0 220)",
         "MMMMMMMM", true);
     ok &= karaoke_progression(lib, renderer,
         "\\an5\\ctan5\\pos(480,270)\\ct(m 0 0 l 160 0 160 160 0 160)",
@@ -377,11 +385,11 @@ int main(void)
         "\\ct(m -300 0 b -220 -100 220 -100 300 0)",
         "MMMMMMMM", false);
     ok &= karaoke_progression(lib, renderer,
-        "\\an5\\ctan5\\pos(480,270)\\clip(350,100,650,450)"
-        "\\ct(m 0 0 l 0 440)", "MMMMMMMM", true);
+        "\\an5\\ctan5\\pos(480,270)\\clip(480,0,960,540)"
+        "\\ct(m 0 -220 l 0 220)", "MMMMMMMM", true);
     ok &= karaoke_progression(lib, renderer,
-        "\\an5\\ctan5\\pos(480,270)\\iclip(0,0,100,100)"
-        "\\ct(m 0 0 l 0 440)", "MMMMMMMM", true);
+        "\\an5\\ctan5\\pos(480,270)\\iclip(0,0,480,540)"
+        "\\ct(m 0 -220 l 0 220)", "MMMMMMMM", true);
 
     KaraokeFrame offset = {0}, translated = {0};
     ok &= karaoke_frame(lib, renderer,
