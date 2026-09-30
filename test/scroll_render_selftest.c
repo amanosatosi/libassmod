@@ -95,6 +95,15 @@ static uint64_t hash_images(ASS_Image *images, int type, uint32_t color, bool fi
     return hash;
 }
 
+static int count_images(ASS_Image *images, int type, uint32_t color)
+{
+    int count = 0;
+    for (ASS_Image *img = images; img; img = img->next)
+        if (img->type == type && img->color == color && img->w && img->h)
+            count++;
+    return count;
+}
+
 static uint64_t hash_rgba_region(ASS_ImageRGBA *images, int min_y)
 {
     uint64_t hash = 1469598103934665603ULL;
@@ -209,17 +218,25 @@ static void fixed_and_clip(ASS_Library *lib, ASS_Renderer *renderer)
     ASS_Track *t = track(lib,
         "{\\pos(100,850)\\scrollsl2\\scroll(1000,1)}A\\NB\\NC\\ND\\N"
         "{\\scroll0\\1c&H0000FF&\\3c&HFFFF00&\\4c&HFF00FF&}FOOTER\\N"
-        "{\\scroll(2000,1)\\1c&HFFFFFF&}E\\NF");
+        /* Re-enabled runs inherit paint overrides. Give all their layers
+         * distinct colors so the footer hashes cannot include moving E/F. */
+        "{\\scroll(2000,1)\\1c&HFFFFFF&\\3c&H00FF00&\\4c&HFF0000&}E\\NF");
     ASS_Image *images = render(renderer, t, 0);
     CHECK(images);
     uint64_t footer[3];
+    int footer_count[3];
     const uint32_t colors[] = {0xff000000, 0x00ffff00, 0xff00ff00};
-    for (int type = 0; type < 3; type++)
+    for (int type = 0; type < 3; type++) {
+        footer_count[type] = count_images(images, type, colors[type]);
+        CHECK(footer_count[type] > 0);
         footer[type] = hash_images(images, type, colors[type], true);
+    }
     images = render(renderer, t, 2300);
     CHECK(images);
-    for (int type = 0; type < 3; type++)
+    for (int type = 0; type < 3; type++) {
+        CHECK(footer_count[type] == count_images(images, type, colors[type]));
         CHECK(footer[type] == hash_images(images, type, colors[type], true));
+    }
     CHECK(renderer->state.text_info.glyphs[0].scroll_id == 1);
     CHECK(renderer->state.text_info.glyphs[8].scroll_id == 0);
     CHECK(definition(renderer, "1000,1")->rows == 4);
