@@ -268,20 +268,29 @@ static bool karaoke_progression(ASS_Library *lib, ASS_Renderer *renderer,
                                 const char *geometry, const char *word,
                                 bool vertical)
 {
+    /* ASS karaoke tags use centiseconds; the renderer clock uses milliseconds. */
+    enum {
+        START_CS = 50, DURATION_CS = 100,
+        START_MS = START_CS * 10, DURATION_MS = DURATION_CS * 10,
+    };
     char text[1024], alias[1024];
     const char *format = "{\\bord0\\shad0\\1c&H0000FF&\\2c&HFF0000&%s"
-                         "\\kt500\\%s100}%s";
-    snprintf(text, sizeof(text), format, geometry, "kf", word);
-    snprintf(alias, sizeof(alias), format, geometry, "K", word);
+                         "\\kt%d\\%s%d}%s";
+    snprintf(text, sizeof(text), format, geometry, START_CS, "kf", DURATION_CS, word);
+    snprintf(alias, sizeof(alias), format, geometry, START_CS, "K", DURATION_CS, word);
     KaraokeFrame start = {0}, end = {0}, previous = {0};
     bool ok = karaoke_frame(lib, renderer, text, 0, &start, false);
-    ok &= karaoke_frame(lib, renderer, text, 1600, &end, false);
+    ok &= karaoke_frame(lib, renderer, text, START_MS + DURATION_MS + 100, &end, false);
     if (!ok)
         goto done;
     ok &= expect(start.active == 0 && end.waiting == 0 &&
                  start.waiting == end.active,
                  "karaoke endpoints changed coverage or paint");
-    const int times[] = {750, 1000, 1250};
+    const int times[] = {
+        START_MS + DURATION_MS / 4,
+        START_MS + DURATION_MS / 2,
+        START_MS + 3 * DURATION_MS / 4,
+    };
     for (size_t t = 0; t < sizeof(times) / sizeof(times[0]); t++) {
         KaraokeFrame current = {0}, upper = {0}, repeated = {0}, rgba = {0};
         bool rendered = karaoke_frame(lib, renderer, text, times[t], &current, false);
@@ -322,6 +331,8 @@ static bool karaoke_progression(ASS_Library *lib, ASS_Renderer *renderer,
         free_karaoke_frame(&rgba);
     }
 done:
+    if (!ok)
+        fprintf(stderr, "karaoke fixture: %s\n", text);
     free_karaoke_frame(&start);
     free_karaoke_frame(&end);
     free_karaoke_frame(&previous);
