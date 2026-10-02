@@ -140,27 +140,32 @@ static bool same_box(Box a, Box b)
     return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
 
+static uint64_t hash_image(uint64_t hash, const ASS_Image *image)
+{
+    const uint32_t fields[] = {
+        image->color, (uint32_t) image->dst_x,
+        (uint32_t) image->dst_y, (uint32_t) image->w,
+        (uint32_t) image->h, (uint32_t) image->type,
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(*fields); i++) {
+        hash ^= fields[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    for (int y = 0; y < image->h; y++)
+        for (int x = 0; x < image->w; x++) {
+            hash ^= image->bitmap[y * image->stride + x];
+            hash *= UINT64_C(1099511628211);
+        }
+    return hash;
+}
+
 static uint64_t render_hash(ASS_Renderer *renderer, ASS_Track *track)
 {
     int changed = 0;
     uint64_t hash = UINT64_C(1469598103934665603);
     for (ASS_Image *image = ass_render_frame(renderer, track, 0, &changed);
-         image; image = image->next) {
-        const uint32_t fields[] = {
-            image->color, (uint32_t) image->dst_x,
-            (uint32_t) image->dst_y, (uint32_t) image->w,
-            (uint32_t) image->h, (uint32_t) image->type,
-        };
-        for (size_t i = 0; i < sizeof(fields) / sizeof(*fields); i++) {
-            hash ^= fields[i];
-            hash *= UINT64_C(1099511628211);
-        }
-        for (int y = 0; y < image->h; y++)
-            for (int x = 0; x < image->w; x++) {
-                hash ^= image->bitmap[y * image->stride + x];
-                hash *= UINT64_C(1099511628211);
-            }
-    }
+         image; image = image->next)
+        hash = hash_image(hash, image);
     return hash;
 }
 
@@ -356,28 +361,40 @@ static void test_title_colors(ASS_Library *lib, ASS_Renderer *renderer)
 #define CHAT_LEFT_ARGS "&H0000FF&,&H66&,&H00FF00&,&H77&,&HFF0000&,&H88&," \
                        "&HFFFF00&,&H99&,3,&H111111&,&HAA&,1"
 
-static const GlyphInfo *chat_test_glyph(ASS_Renderer *renderer, unsigned symbol)
+static bool message_has_image_color(ASS_Renderer *renderer, ASS_Track *track,
+                                     int message, int type, uint32_t color)
 {
-    const TextInfo *info = &renderer->state.text_info;
-    for (int i = 0; i < info->length; i++)
-        if (info->glyphs[i].symbol == symbol)
-            return &info->glyphs[i];
-    assert(false);
-    return NULL;
+    /* These fixtures have no header: the first shadow is the panel, followed
+     * by one fill per message. Glyph state has already been released when
+     * ass_render_frame returns, so inspect the returned images instead. */
+    ImageSample bubble = image_by_order(renderer, track, IMAGE_TYPE_SHADOW,
+                                        message + 1);
+    assert(bubble.found);
+    int changed = 0;
+    for (ASS_Image *image = ass_render_frame(renderer, track, 0, &changed);
+         image; image = image->next)
+        if (image->type == type && image->color == color && image->w && image->h &&
+            image->dst_x < bubble.box.x + bubble.box.w &&
+            image->dst_x + image->w > bubble.box.x &&
+            image->dst_y < bubble.box.y + bubble.box.h &&
+            image->dst_y + image->h > bubble.box.y)
+            return true;
+    return false;
 }
 
-static void expect_side_glyph(const GlyphInfo *glyph, bool right,
-                               uint32_t bubble)
+static void expect_side_images(ASS_Renderer *renderer, ASS_Track *track,
+                                int message, bool right, uint32_t bubble)
 {
-    assert(glyph->c[0] == (right ? 0xFFFFFF11u : 0xFF000066u));
-    assert(glyph->c[1] == (right ? 0xBBC53922u : 0x00FF0077u));
-    assert(glyph->c[2] == (right ? 0x00000055u : 0x111111AAu));
-    assert(glyph->c[3] == 0x0000AA00u);
-    assert(glyph->chat_bubble.fill == bubble);
-    assert(glyph->chat_bubble.border == (right ? 0xCC55FF44u : 0x00FFFF99u));
-    assert(glyph->chat_bubble.border_size == (right ? 4 : 3));
-    assert(glyph->border_x == (right ? 2 : 1));
-    assert(glyph->border_y == (right ? 2 : 1));
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 0).color ==
+           0x0000AA00u);
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, message + 1).color ==
+           bubble);
+    assert(message_has_image_color(renderer, track, message, IMAGE_TYPE_CHARACTER,
+                                   right ? 0xFFFFFF11u : 0xFF000066u));
+    assert(message_has_image_color(renderer, track, message, IMAGE_TYPE_OUTLINE,
+                                   right ? 0x00000055u : 0x111111AAu));
+    assert(message_has_image_color(renderer, track, message, IMAGE_TYPE_OUTLINE,
+                                   right ? 0xCC55FF44u : 0x00FFFF99u));
 }
 
 static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
@@ -392,7 +409,8 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
         "{\\chatmode2\\msgm(Miku)\\msgshowname0\\msgleft()\\msgright()}"
         "|{\\bubc&H112233&}Yurf:\\NA||Miku:\\NB||C|");
     assert(legacy && legacy_hash == render_hash(renderer, legacy));
-    assert(chat_test_glyph(renderer, 'C')->chat_bubble.fill == 0x33221100u);
+    assert(image_by_order(renderer, legacy, IMAGE_TYPE_SHADOW, 3).color ==
+           0x33221100u);
     ass_free_track(legacy);
     const char *payloads[] = {
         "{\\msg(Yurf)}A{\\msg(Miku)\\bubc&H0000FF&}B{\\msg(Miku)}C"
@@ -420,11 +438,11 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
         assert(right->bubble.fill == 0x44223333u &&
                right->bubble.border == 0xCC55FF44u &&
                right->bubble.border_size == 4 && right->outline_size == 2);
-        expect_side_glyph(chat_test_glyph(renderer, 'A'), false, 0x0000FF88u);
-        expect_side_glyph(chat_test_glyph(renderer, 'B'), true, 0xFF000033u);
-        expect_side_glyph(chat_test_glyph(renderer, 'C'), true, 0x44223333u);
-        expect_side_glyph(chat_test_glyph(renderer, 'D'), false, 0x0000FF88u);
-        expect_side_glyph(chat_test_glyph(renderer, 'E'), true, 0x44223333u);
+        expect_side_images(renderer, track, 0, false, 0x0000FF88u);
+        expect_side_images(renderer, track, 1, true, 0xFF000033u);
+        expect_side_images(renderer, track, 2, true, 0x44223333u);
+        expect_side_images(renderer, track, 3, false, 0x0000FF88u);
+        expect_side_images(renderer, track, 4, true, 0x44223333u);
         assert(!renderer->state.chat_title.has_text);
         ass_free_track(track);
     }
@@ -442,6 +460,20 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
     assert(track && preset_hash == render_hash(renderer, track));
     ass_free_track(track);
 
+    /* The other side also matches every individual appearance tag, including
+     * name paint and both outline sizes in the output geometry and bitmaps. */
+    track = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgleft(" CHAT_LEFT_ARGS ")}|Yurf:\\NA|");
+    assert(track);
+    uint64_t left_hash = render_hash(renderer, track);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)}|{\\c&H0000FF&\\1a&H66&\\2c&H00FF00&\\2a&H77&"
+        "\\3c&HFF0000&\\3a&H88&\\bubbc&HFFFF00&\\bubba&H99&\\bubbs3"
+        "\\bc&H111111&\\ba&HAA&\\bs1}Yurf:\\NA|");
+    assert(track && left_hash == render_hash(renderer, track));
+    ass_free_track(track);
+
     /* An absent left preset sees the inherited defaults, not right-side paint.
      * A preset authored in a message's leading block applies to that message. */
     track = make_track(lib,
@@ -449,10 +481,12 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
         "|{\\msgright(" CHAT_RIGHT_ARGS ")}Miku:\\NA||Yurf:\\NB||Miku:\\NC|");
     assert(track);
     render(renderer, track, 0);
-    expect_side_glyph(chat_test_glyph(renderer, 'A'), true, 0x44223333u);
-    assert(chat_test_glyph(renderer, 'B')->c[0] == 0x66554400u);
-    assert(chat_test_glyph(renderer, 'B')->chat_bubble.fill == 0x00AA0000u);
-    expect_side_glyph(chat_test_glyph(renderer, 'C'), true, 0x44223333u);
+    expect_side_images(renderer, track, 0, true, 0x44223333u);
+    assert(message_has_image_color(renderer, track, 1, IMAGE_TYPE_CHARACTER,
+                                   0x66554400u));
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 2).color ==
+           0x00AA0000u);
+    expect_side_images(renderer, track, 2, true, 0x44223333u);
     ass_free_track(track);
 
     track = make_track(lib,
@@ -460,7 +494,8 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
         "\\msgm(Miku)\\msgright(" CHAT_RIGHT_ARGS ")}|Miku:\\NA|");
     assert(track);
     assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 1).color == 0x44332200u);
-    assert(chat_test_glyph(renderer, 'M')->c[0] == 0x56341200u);
+    assert(image_by_order(renderer, track, IMAGE_TYPE_CHARACTER, 0).color ==
+           0x56341200u);
     ass_free_track(track);
 
     const char *invalid[] = {
@@ -490,19 +525,21 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
         "{\\chatmode2\\msgm(Miku)\\msgshowname0}|Yurf:\\NA||Miku:\\NB|", metadata, "Nene");
     assert(track);
     render(renderer, track, 0);
-    assert(chat_test_glyph(renderer, 'A')->c[0] == 0x66554400u);
-    expect_side_glyph(chat_test_glyph(renderer, 'B'), true, 0x44223333u);
+    assert(message_has_image_color(renderer, track, 0, IMAGE_TYPE_CHARACTER,
+                                   0x66554400u));
+    expect_side_images(renderer, track, 1, true, 0x44223333u);
     ass_free_track(track);
     track = make_actor_track(lib,
         "{\\chatmode2\\msgm(Miku)\\msgshowname0\\msgright(" CHAT_LEFT_ARGS ")}"
         "|Miku:\\NA||{\\r}Miku:\\NB||C|", metadata, "Nene");
     assert(track);
     render(renderer, track, 0);
-    expect_side_glyph(chat_test_glyph(renderer, 'A'), false, 0x0000FF88u);
+    expect_side_images(renderer, track, 0, false, 0x0000FF88u);
     /* The reset reapplies actor defaults, including its next-message preset. */
     assert(renderer->state.chat_side[1].bubble.fill == 0x44223333u);
-    assert(chat_test_glyph(renderer, 'B')->c[0] == 0x66554400u);
-    expect_side_glyph(chat_test_glyph(renderer, 'C'), true, 0x44223333u);
+    assert(message_has_image_color(renderer, track, 1, IMAGE_TYPE_CHARACTER,
+                                   0x66554400u));
+    expect_side_images(renderer, track, 2, true, 0x44223333u);
     ass_free_track(track);
 
     /* Explicit style resets keep the existing actor whitelist rules. */
@@ -512,8 +549,10 @@ static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
     assert(track);
     render(renderer, track, 0);
     assert(!renderer->state.chat_side[1].enabled);
-    assert(chat_test_glyph(renderer, 'A')->c[0] == 0xFFFFFF00u);
-    assert(chat_test_glyph(renderer, 'B')->c[0] == 0xFFFFFF00u);
+    assert(message_has_image_color(renderer, track, 0, IMAGE_TYPE_CHARACTER,
+                                   0xFFFFFF00u));
+    assert(message_has_image_color(renderer, track, 1, IMAGE_TYPE_CHARACTER,
+                                   0xFFFFFF00u));
     ass_free_track(track);
 
     track = make_track(lib,
@@ -548,6 +587,42 @@ static int receipt_strokes(ASS_Renderer *renderer, ASS_Track *track,
     return strokes;
 }
 
+static uint64_t message_text_hash(ASS_Renderer *renderer, ASS_Track *track)
+{
+    int changed = 0;
+    ASS_Image *images = ass_render_frame(renderer, track, 0, &changed);
+    uint64_t hash = UINT64_C(1469598103934665603);
+    bool saw_text = false;
+    for (ASS_Image *image = images; image; image = image->next) {
+        if (image->type != IMAGE_TYPE_CHARACTER || !image->w || !image->h)
+            continue;
+        bool receipt = false, panel = true;
+        for (ASS_Image *fill = images; fill; fill = fill->next) {
+            if (fill->type != IMAGE_TYPE_SHADOW)
+                continue;
+            if (panel) {
+                panel = false;
+                continue;
+            }
+            /* The receipt fixtures have no header, names or descenders;
+             * metadata occupies the last 12 pixels of the bubble padding. */
+            if (image->dst_y >= fill->dst_y + fill->h - 12 &&
+                image->dst_y < fill->dst_y + fill->h &&
+                image->dst_x >= fill->dst_x &&
+                image->dst_x < fill->dst_x + fill->w) {
+                receipt = true;
+                break;
+            }
+        }
+        if (!receipt) {
+            saw_text = true;
+            hash = hash_image(hash, image);
+        }
+    }
+    assert(saw_text);
+    return hash;
+}
+
 static void test_receipts(ASS_Library *lib, ASS_Renderer *renderer)
 {
     const char *payloads[] = {
@@ -565,7 +640,7 @@ static void test_receipts(ASS_Library *lib, ASS_Renderer *renderer)
     for (size_t mode = 0; mode < sizeof(payloads) / sizeof(*payloads); mode++) {
         Frame legacy = {0};
         uint64_t legacy_hash = 0;
-        int legacy_glyph_count = 0;
+        uint64_t legacy_text_hash = 0;
         char source[768];
         for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
             snprintf(source, sizeof(source), "{\\chatmode%d\\msgm(Miku)\\msgshowname0%s}%s",
@@ -575,11 +650,13 @@ static void test_receipts(ASS_Library *lib, ASS_Renderer *renderer)
             Frame frame = render(renderer, track, 0);
             if (!i) {
                 legacy = frame;
-                legacy_glyph_count = renderer->state.text_info.length;
+                legacy_text_hash = message_text_hash(renderer, track);
                 legacy_hash = render_hash(renderer, track);
             }
             assert(frame.count == legacy.count);
-            assert(renderer->state.text_info.length == legacy_glyph_count);
+            /* Receipts add only native metadata: text pixels, positions and
+             * wrapping remain identical to the receipt-free output. */
+            assert(message_text_hash(renderer, track) == legacy_text_hash);
             for (int j = 0; j < frame.count; j++)
                 assert(same_box(frame.boxes[j], legacy.boxes[j]));
             assert(receipt_strokes(renderer, track, 0, 0) == cases[i].strokes);
