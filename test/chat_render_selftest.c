@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ass.h"
+#include "ass_render.h"
 
 #undef assert
 #define assert(condition) do { \
@@ -68,7 +69,8 @@ static bool add_test_font(ASS_Library *lib)
     return true;
 }
 
-static ASS_Track *make_track(ASS_Library *lib, const char *body)
+static ASS_Track *make_actor_track(ASS_Library *lib, const char *body,
+                                  const char *metadata, const char *actor)
 {
     const char *prefix =
         "[Script Info]\n"
@@ -83,16 +85,21 @@ static ASS_Track *make_track(ASS_Library *lib, const char *body)
         "Style: Default,sans-serif,42,&H00FFFFFF,&H0000FFFF,&H0000AA00,&H00AA0000,"
         "0,0,0,0,100,100,0,0,1,0,0,9,20,20,20,1\n\n"
         "[Events]\n"
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,";
-    size_t length = strlen(prefix) + strlen(body) + 2;
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+    size_t length = strlen(prefix) + strlen(body) + strlen(metadata) + strlen(actor) + 80;
     char *script = malloc(length);
     if (!script)
         return NULL;
-    snprintf(script, length, "%s%s\n", prefix, body);
+    snprintf(script, length, "%s%sDialogue: 0,0:00:00.00,0:00:10.00,Default,%s,0,0,0,,%s\n",
+             prefix, metadata, actor, body);
     ASS_Track *track = ass_read_memory(lib, script, strlen(script), NULL);
     free(script);
     return track;
+}
+
+static ASS_Track *make_track(ASS_Library *lib, const char *body)
+{
+    return make_actor_track(lib, body, "", "");
 }
 
 static Frame render(ASS_Renderer *renderer, ASS_Track *track, long long time)
@@ -344,6 +351,337 @@ static void test_title_colors(ASS_Library *lib, ASS_Renderer *renderer)
     ass_free_track(track);
 }
 
+#define CHAT_RIGHT_ARGS "&HFFFFFF&,&H11&,&H39C5BB&,&H22&,&H332244&,&H33&," \
+                        "&HFF55CC&,&H44&,4,&H000000&,&H55&,2"
+#define CHAT_LEFT_ARGS "&H0000FF&,&H66&,&H00FF00&,&H77&,&HFF0000&,&H88&," \
+                       "&HFFFF00&,&H99&,3,&H111111&,&HAA&,1"
+
+static const GlyphInfo *chat_test_glyph(ASS_Renderer *renderer, unsigned symbol)
+{
+    const TextInfo *info = &renderer->state.text_info;
+    for (int i = 0; i < info->length; i++)
+        if (info->glyphs[i].symbol == symbol)
+            return &info->glyphs[i];
+    assert(false);
+    return NULL;
+}
+
+static void expect_side_glyph(const GlyphInfo *glyph, bool right,
+                               uint32_t bubble)
+{
+    assert(glyph->c[0] == (right ? 0xFFFFFF11u : 0xFF000066u));
+    assert(glyph->c[1] == (right ? 0xBBC53922u : 0x00FF0077u));
+    assert(glyph->c[2] == (right ? 0x00000055u : 0x111111AAu));
+    assert(glyph->c[3] == 0x0000AA00u);
+    assert(glyph->chat_bubble.fill == bubble);
+    assert(glyph->chat_bubble.border == (right ? 0xCC55FF44u : 0x00FFFF99u));
+    assert(glyph->chat_bubble.border_size == (right ? 4 : 3));
+    assert(glyph->border_x == (right ? 2 : 1));
+    assert(glyph->border_y == (right ? 2 : 1));
+}
+
+static void test_side_styles(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    ASS_Track *legacy = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0}"
+        "|{\\bubc&H112233&}Yurf:\\NA||Miku:\\NB||C|");
+    assert(legacy);
+    uint64_t legacy_hash = render_hash(renderer, legacy);
+    ass_free_track(legacy);
+    legacy = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0\\msgleft()\\msgright()}"
+        "|{\\bubc&H112233&}Yurf:\\NA||Miku:\\NB||C|");
+    assert(legacy && legacy_hash == render_hash(renderer, legacy));
+    assert(chat_test_glyph(renderer, 'C')->chat_bubble.fill == 0x33221100u);
+    ass_free_track(legacy);
+    const char *payloads[] = {
+        "{\\msg(Yurf)}A{\\msg(Miku)\\bubc&H0000FF&}B{\\msg(Miku)}C"
+        "{\\msg(Yurf)}D{\\msg(Yurf,right)}E",
+        "|Yurf:\\NA||{\\bubc&H0000FF&}Miku:\\NB||C||Yurf:\\ND||Miku:\\NE|",
+        "{\\ta7}A\\N{\\ta9\\bubc&H0000FF&}B\\N{|}C\\N{\\ta4}D\\N{\\ta3}E",
+    };
+    for (size_t i = 0; i < sizeof(payloads) / sizeof(*payloads); i++) {
+        char source[1024];
+        snprintf(source, sizeof(source), "{\\chatmode%d\\msgm(Miku)\\msgshowname0"
+                 "\\msgleft(" CHAT_LEFT_ARGS ")\\msgright(" CHAT_RIGHT_ARGS ")}%s",
+                 (int) i + 1, payloads[i]);
+        ASS_Track *track = make_track(lib, source);
+        assert(track && render(renderer, track, 0).count == 6);
+        const ChatSideStyle *left = &renderer->state.chat_side[0];
+        const ChatSideStyle *right = &renderer->state.chat_side[1];
+        assert(left->enabled && right->enabled);
+        assert(left->c[0] == 0xFF000066u && left->c[1] == 0x00FF0077u &&
+               left->c[2] == 0x111111AAu);
+        assert(left->bubble.fill == 0x0000FF88u &&
+               left->bubble.border == 0x00FFFF99u &&
+               left->bubble.border_size == 3 && left->outline_size == 1);
+        assert(right->c[0] == 0xFFFFFF11u && right->c[1] == 0xBBC53922u &&
+               right->c[2] == 0x00000055u);
+        assert(right->bubble.fill == 0x44223333u &&
+               right->bubble.border == 0xCC55FF44u &&
+               right->bubble.border_size == 4 && right->outline_size == 2);
+        expect_side_glyph(chat_test_glyph(renderer, 'A'), false, 0x0000FF88u);
+        expect_side_glyph(chat_test_glyph(renderer, 'B'), true, 0xFF000033u);
+        expect_side_glyph(chat_test_glyph(renderer, 'C'), true, 0x44223333u);
+        expect_side_glyph(chat_test_glyph(renderer, 'D'), false, 0x0000FF88u);
+        expect_side_glyph(chat_test_glyph(renderer, 'E'), true, 0x44223333u);
+        assert(!renderer->state.chat_title.has_text);
+        ass_free_track(track);
+    }
+
+    /* Same paint, layout and bitmaps as the individual tags, with no receipts. */
+    ASS_Track *track = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgright(" CHAT_RIGHT_ARGS ")}|Miku:\\NA|");
+    assert(track);
+    uint64_t preset_hash = render_hash(renderer, track);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)}|{\\c&HFFFFFF&\\1a&H11&\\2c&H39C5BB&\\2a&H22&"
+        "\\3c&H332244&\\3a&H33&\\bubbc&HFF55CC&\\bubba&H44&\\bubbs4"
+        "\\bc&H000000&\\ba&H55&\\bs2}Miku:\\NA|");
+    assert(track && preset_hash == render_hash(renderer, track));
+    ass_free_track(track);
+
+    /* An absent left preset sees the inherited defaults, not right-side paint.
+     * A preset authored in a message's leading block applies to that message. */
+    track = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0\\c&H445566&}"
+        "|{\\msgright(" CHAT_RIGHT_ARGS ")}Miku:\\NA||Yurf:\\NB||Miku:\\NC|");
+    assert(track);
+    render(renderer, track, 0);
+    expect_side_glyph(chat_test_glyph(renderer, 'A'), true, 0x44223333u);
+    assert(chat_test_glyph(renderer, 'B')->c[0] == 0x66554400u);
+    assert(chat_test_glyph(renderer, 'B')->chat_bubble.fill == 0x00AA0000u);
+    expect_side_glyph(chat_test_glyph(renderer, 'C'), true, 0x44223333u);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\chatmode2\\msgtitle(Miku)\\msgtitlec&H123456&\\msgtitlegbc&H223344&"
+        "\\msgm(Miku)\\msgright(" CHAT_RIGHT_ARGS ")}|Miku:\\NA|");
+    assert(track);
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 1).color == 0x44332200u);
+    assert(chat_test_glyph(renderer, 'M')->c[0] == 0x56341200u);
+    ass_free_track(track);
+
+    const char *invalid[] = {
+        "\\msgright(1,2)", "\\msgright(" CHAT_RIGHT_ARGS ",1)",
+        "\\msgright(&HFFFFFF&,,&H39C5BB&,&H22&,&H332244&,&H33&,"
+        "&HFF55CC&,&H44&,4,&H000000&,&H55&,2)",
+        "\\msgright(&HFFFFFF&,&H100&,&H39C5BB&,&H22&,&H332244&,&H33&,"
+        "&HFF55CC&,&H44&,4,&H000000&,&H55&,2)",
+        "\\msgright(&HFFFFFF&,&H11&,&H39C5BB&,&H22&,&H332244&,&H33&,"
+        "&HFF55CC&,&H44&,nan,&H000000&,&H55&,2)",
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); i++) {
+        char source[768];
+        snprintf(source, sizeof(source), "{\\chatmode2\\msgm(Miku)"
+                 "\\msgright(" CHAT_RIGHT_ARGS ")%s}|Miku:\\NA|", invalid[i]);
+        track = make_track(lib, source);
+        assert(track && preset_hash == render_hash(renderer, track));
+        ass_free_track(track);
+    }
+
+    /* Existing actor defaults provide the baseline; actor side presets are
+     * inherited and an event preset takes precedence without changing actors. */
+    const char *metadata =
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,"
+        "{\\c&H445566&\\msgright(" CHAT_RIGHT_ARGS ")}\n";
+    track = make_actor_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0}|Yurf:\\NA||Miku:\\NB|", metadata, "Nene");
+    assert(track);
+    render(renderer, track, 0);
+    assert(chat_test_glyph(renderer, 'A')->c[0] == 0x66554400u);
+    expect_side_glyph(chat_test_glyph(renderer, 'B'), true, 0x44223333u);
+    ass_free_track(track);
+    track = make_actor_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0\\msgright(" CHAT_LEFT_ARGS ")}"
+        "|Miku:\\NA||{\\r}Miku:\\NB||C|", metadata, "Nene");
+    assert(track);
+    render(renderer, track, 0);
+    expect_side_glyph(chat_test_glyph(renderer, 'A'), false, 0x0000FF88u);
+    /* The reset reapplies actor defaults, including its next-message preset. */
+    assert(renderer->state.chat_side[1].bubble.fill == 0x44223333u);
+    assert(chat_test_glyph(renderer, 'B')->c[0] == 0x66554400u);
+    expect_side_glyph(chat_test_glyph(renderer, 'C'), true, 0x44223333u);
+    ass_free_track(track);
+
+    /* Explicit style resets keep the existing actor whitelist rules. */
+    track = make_actor_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0}|{\\rDefault}Miku:\\NA||B|",
+        metadata, "Nene");
+    assert(track);
+    render(renderer, track, 0);
+    assert(!renderer->state.chat_side[1].enabled);
+    assert(chat_test_glyph(renderer, 'A')->c[0] == 0xFFFFFF00u);
+    assert(chat_test_glyph(renderer, 'B')->c[0] == 0xFFFFFF00u);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\chatmode1\\msgm(Miku)\\msgshowname0\\msgright(" CHAT_RIGHT_ARGS ")}"
+        "{\\msg(Miku)}{\\msg(Miku)}A");
+    assert(track);
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 1).color == 0x44223333u);
+    ass_free_track(track);
+}
+
+static int receipt_strokes(ASS_Renderer *renderer, ASS_Track *track,
+                            long long time, int message)
+{
+    int changed = 0;
+    ASS_Image *images = ass_render_frame(renderer, track, time, &changed);
+    Box bubble = {0};
+    int index = 0;
+    for (ASS_Image *image = images; image; image = image->next)
+        if (image->type == IMAGE_TYPE_SHADOW && index++ == message + 1) {
+            bubble = (Box) {image->dst_x, image->dst_y, image->w, image->h};
+            break;
+        }
+    if (!bubble.w)
+        return 0;
+    int strokes = 0;
+    for (ASS_Image *image = images; image; image = image->next)
+        if (image->type == IMAGE_TYPE_CHARACTER && image->w && image->h &&
+            image->dst_y >= bubble.y + bubble.h - 12 &&
+            image->dst_y < bubble.y + bubble.h &&
+            image->dst_x >= bubble.x && image->dst_x < bubble.x + bubble.w)
+            strokes++;
+    return strokes;
+}
+
+static void test_receipts(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *payloads[] = {
+        "{\\msg(Miku)}A{\\msg(Yurf)}B{\\msg(Miku)}C{\\msg(Miku)}D",
+        "|Miku:\\NA||Yurf:\\NB||Miku:\\NC||D|",
+        "{\\ta9}A\\N{\\ta7}B\\N{\\ta6}C\\N{|}D",
+    };
+    const struct { const char *tags; int strokes; } cases[] = {
+        {"", 0}, {"\\readtime0", 4}, {"\\readmark0", 0},
+        {"\\readmark1", 2}, {"\\readmark2", 4},
+        {"\\readmark2\\readtime0", 4}, {"\\readmark1\\readtime1245", 2},
+        {"\\readmark0\\readtime1245", 0},
+        {"\\readmark9\\readtime-1", 0}, {"\\readmark(2)\\readtime(1245)", 0},
+    };
+    for (size_t mode = 0; mode < sizeof(payloads) / sizeof(*payloads); mode++) {
+        Frame legacy = {0};
+        uint64_t legacy_hash = 0;
+        int legacy_glyph_count = 0;
+        char source[768];
+        for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+            snprintf(source, sizeof(source), "{\\chatmode%d\\msgm(Miku)\\msgshowname0%s}%s",
+                     (int) mode + 1, cases[i].tags, payloads[mode]);
+            ASS_Track *track = make_track(lib, source);
+            assert(track);
+            Frame frame = render(renderer, track, 0);
+            if (!i) {
+                legacy = frame;
+                legacy_glyph_count = renderer->state.text_info.length;
+                legacy_hash = render_hash(renderer, track);
+            }
+            assert(frame.count == legacy.count);
+            assert(renderer->state.text_info.length == legacy_glyph_count);
+            for (int j = 0; j < frame.count; j++)
+                assert(same_box(frame.boxes[j], legacy.boxes[j]));
+            assert(receipt_strokes(renderer, track, 0, 0) == cases[i].strokes);
+            assert(receipt_strokes(renderer, track, 0, 1) == 0);
+            assert(receipt_strokes(renderer, track, 0, 2) == cases[i].strokes);
+            assert(receipt_strokes(renderer, track, 0, 3) == cases[i].strokes);
+            assert(receipt_strokes(renderer, track, 2000, 0) == cases[i].strokes);
+            if (!cases[i].strokes)
+                assert(legacy_hash == render_hash(renderer, track));
+            ass_free_track(track);
+        }
+        snprintf(source, sizeof(source), "{\\chatmode%d\\msgm(Miku)\\msgshowname0"
+                 "\\readmark2\\readtime1245\\msgstartcount(1)\\msgtime(1000,3000,5000)"
+                 "\\msganim(0)}%s", (int) mode + 1, payloads[mode]);
+        ASS_Track *track = make_track(lib, source);
+        assert(track);
+        assert(receipt_strokes(renderer, track, 1244, 0) == 2);
+        assert(receipt_strokes(renderer, track, 1245, 0) == 4);
+        assert(receipt_strokes(renderer, track, 3000, 2) == 2);
+        assert(receipt_strokes(renderer, track, 4244, 2) == 2);
+        assert(receipt_strokes(renderer, track, 4245, 2) == 4);
+        assert(receipt_strokes(renderer, track, 5000, 3) == 2);
+        assert(receipt_strokes(renderer, track, 6244, 3) == 2);
+        assert(receipt_strokes(renderer, track, 6245, 3) == 4);
+        assert(receipt_strokes(renderer, track, 6245, 1) == 0);
+        ass_free_track(track);
+    }
+
+    ASS_Track *track = make_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0}"
+        "|{\\readmark1}Miku:\\NA||Yurf:\\NB||Miku:\\NC|"
+        "|{\\readmark2\\readtime1245}D||Yurf:\\NE||Miku:\\NF|");
+    assert(track);
+    assert(receipt_strokes(renderer, track, 1245, 0) == 2);
+    assert(receipt_strokes(renderer, track, 1245, 1) == 0);
+    assert(receipt_strokes(renderer, track, 1245, 2) == 2);
+    assert(receipt_strokes(renderer, track, 1244, 3) == 2);
+    assert(receipt_strokes(renderer, track, 1245, 3) == 4);
+    assert(receipt_strokes(renderer, track, 1245, 4) == 0);
+    assert(receipt_strokes(renderer, track, 1244, 5) == 2);
+    assert(receipt_strokes(renderer, track, 1245, 5) == 4);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\chatmode1\\msgm(Miku)\\msgshowname0\\readmark2}"
+        "{\\msg(Yurf,right)}A{\\msg(Miku,left)}B{\\msg(Miku)}C");
+    assert(track);
+    assert(receipt_strokes(renderer, track, 0, 0) == 0);
+    assert(receipt_strokes(renderer, track, 0, 1) == 0);
+    assert(receipt_strokes(renderer, track, 0, 2) == 4);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\chatmode3\\readtime1245\\msgstartcount(0)\\msgtime(1000)\\msganim(250)}"
+        "{\\ta9}A");
+    assert(track);
+    assert(receipt_strokes(renderer, track, 1000, 0) == 0);
+    assert(receipt_strokes(renderer, track, 1250, 0) == 2);
+    assert(receipt_strokes(renderer, track, 2244, 0) == 2);
+    assert(receipt_strokes(renderer, track, 2245, 0) == 4);
+    ass_free_track(track);
+
+    /* Receipt defaults can come from the existing actor metadata. */
+    track = make_actor_track(lib,
+        "{\\chatmode2\\msgm(Miku)\\msgshowname0}|Miku:\\NA||Yurf:\\NB||Miku:\\NC|",
+        "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,"
+        "{\\readtime1245}\n", "Nene");
+    assert(track);
+    assert(receipt_strokes(renderer, track, 1244, 0) == 2);
+    assert(receipt_strokes(renderer, track, 1245, 0) == 4);
+    assert(receipt_strokes(renderer, track, 1244, 1) == 0);
+    assert(receipt_strokes(renderer, track, 1244, 2) == 2);
+    assert(receipt_strokes(renderer, track, 1245, 2) == 4);
+    ass_free_track(track);
+
+    track = make_track(lib, "{\\an9\\pos(1850,80)\\chatmode3\\readmark2"
+                           "\\clip(0,0,1800,1080)}{\\ta9}A");
+    assert(track);
+    int changed = 0;
+    for (ASS_Image *image = ass_render_frame(renderer, track, 0, &changed);
+         image; image = image->next)
+        assert(image->dst_x + image->w <= 1800);
+    ass_free_track(track);
+
+    track = make_track(lib, "{\\chatmode3\\readtime0}{\\ta9}A");
+    assert(track);
+    ImageSample bubble = image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 1);
+    assert(bubble.found);
+    int strokes = 0;
+    ASS_ImageRGBA *rgba = ass_render_frame_rgba(renderer, track, 0, &changed);
+    assert(rgba);
+    for (ASS_ImageRGBA *image = rgba;
+         image; image = image->next)
+        if (image->type == IMAGE_TYPE_CHARACTER && image->w && image->h &&
+            image->dst_y >= bubble.box.y + bubble.box.h - 12 &&
+            image->dst_y < bubble.box.y + bubble.box.h)
+            strokes++;
+    assert(strokes == 4);
+    ass_free_images_rgba(rgba);
+    ass_free_track(track);
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -357,6 +695,8 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     test_title_colors(lib, renderer);
+    test_side_styles(lib, renderer);
+    test_receipts(lib, renderer);
 
     const char *shorthand =
         "{\\an9\\pos(1850,80)\\chatmode3\\msgtitle(Miku)"
@@ -797,7 +1137,8 @@ int main(void)
     /* Unknown marker and color tags outside chat keep the ordinary path. */
     track = make_track(lib, "{\\ta7\\c&HFFFFFF&\\2c&H00FFFF&"
                             "\\3c&H00FF00&\\4c&HFF0000&"
-                            "\\msgtitlec&H39C5BB&\\msgtitlegbc&H223344&}A\\NB{|}");
+                            "\\msgtitlec&H39C5BB&\\msgtitlegbc&H223344&"
+                            "\\msgright(" CHAT_RIGHT_ARGS ")\\readmark2\\readtime1245}A\\NB{|}");
     assert(track);
     uint64_t ordinary = render_hash(renderer, track);
     ass_free_track(track);

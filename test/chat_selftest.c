@@ -42,8 +42,58 @@ static void expect_visible(const ASS_ChatScene *scene, int64_t time,
     assert(progress >= 0.0 && progress <= 1.0);
 }
 
+static void test_receipt_timing(void)
+{
+    const char *payloads[] = {
+        "{\\msg(Miku)}A{\\msg(Yurf)}B{\\msg(Miku)}C{\\msg(Miku)}D",
+        "|Miku:\\NA||Yurf:\\NB||Miku:\\NC||D|",
+        "{\\ta9}A\\N{\\ta7}B\\N{\\ta9}C\\N{|}D",
+    };
+    for (size_t i = 0; i < sizeof(payloads) / sizeof(*payloads); i++) {
+        char source[512];
+        snprintf(source, sizeof(source),
+                 "{\\chatmode%d\\msgm(Miku)\\msgstartcount(1)"
+                 "\\msgtime(1000,3000)\\msganim(250)"
+                 "\\msgright(&HFFFFFF&,&H00&,&H39C5BB&,&H00&,"
+                 "&H332244&,&H20&,&HFF55CC&,&H10&,4,&H000000&,&H30&,2)"
+                 "\\readmark2\\readtime1245}%s", (int) i + 1, payloads[i]);
+        ASS_ChatScene *scene = ass_chat_parse(source);
+        assert(scene && scene->count == 4 && scene->has_side_styles);
+        assert(scene->messages[3].side == 1);
+        assert(ass_chat_is_outgoing(scene, 0));
+        assert(!ass_chat_is_outgoing(scene, 1));
+        assert(ass_chat_is_outgoing(scene, 2));
+        assert(ass_chat_is_outgoing(scene, 3));
+        ASS_ChatReceipt receipt = {.enabled = true, .mark = 2, .delay_ms = 1245};
+        assert(ass_chat_receipt(scene, 0, receipt, 0) == 1);
+        assert(ass_chat_receipt(scene, 0, receipt, 1244) == 1);
+        assert(ass_chat_receipt(scene, 0, receipt, 1245) == 2);
+        assert(ass_chat_receipt(scene, 2, receipt, 2999) == 0);
+        assert(ass_chat_receipt(scene, 2, receipt, 3000) == 1);
+        assert(ass_chat_receipt(scene, 2, receipt, 4244) == 1);
+        assert(ass_chat_receipt(scene, 2, receipt, 4245) == 2);
+        assert(ass_chat_receipt(scene, 3, receipt, INT64_MAX) == 0);
+        receipt.delay_ms = 0;
+        assert(ass_chat_receipt(scene, 2, receipt, 3000) == 2);
+        receipt.mark = 1;
+        assert(ass_chat_receipt(scene, 2, receipt, 9999) == 1);
+        receipt.mark = 0;
+        assert(ass_chat_receipt(scene, 2, receipt, 9999) == 0);
+        receipt.mark = 2;
+        receipt.enabled = false;
+        assert(ass_chat_receipt(scene, 0, receipt, 9999) == 0);
+        ass_chat_free(scene);
+    }
+    ASS_ChatScene *scene = ass_chat_parse("{\\chatmode1\\msgm(Miku)}"
+        "{\\msg(Yurf,right)}A{\\msg(Miku,left)}B");
+    assert(scene && !ass_chat_is_outgoing(scene, 0) &&
+           !ass_chat_is_outgoing(scene, 1));
+    ass_chat_free(scene);
+}
+
 int main(void)
 {
+    test_receipt_timing();
     assert(!ass_chat_parse("{\\ta7}ordinary\\Nsubtitle{|}"));
 
     ASS_ChatScene *scene = ass_chat_parse(

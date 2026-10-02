@@ -39,6 +39,7 @@
 #include "ass_drawing.h"
 #include "ass_curved_text.h"
 #include "ass_scroll.h"
+#include "ass_chat.h"
 #include "ass_distort.h"
 #include "ass_perspective.h"
 #include "ass_bitmap.h"
@@ -297,6 +298,13 @@ typedef struct {
     bool has_text;
     bool has_background;
 } ChatTitleStyle;
+
+typedef struct {
+    bool enabled;
+    uint32_t c[3];             // body, speaker name, text outline, including alpha
+    ChatBubbleStyle bubble;
+    double outline_size;
+} ChatSideStyle;
 
 typedef struct ass_tag_image_entry {
     char *key;
@@ -792,6 +800,10 @@ struct render_context {
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     ChatBubbleStyle chat_bubble;
     ChatTitleStyle chat_title;
+    ChatSideStyle chat_side[2];
+    ASS_ChatReceipt chat_receipt;
+    bool chat_side_only_parse; // collect leading presets before message overrides
+    unsigned chat_reset_serial;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
     TextPatternPaint pattern;

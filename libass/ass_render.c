@@ -163,6 +163,10 @@ static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 
 typedef struct {
     int start, end, name_end;
+    ASS_ChatReceipt receipt;
+    bool has_preset;
+    ChatBubbleStyle empty_bubble;
+    uint32_t receipt_color;
     ASS_DRect bounds;
     double width, height;
     double stack_top;
@@ -3486,6 +3490,9 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->perspective_enabled = false;
     state->perspective = (ASS_PerspectiveParams) {0};
 
+    memset(state->chat_side, 0, sizeof(state->chat_side));
+    state->chat_receipt = (ASS_ChatReceipt) {.mark = 2};
+    state->chat_reset_serial++;
     capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
     state->chat_bubble = (ChatBubbleStyle) {
@@ -3530,6 +3537,8 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->clip_mode = 0;
     state->chat_clip_active = false;
     state->chat_enabled = chat_enabled;
+    state->chat_side_only_parse = false;
+    state->chat_reset_serial = 0;
     state->scroll_clip_active = false;
     state->chat_visible = INT_MAX;
     state->chat_clips = NULL;
@@ -6513,6 +6522,53 @@ fail:
     return false;
 }
 
+/* Borrow the existing paint state for one preset-styled message. There are no
+ * allocations or glyph copies; overrides outside these visual channels (font,
+ * panel, header, receipt state, etc.) keep their ordinary inheritance. */
+static void chat_save_visual_state(RenderContext *state, ColumnStyleState *base)
+{
+    base->mask = 0;
+    capture_column_style(state, base,
+        COLUMN_STYLE_COLOR0 | COLUMN_STYLE_COLOR1 | COLUMN_STYLE_COLOR2 |
+        COLUMN_STYLE_BORDER_X | COLUMN_STYLE_BORDER_Y);
+    memcpy(base->gradient.layer, state->gradient.layer,
+           3 * sizeof(*base->gradient.layer));
+    memcpy(base->mangetsu_gradient.layer, state->mangetsu_gradient.layer,
+           3 * sizeof(*base->mangetsu_gradient.layer));
+    memcpy(base->mangetsu_gradient.alpha, state->mangetsu_gradient.alpha,
+           3 * sizeof(*base->mangetsu_gradient.alpha));
+    memcpy(base->mangetsu_gradient.border, state->mangetsu_gradient.border,
+           sizeof(base->mangetsu_gradient.border));
+    memcpy(base->mangetsu_gradient.border_alpha, state->mangetsu_gradient.border_alpha,
+           sizeof(base->mangetsu_gradient.border_alpha));
+    memcpy(base->border_layers, state->border_layers, sizeof(base->border_layers));
+    base->pattern = state->pattern;
+    memcpy(base->image_fill.layer, state->image_fill.layer,
+           3 * sizeof(*base->image_fill.layer));
+}
+
+static void chat_restore_visual_state(RenderContext *state,
+                                       const ColumnStyleState *base)
+{
+    memcpy(state->c, base->c, 3 * sizeof(*state->c));
+    memcpy(state->gradient.layer, base->gradient.layer,
+           3 * sizeof(*base->gradient.layer));
+    memcpy(state->mangetsu_gradient.layer, base->mangetsu_gradient.layer,
+           3 * sizeof(*base->mangetsu_gradient.layer));
+    memcpy(state->mangetsu_gradient.alpha, base->mangetsu_gradient.alpha,
+           3 * sizeof(*base->mangetsu_gradient.alpha));
+    memcpy(state->mangetsu_gradient.border, base->mangetsu_gradient.border,
+           sizeof(base->mangetsu_gradient.border));
+    memcpy(state->mangetsu_gradient.border_alpha, base->mangetsu_gradient.border_alpha,
+           sizeof(base->mangetsu_gradient.border_alpha));
+    memcpy(state->border_layers, base->border_layers, sizeof(base->border_layers));
+    state->border_x = base->border_x;
+    state->border_y = base->border_y;
+    state->pattern = base->pattern;
+    memcpy(state->image_fill.layer, base->image_fill.layer,
+           3 * sizeof(*base->image_fill.layer));
+}
+
 // Parse event text into one native glyph stream, with explicit chat ranges.
 static bool parse_events(RenderContext *state, ASS_Event *event,
                          const ASS_ChatScene *chat, ChatRange *ranges,
@@ -6543,6 +6599,26 @@ static bool parse_events(RenderContext *state, ASS_Event *event,
             goto fail;
         ranges[i].start = info->length;
         char *body = message->text;
+        if (chat->has_side_styles) {
+            state->chat_side_only_parse = true;
+            for (char *p = body; *p == '{';) {
+                char *end = strchr(p + 1, '}');
+                if (!end)
+                    break;
+                ass_parse_override_block(state, p + 1, end);
+                p = end + 1;
+            }
+            state->chat_side_only_parse = false;
+        }
+        bool preset = state->chat_side[message->side].enabled;
+        unsigned reset_serial = state->chat_reset_serial;
+        ColumnStyleState base;
+        ChatBubbleStyle base_bubble;
+        if (preset) {
+            chat_save_visual_state(state, &base);
+            base_bubble = state->chat_bubble;
+            ass_apply_chat_side_style(state, message->side);
+        }
         while (*body == '{') {
             char *end = strchr(body + 1, '}');
             if (!end)
@@ -6562,6 +6638,15 @@ static bool parse_events(RenderContext *state, ASS_Event *event,
         if (!parse_event_fragment(state, body))
             goto fail;
         ranges[i].end = info->length;
+        ranges[i].receipt = state->chat_receipt;
+        ranges[i].has_preset = preset;
+        if (preset)
+            ranges[i].empty_bubble = state->chat_bubble;
+        ranges[i].receipt_color = state->c[0];
+        if (preset && reset_serial == state->chat_reset_serial) {
+            chat_restore_visual_state(state, &base);
+            state->chat_bubble = base_bubble;
+        }
     }
     return true;
 
@@ -10801,9 +10886,11 @@ static ChatMetrics chat_choose_metrics(RenderContext *state,
                           ranges[i].start, ranges[i].end));
         const GlyphInfo *glyph = chat_message_style_glyph(&state->text_info,
                                                            &ranges[i]);
-        if (glyph) {
+        if (glyph || ranges[i].has_preset) {
             double stroke_x, stroke_y;
-            chat_stroke_extent(state, glyph->chat_bubble.border_size,
+            double size = glyph ? glyph->chat_bubble.border_size :
+                ranges[i].empty_bubble.border_size;
+            chat_stroke_extent(state, size,
                                &stroke_x, &stroke_y);
             stroke_max = FFMAX(stroke_max, FFMAX(stroke_x, stroke_y));
         }
@@ -11037,6 +11124,63 @@ static ASS_Image **append_chat_bubble(RenderContext *state,
     return tail;
 }
 
+/* A native check is two cached, transformed square masks. It has no font,
+ * text-stream entry or wrapping advance, and uses the bubble's existing clips
+ * and the same ASS/RGBA bitmap output as the rounded UI surfaces. */
+static ASS_Image **append_chat_check_stroke(RenderContext *state,
+                                            double x1, double y1,
+                                            double x2, double y2,
+                                            double thickness, uint32_t color,
+                                            ASS_Image **tail,
+                                            ASS_ImageRGBA ***rgba_tail)
+{
+    double dx = x2 - x1, dy = y2 - y1;
+    double length = hypot(dx, dy);
+    if (length <= 0)
+        return tail;
+    double nx = -dy * thickness / length;
+    double ny = dx * thickness / length;
+    double par = state->renderer->par_scale_x;
+    double margin = state->renderer->settings.left_margin;
+    double matrix[3][3] = {
+        {dx * par, nx * par, ((x1 - nx / 2 - margin) * par + margin) * 64},
+        {dy, ny, (y1 - ny / 2) * 64},
+        {0, 0, 1},
+    };
+    BS4BoxShape shape = {.source_size = 64};
+    ASS_Vector pos;
+    Bitmap *bitmap;
+    if (!bs4_get_bitmap(state, matrix, &shape, &pos, &bitmap))
+        return tail;
+    return append_bs4_bitmap(state, bitmap, pos, color, IMAGE_TYPE_CHARACTER,
+                             tail, rgba_tail);
+}
+
+static ASS_Image **append_chat_receipt(RenderContext *state, int mark,
+                                       double right, double bottom,
+                                       double padding, double available_width,
+                                       uint32_t color, ASS_Image **tail,
+                                       ASS_ImageRGBA ***rgba_tail)
+{
+    double height = FFMIN(padding * 0.65, available_width / 3);
+    if (height < 1)
+        return tail;
+    double width = height * 1.5;
+    double spacing = height * 0.65;
+    double thickness = FFMAX(0.8, height * 0.18);
+    double x = right - width - (mark == 2 ? spacing : 0);
+    double y = bottom - height;
+    ass_apply_fades(&color, state->fade, state->fade_color);
+    for (int i = 0; i < mark; i++) {
+        double left = x + i * spacing;
+        tail = append_chat_check_stroke(state, left, y + height * 0.55,
+            left + width * 0.30, y + height, thickness, color, tail, rgba_tail);
+        tail = append_chat_check_stroke(state, left + width * 0.30, y + height,
+            left + width, y, thickness, color, tail, rgba_tail);
+    }
+    return tail;
+}
+
 static bool render_chat_scene(RenderContext *state, ASS_Event *event,
                               EventImages *event_images,
                               ASS_ImageRGBA **rgba_out,
@@ -11226,7 +11370,7 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
             panel_x + m->panel_pad;
         const GlyphInfo *glyph = chat_message_style_glyph(info, &ranges[i]);
         ChatBubbleStyle style = glyph ? glyph->chat_bubble :
-            state->chat_bubble;
+            ranges[i].has_preset ? ranges[i].empty_bubble : state->chat_bubble;
         double stroke_x, stroke_y;
         chat_stroke_extent(state, style.border_size, &stroke_x, &stroke_y);
         double stroke_limit = FFMAX(0.0, FFMIN(m->bubble_pad - m->bubble_gap,
@@ -11240,6 +11384,18 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
         box_tail = append_chat_bubble(state, bubble_x, ranges[i].stack_top,
             bubble_width, bubble_height, m->radius, stroke_x, stroke_y,
             style, box_tail, rgba_tail);
+        int mark = ranges[i].receipt.enabled && ass_chat_is_outgoing(chat, i) ?
+            ass_chat_receipt(chat, i, ranges[i].receipt,
+                             priv->time - event->Start) : 0;
+        if (mark) {
+            double inset = FFMAX(1.0, m->bubble_gap * 0.4);
+            double padding = FFMAX(0.0, m->bubble_pad - stroke_y - inset);
+            box_tail = append_chat_receipt(state, mark,
+                bubble_x + bubble_width - stroke_x - inset,
+                ranges[i].stack_top + bubble_height - stroke_y - inset,
+                padding, FFMAX(0.0, bubble_width - 2 * (stroke_x + inset)),
+                glyph ? glyph->c[0] : ranges[i].receipt_color, box_tail, rgba_tail);
+        }
     }
     state->chat_clip_active = false;
     *box_tail = NULL;

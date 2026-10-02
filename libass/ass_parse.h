@@ -36,6 +36,7 @@ static inline uint32_t mult_alpha(uint32_t a, uint32_t b)
 }
 
 void ass_update_font(RenderContext *state);
+void ass_apply_chat_side_style(RenderContext *state, int side);
 void ass_apply_transition_effects(RenderContext *state);
 void ass_process_karaoke_effects(RenderContext *state);
 typedef struct ass_override_text {

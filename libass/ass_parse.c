@@ -3198,6 +3198,69 @@ static bool parse_text_pattern_tag(RenderContext *state, char *name,
     return true;
 }
 
+/* A tuple is published atomically: malformed input never changes one side's
+ * stored preset or the other side. Use the ordinary ASS color/alpha parsers. */
+static bool parse_chat_side_style(struct arg *args, int nargs,
+                                  ChatSideStyle *style)
+{
+    if (!nargs) {
+        *style = (ChatSideStyle) {0};
+        return true;
+    }
+    if (nargs != 12)
+        return false;
+    ChatSideStyle parsed = {.enabled = true};
+    const int color_args[] = {0, 2, 9, 4, 6};
+    const int alpha_args[] = {1, 3, 10, 5, 7};
+    uint32_t *colors[] = {&parsed.c[0], &parsed.c[1], &parsed.c[2],
+                          &parsed.bubble.fill, &parsed.bubble.border};
+    for (int i = 0; i < 5; i++) {
+        uint32_t color, alpha;
+        if (!parse_ass_color_arg_strict(args[color_args[i]], &color) ||
+            !parse_ass_alpha_arg_strict(args[alpha_args[i]], &alpha))
+            return false;
+        *colors[i] = (color & 0xFFFFFF00u) | alpha;
+    }
+    if (!parse_double_arg_strict(args[8], &parsed.bubble.border_size) ||
+        !parse_double_arg_strict(args[11], &parsed.outline_size) ||
+        !isfinite(parsed.bubble.border_size) || !isfinite(parsed.outline_size))
+        return false;
+    parsed.bubble.border_size = FFMINMAX(parsed.bubble.border_size, 0.0, 10000.0);
+    parsed.outline_size = FFMINMAX(parsed.outline_size, 0.0, 10000.0);
+    *style = parsed;
+    return true;
+}
+
+void ass_apply_chat_side_style(RenderContext *state, int side)
+{
+    const ChatSideStyle *style = &state->chat_side[side];
+    if (!style->enabled)
+        return;
+    for (int i = 0; i < 3; i++) {
+        /* Match \c, \2c and \bc, but a side's name color must not alias the
+         * scene-wide header color. Alpha and paint replacement use the same
+         * helpers as the individual chat tags. */
+        change_color(&state->c[i], style->c[i], 1.0);
+        ass_gradient_disable_color(&state->gradient, i, state->c[i], 1.0);
+        if (i == 2)
+            disable_mangetsu_border_gradient_layer(state, 0);
+        else
+            disable_mangetsu_gradient_layer(state, i);
+        disable_image_fill_layer(state, i);
+        replace_cycle_base_paint(state, i, -1, 1.0);
+        if (i == 2)
+            apply_all_border_alpha(state, _a(style->c[i]), 1.0, false);
+        else {
+            change_alpha(&state->c[i], _a(style->c[i]), 1.0);
+            ass_gradient_disable_alpha(&state->gradient, i, _a(state->c[i]), 1.0);
+            disable_mangetsu_alpha_gradient_layer(state, i);
+        }
+    }
+    state->chat_bubble = style->bubble;
+    state->border_x = state->border_y = style->outline_size;
+    sync_layer1_border(state);
+}
+
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested)
 {
@@ -3218,6 +3281,19 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             continue;
 
         char *name_end = q;
+
+        if (state->chat_side_only_parse &&
+            !chat_structural_name_is(p, name_end, "msgleft") &&
+            !chat_structural_name_is(p, name_end, "msgright")) {
+            if (*q == '(') {
+                int depth = 1;
+                for (q++; q < end && depth; q++) {
+                    if (*q == '(') depth++;
+                    else if (*q == ')') depth--;
+                }
+            }
+            continue;
+        }
 
         /* Scroll lists bypass the legacy bounded argument array. Consume the
          * complete tag even on failure, and publish state only after validation. */
@@ -3332,6 +3408,44 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nested && !state->colorcode_parse) \
                 ass_column_update_default(state, (fields)); \
         } while (0)
+
+        /* New chat configuration is discrete, including receipt timing.
+         * Consume outside chat as well so \readmark is not misread as \r. */
+        bool left_style = chat_structural_name_is(p, name_end, "msgleft");
+        bool right_style = chat_structural_name_is(p, name_end, "msgright");
+        if (left_style || right_style) {
+            if (state->chat_enabled && !nested && !state->karaoke_only_parse &&
+                *name_end == '(' && q > name_end && q[-1] == ')' &&
+                !has_backslash_arg) {
+                int commas = 0;
+                for (char *r = name_end + 1; r < q - 1; r++)
+                    commas += *r == ',';
+                if ((nargs == 12 && commas == 11) || (!nargs && !commas))
+                    parse_chat_side_style(args, nargs, &state->chat_side[right_style]);
+            }
+            continue;
+        }
+        if (state->chat_side_only_parse)
+            continue;
+        if (tag_name_matches(p, name_end, "readmark") ||
+            tag_name_matches(p, name_end, "readtime")) {
+            if (state->chat_enabled && !nested && !state->karaoke_only_parse &&
+                *name_end != '(') {
+                bool mark = tag("readmark");
+                if (!mark)
+                    tag("readtime");
+                int32_t value;
+                if (nargs == 1 && parse_int32_arg_strict(args[0], &value) &&
+                    value >= 0 && (!mark || value <= 2)) {
+                    state->chat_receipt.enabled = true;
+                    if (mark)
+                        state->chat_receipt.mark = value;
+                    else
+                        state->chat_receipt.delay_ms = value;
+                }
+            }
+            continue;
+        }
 
         if (state->karaoke_only_parse) {
             if (state->column_event && state->column_active)

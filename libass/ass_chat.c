@@ -209,6 +209,9 @@ static bool config_tag(ChatTag tag, void *opaque)
         if (!scene->title)
             return false;
         scan->title_seen = true;
+    } else if ((tag_is(tag, "msgleft") || tag_is(tag, "msgright")) &&
+               tag.parenthesized) {
+        scene->has_side_styles = true;
     } else if (tag_is(tag, "msgm") && tag.parenthesized) {
         char *speaker = trimmed_span(tag.arg, tag.arg_len);
         if (!speaker)
@@ -724,6 +727,13 @@ ASS_ChatScene *ass_chat_parse(const char *source)
     }
     if (scene->start_count > scene->count)
         scene->start_count = scene->count;
+    for (int i = 0; i < scene->count; i++) {
+        ASS_ChatMessage *message = &scene->messages[i];
+        message->outgoing = message->side &&
+            (scene->mode == ASS_CHAT_MODE_ALIGNMENT_SHORTHAND ||
+             (scene->main_speaker && message->speaker &&
+              !strcmp(scene->main_speaker, message->speaker)));
+    }
     if (scene->has_time) {
         /* These are absolute offsets from event start, not durations. */
         int64_t last = 0;
@@ -754,6 +764,28 @@ void ass_chat_free(ASS_ChatScene *scene)
     free(scene->main_speaker);
     free(scene->prefix);
     free(scene);
+}
+
+bool ass_chat_is_outgoing(const ASS_ChatScene *scene, int index)
+{
+    if (!scene || index < 0 || index >= scene->count)
+        return false;
+    return scene->messages[index].outgoing;
+}
+
+int ass_chat_receipt(const ASS_ChatScene *scene, int index,
+                     ASS_ChatReceipt receipt, int64_t event_ms)
+{
+    if (!scene || index < 0 || index >= scene->count || !receipt.enabled ||
+        !receipt.mark)
+        return 0;
+    int64_t start = !scene->has_time || index < scene->start_count ?
+        0 : scene->messages[index].reveal_ms;
+    if (start == INT64_MAX || event_ms < start)
+        return 0;
+    if (receipt.mark == 2 && event_ms - start < receipt.delay_ms)
+        return 1;
+    return receipt.mark;
 }
 
 int ass_chat_visible(const ASS_ChatScene *scene, int64_t event_ms,

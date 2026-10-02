@@ -156,6 +156,108 @@ Static values of these tags work in all modes. They are parsed safely inside
 `\t(...)`, using the existing tag interpolation, but the phone panel and
 bubble layout are not independently animated as a composite geometry.
 
+## Left/right appearance presets
+
+`\msgleft(...)` and `\msgright(...)` define reusable visual defaults for the
+resolved left or right side. They never create messages. All three grammars
+use their existing side rules, including explicit `\msg(name,left/right)`,
+`\msgm(name)`, and mode 3's `\ta1/4/7` versus `\ta3/6/9`. Bare mode 2 blocks
+and mode 3 `{|}` continuations keep the previous side.
+
+The tuple has **exactly 12 positional fields**, in this order. This order is
+fixed for tools that generate ASS:
+
+| Position | Field | Existing chat control |
+| --- | --- | --- |
+| 1 | textColor | `\c` / `\1c` |
+| 2 | textAlpha | `\1a` |
+| 3 | nameColor | `\2c` (message names only) |
+| 4 | nameAlpha | `\2a` |
+| 5 | bubbleColor | `\3c` / `\bubc` |
+| 6 | bubbleAlpha | `\3a` / `\buba` |
+| 7 | bubbleBorderColor | `\bubbc` |
+| 8 | bubbleBorderAlpha | `\bubba` |
+| 9 | bubbleBorderSize | `\bubbs` |
+| 10 | textOutlineColor | `\bc` |
+| 11 | textOutlineAlpha | `\ba` |
+| 12 | textOutlineSize | `\bs` |
+
+```ass
+{\chatmode2\msgm(Miku)\msgright(&HFFFFFF&,&H00&,&H39C5BB&,&H00&,&H332244&,&H20&,&HFF55CC&,&H10&,4,&H000000&,&H30&,2)}|Miku:\NHello||{\bubc&H0000FF&}Important||Normal purple bubble again|
+```
+
+Colors use ASS BGR notation; alpha uses ASS hexadecimal or numeric 0–255
+notation. Sizes use the same script coordinates as the individual tags.
+Negative sizes clamp to zero; sizes above 10000 clamp to 10000. Missing,
+extra, empty, or invalid fields reject the entire tuple without changing the
+previous preset. `\msgleft()` / `\msgright()` clear just that side's preset.
+
+The precedence is existing style, actor/inherited defaults, side preset,
+then explicit message tags. A preset uses the existing chat paint state;
+individual tags still override one property. On a side with a preset, those
+message overrides stay local: the next bubble starts from the preset again.
+Left and right presets are independent. On a side with no preset, the
+existing sequential inheritance of ordinary tags remains unchanged.
+
+Presets can be declared in the event prefix or a message's leading override
+blocks; leading declarations are collected before that message's explicit
+tags. A declaration within body text applies to subsequent messages. Font,
+panel, header, title, timing, and receipt state are outside these tuples.
+In particular, a preset nameColor does **not** alias `\msgtitlec`; an explicit
+ordinary `\2c` retains its existing header alias behavior.
+
+The existing `mangetsu-colorcoding` actor metadata may supply side presets
+and receipt defaults. Its actor lookup and style whitelist rules still apply;
+an event preset overrides the actor preset. `\r` clears event presets and
+receipt overrides, then restores applicable actor defaults. A reset inside
+a message restores its baseline immediately; presets apply again at the next
+message. These new configuration tags are discrete and ignored inside `\t`.
+
+## Native sent/read marks
+
+Receipts are opt-in: using `\readmark` or `\readtime` activates them from that
+point onward, including when inherited from actor metadata. Scripts with no
+receipt tags retain their old output. The initial receipt state is
+`\readmark2` with zero delay:
+
+| Tag | Final receipt state |
+| --- | --- |
+| `\readmark0` | Hidden |
+| `\readmark1` | Sent: one check |
+| `\readmark2` | Read: two checks |
+
+In modes 1 and 2, marks appear on right-side messages from the `\msgm(name)`
+speaker. A different speaker explicitly placed on the right has no receipt;
+a self message explicitly placed on the left also has none. In mode 3, right
+is outgoing and left is incoming. Incoming messages never draw a receipt,
+but do not erase the inherited `\readmark` or `\readtime` state.
+
+Checks are native metadata in the outgoing bubble's lower-right padding,
+using its body text color and alpha. They follow the existing bubble viewport,
+scrolling, animation position, and user clips. They do not add characters,
+text advances, wrapping, or extra bubble dimensions.
+
+`\readtime1245` sets a delay of 1245 milliseconds **relative to each message's
+own appearance time**, without parentheses. Both receipt tags are stateful:
+later applicable messages inherit them until changed or reset. Valid delays
+are integers from 0 through 2147483647; malformed values are ignored.
+
+```ass
+{\chatmode2\msgm(Miku)\readmark2\readtime1245\msgstartcount(0)\msgtime(1000,3000)\msganim(250)}|Miku:\NFirst||Second|
+```
+
+The first message starts sent at event +1000 ms and becomes read at +2245 ms;
+the second starts sent at +3000 ms and becomes read at +4245 ms. The clock
+starts at the existing reveal time, including during the slide animation.
+Messages visible at event start, or static messages without `\msgtime`, use
+event start as their appearance time. Unscheduled hidden messages have no
+receipt. The sent-to-read switch is immediate: no fade or interpolation.
+
+`\readmark2` with no delay, or with `\readtime0`, shows read immediately.
+`\readmark1` remains sent regardless of delay; `\readmark0` remains hidden.
+Receipt tags in a message's overrides set that message's metadata and carry
+forward. These tags are ignored outside native chat mode.
+
 The panel width is limited to 30–56% of the video content width, and bubbles
 are limited to 75% of its inner width. Text wraps within that cap. The fixed
 message viewport is limited to 68% of the content height; older bubbles
