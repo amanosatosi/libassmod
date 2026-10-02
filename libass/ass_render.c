@@ -3493,6 +3493,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
         .border = state->c[2],
         .border_size = 0,
     };
+    state->chat_title = (ChatTitleStyle) {0};
     capture_effective_default_state(state);
 }
 
@@ -11127,6 +11128,11 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
         ((panel_color >> 8) & 255) * 114) / 1000;
     uint32_t header_color = luminance < 128 ? 0xFFFFFF00u : 0x00000000u;
     uint32_t title_color = luminance < 128 ? 0x00000000u : 0xFFFFFF00u;
+    /* Header colors are scene-wide and use the final sequential tag state. */
+    if (state->chat_title.has_background)
+        header_color = state->chat_title.background;
+    if (state->chat_title.has_text)
+        title_color = state->chat_title.text;
     for (int i = title->start; i < title->end; i++)
         for (GlyphInfo *glyph = &info->glyphs[i]; glyph; glyph = glyph->next) {
             glyph->c[0] = title_color;

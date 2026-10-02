@@ -351,6 +351,24 @@ int main(void)
         ass_chat_free(scene);
     }
 
+    /* Header color tags remain visual overrides, not title/message structure. */
+    const char *color_payloads[] = {
+        "{\\msg(Miku)}Hi", "|Miku:\\NHi|", "{\\ta7}Hi",
+    };
+    for (size_t i = 0; i < sizeof(color_payloads) / sizeof(*color_payloads); i++) {
+        char source[256], prefix[192];
+        snprintf(prefix, sizeof(prefix),
+                 "{\\chatmode%d\\2c&HFFFFFF&\\msgtitlec&H39C5BB&"
+                 "\\msgtitlegbc&H223344&\\msgtitle(Miku)}", (int) i + 1);
+        snprintf(source, sizeof(source), "%s%s", prefix, color_payloads[i]);
+        scene = ass_chat_parse(source);
+        assert(scene && scene->count == 1 && scene->title &&
+               !strcmp(scene->title, "Miku"));
+        assert(!strcmp(scene->prefix, prefix));
+        assert(strstr(scene->messages[0].text, "Hi"));
+        ass_chat_free(scene);
+    }
+
     scene = ass_chat_parse("{\\chatmode2}{\\ta7}A\\N{\\ta9}B");
     assert(scene && scene->mode == ASS_CHAT_MODE_NAMED_LAZY &&
            scene->count == 0);

@@ -223,6 +223,127 @@ static uint32_t bubble_color(ASS_Library *lib, ASS_Renderer *renderer,
     return bubble.color;
 }
 
+static void expect_title_colors(ASS_Renderer *renderer, ASS_Track *track,
+                                uint32_t text, uint32_t background,
+                                uint32_t speaker, bool named)
+{
+    ImageSample header = image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 1);
+    assert(header.found && header.color == background);
+    bool saw_title = false, saw_speaker = false, saw_body = false;
+    int changed = 0;
+    for (ASS_Image *image = ass_render_frame(renderer, track, 0, &changed);
+         image; image = image->next) {
+        if (image->type != IMAGE_TYPE_CHARACTER || !image->w || !image->h)
+            continue;
+        if (image->dst_y < header.box.y + header.box.h) {
+            assert(image->color == text);
+            saw_title = true;
+        } else if (named && image->color == speaker) {
+            saw_speaker = true;
+        } else {
+            assert(image->color == UINT32_C(0x66554400));
+            saw_body = true;
+        }
+    }
+    assert(saw_title && saw_body && (!named || saw_speaker));
+}
+
+static void test_title_colors(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *payloads[] = {
+        "{\\msg(Miku)}Hi", "|Miku:\\NHi|", "{\\ta7}Hi",
+    };
+    const struct {
+        const char *tags;
+        uint32_t text, background, speaker;
+    } cases[] = {
+        /* The yellow style SecondaryColour is not an explicit title color. */
+        {"", 0x00000000u, 0xFFFFFF00u, 0xFFFF0000u},
+        {"\\4c&HFFFFFF&", 0xFFFFFF00u, 0x00000000u, 0xFFFF0000u},
+        {"\\msgtitlec&H39C5BB&", 0xBBC53900u, 0xFFFFFF00u, 0xFFFF0000u},
+        {"\\msgtitlegbc&H223344&", 0x00000000u, 0x44332200u, 0xFFFF0000u},
+        {"\\2c&H39C5BB&", 0xBBC53900u, 0xFFFFFF00u, 0xBBC53900u},
+        {"\\2c&HFFFFFF&\\msgtitlec&H39C5BB&",
+         0xBBC53900u, 0xFFFFFF00u, 0xFFFFFF00u},
+        {"\\msgtitlec&H39C5BB&\\2c&HFFFFFF&",
+         0xFFFFFF00u, 0xFFFFFF00u, 0xFFFFFF00u},
+        {"\\msgtitlec&H39C5BB&\\msgtitlegbc&H223344&",
+         0xBBC53900u, 0x44332200u, 0xFFFF0000u},
+        /* A background override leaves the existing panel-based text fallback. */
+        {"\\4c&HFFFFFF&\\msgtitlegbc&H223344&",
+         0xFFFFFF00u, 0x44332200u, 0xFFFF0000u},
+        {"\\2a&H40&", 0x00000000u, 0xFFFFFF00u, 0xFFFF0040u},
+        {"\\2c&HFFFFFF&\\2c", 0xFFFF0000u, 0xFFFFFF00u, 0xFFFF0000u},
+        {"\\2c&HFFFFFF&\\msgtitlec&H39C5BB&\\msgtitlegbc&H223344&"
+         "\\r\\c&H445566&", 0x00000000u, 0xFFFFFF00u, 0xFFFF0000u},
+        {"\\2c&H39C5BB&\\msgtitlec", 0x00000000u, 0xFFFFFF00u, 0xBBC53900u},
+        {"\\msgtitlegbc&H223344&\\msgtitlegbc",
+         0x00000000u, 0xFFFFFF00u, 0xFFFF0000u},
+    };
+    for (size_t mode = 0; mode < sizeof(payloads) / sizeof(*payloads); mode++) {
+        uint64_t legacy_hash = 0;
+        char source[512];
+        for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+            snprintf(source, sizeof(source),
+                "{\\an9\\pos(1850,80)\\chatmode%d\\msgtitle(Miku)"
+                "\\c&H445566&%s}%s", (int) mode + 1,
+                cases[i].tags, payloads[mode]);
+            ASS_Track *track = make_track(lib, source);
+            assert(track);
+            expect_title_colors(renderer, track, cases[i].text,
+                                cases[i].background, cases[i].speaker, mode < 2);
+            if (!i)
+                legacy_hash = render_hash(renderer, track);
+            ass_free_track(track);
+        }
+        /* Legacy lines match explicitly selecting the old automatic colors,
+         * including every output image's geometry and bitmap bytes. */
+        snprintf(source, sizeof(source),
+            "{\\an9\\pos(1850,80)\\chatmode%d\\msgtitle(Miku)"
+            "\\c&H445566&\\msgtitlec&H000000&\\msgtitlegbc&HFFFFFF&}%s",
+            (int) mode + 1, payloads[mode]);
+        ASS_Track *track = make_track(lib, source);
+        assert(track);
+        assert(legacy_hash == render_hash(renderer, track));
+        ass_free_track(track);
+    }
+
+    /* Explicit colors in message overrides use the same header state and
+     * source order as prefix overrides; speaker colors stay sequential. */
+    ASS_Track *track = make_track(lib,
+        "{\\chatmode2\\msgtitle(Miku)\\msgtitlec&H39C5BB&\\c&H445566&}"
+        "|{\\2c&HFFFFFF&\\msgtitlegbc&H223344&}Miku:\\NHi|");
+    assert(track);
+    expect_title_colors(renderer, track, 0xFFFFFF00u, 0x44332200u,
+                        0xFFFFFF00u, true);
+    ass_free_track(track);
+    track = make_track(lib,
+        "{\\chatmode2\\msgtitle(Miku)\\2c&HFFFFFF&\\c&H445566&}"
+        "|{\\msgtitlec&H39C5BB&}Miku:\\NHi|");
+    assert(track);
+    expect_title_colors(renderer, track, 0xBBC53900u, 0xFFFFFF00u,
+                        0xFFFFFF00u, true);
+    ass_free_track(track);
+
+    track = make_track(lib,
+        "{\\chatmode2\\msgtitle(Miku)\\1c&H445566&\\2c&HFFFFFF&"
+        "\\msgtitlec&H39C5BB&\\msgtitlegbc&H223344&"
+        "\\3c&H303030&\\4c&H181818&\\bc&H112233&\\bs2"
+        "\\bubbc&HFF55CC&\\bubbs4}|Miku:\\NHi|");
+    assert(track);
+    expect_title_colors(renderer, track, 0xBBC53900u, 0x44332200u,
+                        0xFFFFFF00u, true);
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 0).color ==
+           UINT32_C(0x18181800));
+    assert(image_by_order(renderer, track, IMAGE_TYPE_SHADOW, 2).color ==
+           UINT32_C(0x30303000));
+    assert(has_image_color(renderer, track, IMAGE_TYPE_OUTLINE,
+                           UINT32_C(0x33221100)));
+    assert(has_image_color(renderer, track, IMAGE_TYPE_OUTLINE,
+                           UINT32_C(0xCC55FF00)));
+    ass_free_track(track);
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -234,6 +355,8 @@ int main(void)
     ass_set_frame_size(renderer, FRAME_W, FRAME_H);
     ass_set_fonts(renderer, NULL, "sans-serif",
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+
+    test_title_colors(lib, renderer);
 
     const char *shorthand =
         "{\\an9\\pos(1850,80)\\chatmode3\\msgtitle(Miku)"
@@ -673,7 +796,8 @@ int main(void)
 
     /* Unknown marker and color tags outside chat keep the ordinary path. */
     track = make_track(lib, "{\\ta7\\c&HFFFFFF&\\2c&H00FFFF&"
-                            "\\3c&H00FF00&\\4c&HFF0000&}A\\NB{|}");
+                            "\\3c&H00FF00&\\4c&HFF0000&"
+                            "\\msgtitlec&H39C5BB&\\msgtitlegbc&H223344&}A\\NB{|}");
     assert(track);
     uint64_t ordinary = render_hash(renderer, track);
     ass_free_track(track);

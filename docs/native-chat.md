@@ -84,14 +84,16 @@ immediate.
 The first `\msgtitle(name)` wins in all three modes. An empty or absent title
 removes the header. The panel follows normal `\an`, `\pos`, `\move`, style
 margins, and outer clip placement. The header uses an automatically selected
-black or white surface and opposite text color.
+black or white surface and opposite text color by default, based on the outer
+panel color. `\msgtitlec&HBBGGRR&` sets the header/contact-name text color;
+`\msgtitlegbc&HBBGGRR&` sets its background color. Both work in all three modes.
 
 The convenient chat color channels are:
 
 | Tag | Native chat surface |
 | --- | --- |
 | `\c` / `\1c`, `\1a` | Message body fill color, alpha |
-| `\2c`, `\2a` | Speaker-name fill color, alpha |
+| `\2c`, `\2a` | Speaker-name fill color, alpha; explicit `\2c` also sets header-name color |
 | `\3c`, `\3a` | Bubble fill color, alpha |
 | `\4c`, `\4a` | Outer panel fill color, alpha |
 
@@ -101,6 +103,8 @@ works. For more detailed styling, every chat mode also accepts:
 
 | Tag | Native chat surface |
 | --- | --- |
+| `\msgtitlec` | Explicit header/contact-name text color |
+| `\msgtitlegbc` | Explicit header/contact-name background color |
 | `\bubc`, `\buba` | Explicit bubble fill color, alpha |
 | `\bubbc`, `\bubba`, `\bubbs` | Rounded bubble border color, alpha, size |
 | `\bc`, `\ba`, `\bs` | Message text outline color, alpha, size |
@@ -113,6 +117,34 @@ clamp to zero. Border width follows ASS script coordinates and is scaled with
 the event. Bubble padding accounts for its border so it stays inside the
 panel and away from the message text. New properties inherit from one message
 to the next, regardless of speaker; `\r` resets them to the active style.
+
+`\2c` and `\msgtitlec` update the same header-name color state in source order.
+The later assignment wins for the header, while only `\2c` changes message
+speaker-name colors. For example:
+
+```ass
+{\chatmode2\2c&HFFFFFF&\msgtitlec&H39C5BB&\msgtitle(Miku)}|Miku:\NHello|
+```
+
+This uses white message speaker names and `&H39C5BB&` for the header name.
+Reversing those two color tags makes both names white. A background override
+can be added independently:
+
+```ass
+{\chatmode2\msgtitle(Miku)\msgtitlec&H39C5BB&\msgtitlegbc&H223344&}|Miku:\NHello|
+```
+
+Header colors are shared by the whole phone UI. Their final sequential state
+applies to the header, including assignments inside message override blocks.
+Use the leading override block for a fixed header color. Style-default
+SecondaryColour and `\2a` alone do not override the automatic header text;
+only an explicit `\2c` or `\msgtitlec` does. Without `\msgtitlegbc`, the
+automatic header background remains unchanged. Setting only `\msgtitlegbc`
+preserves the existing panel-based automatic text color. These header color
+controls are opaque RGB colors and do not change message color or alpha
+channels. Bare `\msgtitlec` / `\msgtitlegbc` restore their automatic fallbacks;
+`\r` clears both header overrides. An explicit bare `\2c` restores the style's
+speaker color and also uses that color for the header.
 
 ```ass
 {\chatmode2\msgtitle(Miku)\msgm(Miku)}

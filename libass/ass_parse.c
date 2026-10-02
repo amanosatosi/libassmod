@@ -4587,6 +4587,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else
                 change_color(&state->c[1],
                              state->default_style.c[1], 1);
+            if (state->chat_enabled && (!nargs || pwr > 0.0)) {
+                state->chat_title.text = state->c[1] & 0xFFFFFF00u;
+                state->chat_title.has_text = true;
+            }
             ass_gradient_disable_color(&state->gradient, 1, state->c[1], pwr);
             if (!nested && pwr > 0.0)
                 disable_mangetsu_gradient_layer(state, 1);
@@ -4594,6 +4598,22 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_image_fill_layer(state, 1);
             replace_cycle_base_paint(state, 1, -1, pwr);
             column_default(COLUMN_STYLE_COLOR1);
+        } else if (state->chat_enabled && tag("msgtitlegbc")) {
+            if (nargs) {
+                change_color(&state->chat_title.background,
+                             parse_color_tag(args[0]), pwr);
+                if (pwr > 0.0)
+                    state->chat_title.has_background = true;
+            } else if (pwr >= 1.0)
+                state->chat_title.has_background = false;
+        } else if (state->chat_enabled && tag("msgtitlec")) {
+            if (nargs) {
+                change_color(&state->chat_title.text,
+                             parse_color_tag(args[0]), pwr);
+                if (pwr > 0.0)
+                    state->chat_title.has_text = true;
+            } else if (pwr >= 1.0)
+                state->chat_title.has_text = false;
         } else if (state->chat_enabled && tag("bubbc")) {
             uint32_t color = nargs ? parse_color_tag(args[0]) :
                 state->default_style.c[2];

@@ -20,3 +20,5 @@ Dialogue: 0,0:00:20.00,0:00:30.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode3\msgt
 Dialogue: 0,0:00:30.00,0:00:40.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode2\msgtitle(Miku)\msgm(Miku)}|{\3c&H39C5BB&\2c&H39C5BB&\c&HFFFFFF&}Miku:\NHey||Look at this||{\3c&H444444&\2c&HCCCCCC&}Yurf:\NYo|
 ; Mode 2: independent message-text and rounded-bubble borders
 Dialogue: 0,0:00:40.00,0:00:50.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode2\msgtitle(Miku)\msgm(Miku)}|{\c&HFFFFFF&\bc&H000000&\ba&H30&\bs2\bubc&H332244&\buba&H20&\bubbc&HFF55CC&\bubba&H10&\bubbs4}Miku:\NCrazy anime UI||same speaker again|
+; Mode 2: white speaker names, then a teal header name (last color tag wins) and explicit header background
+Dialogue: 0,0:00:50.00,0:01:00.00,Chat,,0,0,0,,{\an9\pos(1850,80)\chatmode2\2c&HFFFFFF&\msgtitlec&H39C5BB&\msgtitlegbc&H223344&\msgtitle(Miku)\msgm(Miku)}|Miku:\NHey||Yurf:\NYo|

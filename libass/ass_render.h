@@ -291,6 +291,13 @@ typedef struct {
     double border_size;        // script-space stroke thickness
 } ChatBubbleStyle;
 
+typedef struct {
+    uint32_t text;             // explicit \msgtitlec or \2c (opaque RGB)
+    uint32_t background;       // explicit \msgtitlegbc (opaque RGB)
+    bool has_text;
+    bool has_background;
+} ChatTitleStyle;
+
 typedef struct ass_tag_image_entry {
     char *key;
     ASS_TagImageFormat format;
@@ -784,6 +791,7 @@ struct render_context {
     BorderLayerState box_border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     ChatBubbleStyle chat_bubble;
+    ChatTitleStyle chat_title;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
     TextPatternPaint pattern;
