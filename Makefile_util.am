@@ -4,7 +4,9 @@ check_PROGRAMS += test/scroll_unit test/scroll_render_unit
 TESTS += test/scroll_unit$(EXEEXT) test/scroll_render_unit$(EXEEXT)
 AM_TESTS_ENVIRONMENT = SCROLL_TEST_FONT='$(abs_srcdir)/compare/test/font1.ttf'; export SCROLL_TEST_FONT;
 endif
-test_scroll_unit_SOURCES = test/scroll_selftest.c libass/ass_scroll.c libass/ass_scroll.h
+test_scroll_unit_SOURCES = test/scroll_selftest.c
+test_scroll_unit_LDADD = libass/libass_internal.la
+test_scroll_unit_LDFLAGS = $(AM_LDFLAGS) -static
 test_scroll_render_unit_SOURCES = test/scroll_render_selftest.c
 test_scroll_render_unit_LDADD = libass/libass_internal.la
 test_scroll_render_unit_LDFLAGS = $(AM_LDFLAGS) -static
