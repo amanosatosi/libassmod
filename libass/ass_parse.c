@@ -935,6 +935,9 @@ static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inve
     ClipParseResult parsed = parse_clip_tag(state, tag_name, name_end, q, end);
 
     if (parsed.type == CLIP_RECTANGLE) {
+        state->clip_rectangle_set = true;
+        if (state->clip_transform_tags)
+            state->clip_drawing_text = (ASS_StringView) {0};
         state->clip_x0 = state->clip_x0 * (1 - pwr) + parsed.x0 * pwr;
         state->clip_x1 = state->clip_x1 * (1 - pwr) + parsed.x1 * pwr;
         state->clip_y0 = state->clip_y0 * (1 - pwr) + parsed.y0 * pwr;
@@ -944,8 +947,20 @@ static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inve
     }
 
     if (parsed.type == CLIP_VECTOR) {
-        if (state->clip_drawing_text.str) {
+        if (state->clip_drawing_text.str && !state->clip_transform_tags) {
             return;
+        }
+
+        if (state->clip_transform_tags) {
+            // Mangetsu transform events have one replaceable active shape.
+            // Preserve ASS's first-vector-wins/composed clips otherwise.
+            if (state->clip_rectangle_set) {
+                state->clip_x0 = state->clip_y0 = 0;
+                state->clip_x1 = state->renderer->track->PlayResX;
+                state->clip_y1 = state->renderer->track->PlayResY;
+                state->clip_mode = 0;
+            }
+            state->clip_rectangle_set = false;
         }
 
         state->clip_drawing_text.str = parsed.drawing.start;
@@ -4501,6 +4516,27 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->pos_transform_t1 = saved_t1;
             state->pos_transform_t2 = saved_t2;
             state->pos_transform_accel = saved_accel;
+        } else if (name_len == 7 && complex_tag("clippos")) {
+            if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')' ||
+                    has_backslash_arg)
+                continue;
+            struct arg tokens[MAX_CLIP_TOKENS];
+            bool empty;
+            int count = split_clip_args(name_end + 1, q - 1, tokens, &empty);
+            double x, y;
+            if (count == 2 && !empty &&
+                    numeric_arg_strict(tokens[0], state->clip_pos.x, NUM_SIGNED, &x) &&
+                    numeric_arg_strict(tokens[1], state->clip_pos.y, NUM_SIGNED, &y)) {
+                state->clip_pos.x = calc_anim(x, state->clip_pos.x, pwr);
+                state->clip_pos.y = calc_anim(y, state->clip_pos.y, pwr);
+            }
+        } else if (tag("clips")) {
+            double scale;
+            // NUM_SIGNED intentionally requires ~ for relative percentages.
+            if (*name_end != '(' && nargs == 1 &&
+                    numeric_arg_strict(*args, state->clip_scale, NUM_SIGNED, &scale) &&
+                    scale >= 0)
+                state->clip_scale = calc_anim(scale, state->clip_scale, pwr);
         } else if (complex_tag("clip")) {
             apply_clip_tag(state, "clip", false, name_end, q, end, pwr);
         } else if (tag("img") || tag("1img")) {
@@ -5358,7 +5394,8 @@ unsigned ass_get_next_char(RenderContext *state, char **str)
 
 // Return 1 if the event contains tags that will apply overrides the selective
 // style override code should not touch. Return 0 otherwise.
-int ass_event_has_hard_overrides(char *str)
+static int event_has_override_names(char *str, const char *const *names,
+                                     size_t count, bool clip_transforms)
 {
     // look for \pos and \move tags inside {...}
     // mirrors ass_get_next_char, but is faster and doesn't change any global state
@@ -5378,14 +5415,17 @@ int ass_event_has_hard_overrides(char *str)
                 if (scan == limit)
                     break;
                 if (*scan == '\\') {
-                    static const char *const names[] = {
-                        "pos", "move", "mover", "moves3", "moves4", "jitter",
-                        "movevc", "clip", "iclip", "org", "pbo", "p",
-                    };
-                    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+                    for (size_t i = 0; i < count; i++) {
                         char *p = scan + 1;
                         if (end ? ass_override_prefix(&p, limit, names[i]) :
                                   mystrcmp(&p, names[i])) {
+                            if (clip_transforms) {
+                                unsigned char next = end ? ass_override_peek(&p, limit) : *p;
+                                if (i == 0 ? next != '(' :
+                                        !(next == '~' || next == '+' || next == '-' ||
+                                          next == '.' || (next >= '0' && next <= '9')))
+                                    continue;
+                            }
                             found = true;
                             break;
                         }
@@ -5403,4 +5443,21 @@ int ass_event_has_hard_overrides(char *str)
         }
     }
     return 0;
+}
+
+int ass_event_has_hard_overrides(char *str)
+{
+    static const char *const names[] = {
+        "pos", "move", "mover", "moves3", "moves4", "jitter",
+        "movevc", "clip", "iclip", "org", "pbo", "p",
+    };
+    return event_has_override_names(str, names, sizeof(names) / sizeof(names[0]), false);
+}
+
+bool ass_event_has_clip_transforms(char *str)
+{
+    // Scan the complete event so replacement geometry has the same semantics
+    // whether these state tags appear before or after its declaration.
+    static const char *const names[] = {"clippos", "clips"};
+    return event_has_override_names(str, names, sizeof(names) / sizeof(names[0]), true);
 }

@@ -816,6 +816,10 @@ struct render_context {
     ASS_BlendMode blend_mode;
     bool needs_rgba;
     int clip_x0, clip_y0, clip_x1, clip_y1;
+    ASS_DVector clip_pos;       // script-coordinate offset, applied after zoom
+    double clip_scale;          // uniform percent of original clip geometry
+    bool clip_rectangle_set;
+    bool clip_transform_tags;   // opt in to replaceable active clip geometry
     char have_origin;           // origin is explicitly defined; if 0, get_base_point() is used
     char clip_mode;             // 1 = iclip
     bool chat_clip_active;       // internal viewport, composed after user clip

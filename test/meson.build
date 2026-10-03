@@ -94,6 +94,15 @@ clip_unit = executable(
     link_with: libass_for_tools,
 )
 
+clip_transform_unit = executable(
+    'clip_transform_unit',
+    files('clip_transform_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+
 furi_unit = executable(
     'furi_unit',
     files('furi_selftest.c'),
@@ -233,6 +242,10 @@ test('curved-text-render', curved_text_unit, timeout: 120)
 test('relative-numbers', relative_numbers_unit, timeout: 120)
 test('override-annotations', override_annotations_unit, timeout: 120)
 test('clip-regression', clip_unit)
+test('clip-transform-regression', clip_transform_unit,
+    env: {'CLIP_TRANSFORM_TEST_FONT': join_paths(
+        meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    timeout: 120)
 test('furi-extension', furi_unit,
     env: {'FURI_TEST_FONT': join_paths(
         meson.project_source_root(), 'compare', 'test', 'font1.ttf')},

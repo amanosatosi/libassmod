@@ -41,6 +41,8 @@ typedef struct {
     bool valid;
     ASS_Outline outline[2];
     ASS_Rect cbox;  // bounding box of all control points
+    ASS_DVector clip_center;    // lazy geometric bounds center, in drawing d6
+    bool clip_center_valid;
     int advance;    // 26.6, advance distance to the next outline in line
     int asc, desc;  // ascender/descender
 } OutlineHashValue;

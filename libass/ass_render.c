@@ -2423,21 +2423,133 @@ static ASS_DVector movevc_offset(RenderContext *state)
     return (ASS_DVector) {x, y};
 }
 
-/**
- * Iterate through a list of bitmaps and blend with clip vector, if
- * applicable. The blended bitmaps are added to a free list which is freed
- * at the start of a new frame.
- */
-static void blend_vector_clip(RenderContext *state, ASS_Image *head)
-{
-    if (!state->clip_drawing_text.str)
-        return;
+typedef struct {
+    double scale;
+    ASS_DVector offset;
+} ClipTransform;
 
+/* Both shapes use the same script-space affine transform. Never modify the
+ * parsed coordinates or cached outline: each frame starts from that source. */
+static ClipTransform clip_transform(const RenderContext *state,
+                                     ASS_DVector center)
+{
+    double scale = state->clip_scale / 100.0;
+    return (ClipTransform) {
+        .scale = scale,
+        .offset = {center.x * (1 - scale) + state->clip_pos.x,
+                   center.y * (1 - scale) + state->clip_pos.y},
+    };
+}
+
+/* Bounds of a Bezier axis, including interior extrema rather than its control
+ * polygon. B-splines have already been converted to cubics by drawing parsing. */
+static void clip_curve_bounds(const double p[4], int order,
+                               double *min, double *max)
+{
+    *min = FFMIN(*min, FFMIN(p[0], p[order]));
+    *max = FFMAX(*max, FFMAX(p[0], p[order]));
+    if (order == 1)
+        return;
+    double a = order == 3 ? -p[0] + 3 * p[1] - 3 * p[2] + p[3] : 0;
+    double b = (p[0] - 2 * p[1] + p[2]) * (order == 3 ? 2 : 1);
+    double c = p[1] - p[0];
+    double roots[2];
+    int count = 0;
+    if (a == 0) {
+        if (b != 0)
+            roots[count++] = -c / b;
+    } else {
+        double disc = b * b - 4 * a * c;
+        if (disc >= 0) {
+            double q = -0.5 * (b + copysign(sqrt(disc), b));
+            roots[count++] = q / a;
+            if (q != 0)
+                roots[count++] = c / q;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        double t = roots[i];
+        if (t <= 0 || t >= 1)
+            continue;
+        double v[4];
+        memcpy(v, p, sizeof(v));
+        for (int n = order; n > 0; n--)
+            for (int j = 0; j < n; j++)
+                v[j] += (v[j + 1] - v[j]) * t;
+        *min = FFMIN(*min, v[0]);
+        *max = FFMAX(*max, v[0]);
+    }
+}
+
+static ASS_DVector clip_outline_center(OutlineHashValue *value)
+{
+    if (!value->clip_center_valid) {
+        const ASS_Outline *ol = &value->outline[0];
+        ASS_DRect box = {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+        size_t point = 0, contour = 0;
+        for (size_t i = 0; i < ol->n_segments; i++) {
+            int order = ol->segments[i] & OUTLINE_COUNT_MASK;
+            bool end = ol->segments[i] & OUTLINE_CONTOUR_END;
+            double x[4] = {0}, y[4] = {0};
+            for (int j = 0; j <= order; j++) {
+                size_t k = end && j == order ? contour : point + j;
+                x[j] = ol->points[k].x;
+                y[j] = ol->points[k].y;
+            }
+            clip_curve_bounds(x, order, &box.x_min, &box.x_max);
+            clip_curve_bounds(y, order, &box.y_min, &box.y_max);
+            point += order;
+            if (end)
+                contour = point;
+        }
+        value->clip_center = (ASS_DVector) {
+            (box.x_min + box.x_max) / 2,
+            (box.y_min + box.y_max) / 2,
+        };
+        value->clip_center_valid = true;
+    }
+    return value->clip_center;
+}
+
+static ASS_DRect clip_rectangle(const RenderContext *state)
+{
+    ASS_DRect box = {state->clip_x0, state->clip_y0,
+                     state->clip_x1, state->clip_y1};
+    if (!state->clip_rectangle_set ||
+            (state->clip_scale == 100 && !state->clip_pos.x && !state->clip_pos.y))
+        return box;
+    ASS_DVector center = {(box.x_min + box.x_max) / 2,
+                           (box.y_min + box.y_max) / 2};
+    ClipTransform tr = clip_transform(state, center);
+    box.x_min = box.x_min * tr.scale + tr.offset.x;
+    box.x_max = box.x_max * tr.scale + tr.offset.x;
+    box.y_min = box.y_min * tr.scale + tr.offset.y;
+    box.y_max = box.y_max * tr.scale + tr.offset.y;
+    return box;
+}
+
+static int clip_screen_coord(const RenderContext *state, double value)
+{
+    if (!state->clip_rectangle_set ||
+            (state->clip_scale == 100 && !state->clip_pos.x && !state->clip_pos.y))
+        return lround(value);
+    return lround(FFMINMAX(value, INT_MIN, INT_MAX));
+}
+
+/* Shared by legacy masks, RGBA masks and box painting; outline and transformed
+ * bitmap caching remain in the normal pipeline. Pure movement reuses bitmaps. */
+static Bitmap *vector_clip_bitmap(RenderContext *state, ASS_Vector *pos)
+{
     ASS_Renderer *render_priv = state->renderer;
 
     OutlineHashKey ol_key;
     ol_key.type = OUTLINE_DRAWING;
     ol_key.u.drawing.text = state->clip_drawing_text;
+
+    BitmapHashKey key = {0};
+    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
+    if (!key.outline || !key.outline->valid)
+        return NULL;
 
     double m[3][3] = {{0}};
     int32_t scale_base = lshiftwrapi(1, state->clip_drawing_scale - 1);
@@ -2448,20 +2560,50 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
 
     m[0][2] = int_to_d6(render_priv->settings.left_margin);
     m[1][2] = int_to_d6(render_priv->settings.top_margin);
+    if (state->clip_scale != 100 || state->clip_pos.x || state->clip_pos.y) {
+        ASS_DVector center = {0};
+        if (state->clip_scale != 100) {
+            center = clip_outline_center(key.outline);
+            center.x *= w / 64;
+            center.y *= w / 64;
+        }
+        ClipTransform tr = clip_transform(state, center);
+        m[0][0] *= tr.scale;
+        m[1][1] *= tr.scale;
+        m[0][2] += tr.offset.x * state->screen_scale_x * 64;
+        m[1][2] += tr.offset.y * state->screen_scale_y * 64;
+    }
     ASS_DVector mvc = movevc_offset(state);
     if (mvc.x || mvc.y) {
         m[0][2] += mvc.x * state->screen_scale_x * 64;
         m[1][2] += mvc.y * state->screen_scale_y * 64;
     }
 
-    ASS_Vector pos;
-    BitmapHashKey key = {0};
-    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
-    if (!key.outline || !key.outline->valid ||
-            !quantize_transform(m, &pos, NULL, true, &key))
-        return;
+    if (!quantize_transform(m, pos, NULL, true, &key))
+        return NULL;
 
-    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    return ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+}
+
+/**
+ * Iterate through a list of bitmaps and blend with clip vector, if
+ * applicable. The blended bitmaps are added to a free list which is freed
+ * at the start of a new frame.
+ */
+static void blend_vector_clip(RenderContext *state, ASS_Image *head)
+{
+    if (!state->clip_drawing_text.str)
+        return;
+    if (state->clip_scale == 0) {
+        if (!state->clip_drawing_mode)
+            for (ASS_Image *cur = head; cur; cur = cur->next)
+                cur->w = cur->h = 0;
+        return;
+    }
+
+    ASS_Renderer *render_priv = state->renderer;
+    ASS_Vector pos;
+    Bitmap *clip_bm = vector_clip_bitmap(state, &pos);
     if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
@@ -2565,35 +2707,16 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
     if (!head || !state->clip_drawing_text.str)
         return;
 
-    ASS_Renderer *render_priv = state->renderer;
-
-    OutlineHashKey ol_key;
-    ol_key.type = OUTLINE_DRAWING;
-    ol_key.u.drawing.text = state->clip_drawing_text;
-
-    double m[3][3] = {{0}};
-    int32_t scale_base = lshiftwrapi(1, state->clip_drawing_scale - 1);
-    double w = scale_base > 0 ? (1.0 / scale_base) : 0;
-    m[0][0] = state->screen_scale_x * w;
-    m[1][1] = state->screen_scale_y * w;
-    m[2][2] = 1;
-
-    m[0][2] = int_to_d6(render_priv->settings.left_margin);
-    m[1][2] = int_to_d6(render_priv->settings.top_margin);
-    ASS_DVector mvc = movevc_offset(state);
-    if (mvc.x || mvc.y) {
-        m[0][2] += mvc.x * state->screen_scale_x * 64;
-        m[1][2] += mvc.y * state->screen_scale_y * 64;
+    if (state->clip_scale == 0) {
+        if (!state->clip_drawing_mode)
+            for (ASS_ImageRGBA *cur = head; cur; cur = cur->next)
+                cur->w = cur->h = 0;
+        return;
     }
 
+    ASS_Renderer *render_priv = state->renderer;
     ASS_Vector pos;
-    BitmapHashKey key = {0};
-    key.outline = ass_cache_get(render_priv->cache.outline_cache, &ol_key, render_priv);
-    if (!key.outline || !key.outline->valid ||
-            !quantize_transform(m, &pos, NULL, true, &key))
-        return;
-
-    Bitmap *clip_bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+    Bitmap *clip_bm = vector_clip_bitmap(state, &pos);
     if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
         return;
 
@@ -3376,6 +3499,8 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->vertical_text_alignment = 0;
     state->warp_text_alignment = 0;
     state->curved_text_align = 0;
+    state->clip_pos = (ASS_DVector) {0};
+    state->clip_scale = 100;
     state->scroll_duration = 300;
     state->scroll_show_lines = 0;
     state->scroll_id = 0;
@@ -3535,6 +3660,8 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->clip_x1 = render_priv->track->PlayResX;
     state->clip_y1 = render_priv->track->PlayResY;
     state->clip_mode = 0;
+    state->clip_rectangle_set = false;
+    state->clip_transform_tags = ass_event_has_clip_transforms(event->Text);
     state->chat_clip_active = false;
     state->chat_enabled = chat_enabled;
     state->chat_side_only_parse = false;
@@ -11008,10 +11135,11 @@ static void chat_resolve_outer_clip(RenderContext *state)
 {
     ASS_Renderer *priv = state->renderer;
     if (state->explicit || !priv->settings.use_margins) {
-        state->clip_x0 = lround(x2scr_pos_scaled(priv, state->clip_x0));
-        state->clip_x1 = lround(x2scr_pos_scaled(priv, state->clip_x1));
-        state->clip_y0 = lround(y2scr_pos(priv, state->clip_y0));
-        state->clip_y1 = lround(y2scr_pos(priv, state->clip_y1));
+        ASS_DRect clip = clip_rectangle(state);
+        state->clip_x0 = clip_screen_coord(state, x2scr_pos_scaled(priv, clip.x_min));
+        state->clip_x1 = clip_screen_coord(state, x2scr_pos_scaled(priv, clip.x_max));
+        state->clip_y0 = clip_screen_coord(state, y2scr_pos(priv, clip.y_min));
+        state->clip_y1 = clip_screen_coord(state, y2scr_pos(priv, clip.y_max));
         if (state->explicit) {
             int zx = priv->settings.left_margin;
             int zy = priv->settings.top_margin;
@@ -11889,14 +12017,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     // fix clip coordinates
     if (state->explicit || !render_priv->settings.use_margins) {
+        ASS_DRect clip = clip_rectangle(state);
         state->clip_x0 =
-            lround(x2scr_pos_scaled(render_priv, state->clip_x0));
+            clip_screen_coord(state, x2scr_pos_scaled(render_priv, clip.x_min));
         state->clip_x1 =
-            lround(x2scr_pos_scaled(render_priv, state->clip_x1));
+            clip_screen_coord(state, x2scr_pos_scaled(render_priv, clip.x_max));
         state->clip_y0 =
-            lround(y2scr_pos(render_priv, state->clip_y0));
+            clip_screen_coord(state, y2scr_pos(render_priv, clip.y_min));
         state->clip_y1 =
-            lround(y2scr_pos(render_priv, state->clip_y1));
+            clip_screen_coord(state, y2scr_pos(render_priv, clip.y_max));
 
         if (state->explicit) {
             // we still need to clip against screen boundaries

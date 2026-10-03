@@ -1,9 +1,14 @@
 if ENABLE_TEST
 noinst_PROGRAMS += test/test
 check_PROGRAMS += test/scroll_unit test/scroll_render_unit
-TESTS += test/scroll_unit$(EXEEXT) test/scroll_render_unit$(EXEEXT)
+check_PROGRAMS += test/clip_transform_unit
+TESTS += test/scroll_unit$(EXEEXT) test/scroll_render_unit$(EXEEXT) test/clip_transform_unit$(EXEEXT)
 AM_TESTS_ENVIRONMENT = SCROLL_TEST_FONT='$(abs_srcdir)/compare/test/font1.ttf'; export SCROLL_TEST_FONT;
+AM_TESTS_ENVIRONMENT += CLIP_TRANSFORM_TEST_FONT='$(abs_srcdir)/compare/test/font1.ttf'; export CLIP_TRANSFORM_TEST_FONT;
 endif
+test_clip_transform_unit_SOURCES = test/clip_transform_selftest.c
+test_clip_transform_unit_LDADD = libass/libass_internal.la
+test_clip_transform_unit_LDFLAGS = $(AM_LDFLAGS) -static
 test_scroll_unit_SOURCES = test/scroll_selftest.c
 test_scroll_unit_LDADD = libass/libass_internal.la
 test_scroll_unit_LDFLAGS = $(AM_LDFLAGS) -static
