@@ -139,13 +139,21 @@ For `\ortho` semantics and examples, see:
 - `\rndx<value>`  
 - `\rndy<value>`  
 - `\rndz<value>`  
+- `\rnds<hex-seed>`
 
-  Randomized boundary deformation.
+  VSFilterMod-compatible random path deformation. `\rnd` sets X/Y/Z together;
+  `\rndx`, `\rndy`, and `\rndz` set individual axes. Amplitudes are signed,
+  quantized integer path units; nonpositive axes do not deform the path.
+  Randomization precedes scaling, shear, rotation and projection. `\rndz`
+  perturbs actual depth, including with zero X/Y rotation. Borders and shadows
+  derive from the same randomized boundary without changing text layout.
 
-  **Note:**  
-  `\rnd` behavior does **not** currently match VSFilterMod.
-  Exact VSFilterMod-style randomness is difficult to reproduce and remains
-  imperfect.
+  `\rnds` sets a hexadecimal seed (default `0`), for example `\rnds1`,
+  `\rndsABC`, or `\rnds0x12345678`. All five tags support `\t` animation.
+  An empty tag resets its component; `\r` resets amplitudes and seed to zero.
+  Large amplitudes intentionally reproduce VSFilterMod's historical
+  Microsoft-CRT 15-bit RNG skew above roughly 20.5, including the asymmetric
+  deformation of `\rnd30` and `\rnd100`. See [rnd compatibility](docs/rnd-tags.md).
 
 - `\jitter(left,right,up,down,period[,seed])`  
   Position jitter / shaking effect

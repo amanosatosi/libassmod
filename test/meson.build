@@ -31,6 +31,18 @@ distort_unit = executable(
     link_with: libass_for_tools,
 )
 
+rnd_math_unit = executable('rnd_math_unit',
+    files('rnd_test.c', '../libass/ass_rnd.c'),
+    include_directories: incs, dependencies: deps, install: false)
+rnd_render_unit = executable('rnd_render_unit',
+    files('rnd_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    link_with: libass_for_tools, install: false)
+test('vsfiltermod-rnd-math', rnd_math_unit)
+test('vsfiltermod-rnd-render', rnd_render_unit,
+    env: {'RND_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    timeout: 120)
+
 distort_render_unit = executable(
     'distort_render_unit',
     files('distort_selftest.c'),
@@ -270,7 +282,15 @@ test('multi-border-extension', multiborder_unit)
 test('text-pattern-paint', pattern_paint_unit, timeout: 120)
 test('actor-colorcoding', colorcoding_unit)
 test('fad-color-fade', fad_unit)
-test('rnd-custom-decoration-lifetime', decoration_rnd_unit)
+test('rnd-custom-decoration-lifetime', decoration_rnd_unit,
+    env: {'RND_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    timeout: 180)
+if get_option('rgba-ownership-extended-stress')
+    test('rnd-custom-decoration-lifetime-extended', decoration_rnd_unit,
+        args: ['--extended'],
+        env: {'RND_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+        timeout: 1800, is_parallel: false)
+endif
 test('unicode-decimal-digits', unicode_digits_unit)
 test('text-anchor-alignment', tan_unit)
 test('bs4-transformed-geometry', bs4_geometry_unit)

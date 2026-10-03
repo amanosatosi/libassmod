@@ -36,19 +36,18 @@
 #include "ass_parse.h"
 #include "ass_priv.h"
 #include "ass_distort.h"
+#include "ass_rnd.h"
 #include "ass_shaper.h"
 #include "ass_chat.h"
 #include "ass_vertical.h"
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv);
 size_t ass_composite_construct(void *key, void *value, void *priv);
-static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
-                              ASS_Library *lib);
 static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
                               OutlineHashValue *outline_src,
-                              const double m[3][3],
+                              const double m[3][3], const double z_basis[3],
                               ASS_Vector *pos, ASS_Vector *pos_o,
-                              bool need_border, int flags);
+                              bool need_border);
 static inline bool border_layer_has_size(const BorderLayerState *layer);
 static bool border_layers_state_equal(const BorderLayerState *a,
                                       const BorderLayerState *b);
@@ -186,15 +185,6 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
                               ASS_ImageRGBA **rgba_out,
                               const ASS_ChatScene *chat, ChatRange *ranges,
                               ChatRange *title, const ChatMetrics *metrics);
-
-// Temporary scale for debugging / visual calibration of rnd* magnitude.
-#ifndef ASS_RND_SCALE
-#define ASS_RND_SCALE 0.1
-#endif
-
-/* Define ASS_RND_DEBUG to enable verbose rnd* logging for debugging.
- * Disabled by default to avoid noisy builds. */
-/* #define ASS_RND_DEBUG */
 
 void ass_free_glyph_render_resources(GlyphInfo *info)
 {
@@ -3648,9 +3638,8 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->z = 0.0;
     state->ortho = false;
     state->blend_mode = ASS_BLEND_NORMAL;
-    state->rnd_x = 0.0;
-    state->rnd_y = 0.0;
-    state->rnd_z = 0.0;
+    state->rnd_x = state->rnd_y = state->rnd_z = 0;
+    state->rnd_seed = 0;
     state->needs_rgba = false;
     state->distort_enabled = false;
     state->distort_extended = false;
@@ -3727,8 +3716,8 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->pos_transform_t2 = 0;
     state->pos_transform_accel = 1.0;
     state->jitter = ass_jitter_default_state();
-    state->rnd_x = state->rnd_y = state->rnd_z = 0.0;
-    state->rnd_seed_base = (uint64_t) event->ReadOrder;
+    state->rnd_x = state->rnd_y = state->rnd_z = 0;
+    state->rnd_seed = 0;
     state->mangetsu_gradient_next_id = 0;
     state->pattern_cycle_serial = 0;
     state->event_has_cycle = false;
@@ -4449,7 +4438,7 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
  * \brief Calculate outline transformation matrix
  */
 static void calc_transform_matrix(RenderContext *state,
-                                  GlyphInfo *info, double m[3][3])
+                                  GlyphInfo *info, double m[3][3], double z_basis[3])
 {
     ASS_Renderer *render_priv = state->renderer;
 
@@ -4530,6 +4519,11 @@ static void calc_transform_matrix(RenderContext *state,
         m[2][0] = 0.0;
         m[2][1] = 0.0;
         m[2][2] = 1.0;
+        if (z_basis) {
+            z_basis[0] = -cx * sy * render_priv->par_scale_x;
+            z_basis[1] = -sx;
+            z_basis[2] = 0;
+        }
         return;
     }
 
@@ -4542,6 +4536,13 @@ static void calc_transform_matrix(RenderContext *state,
         m[0][i] = z4[i] * offs_x + x4[i] * scale_x;
         m[1][i] = z4[i] * offs_y + y3[i] * dist;
         m[2][i] = z4[i];
+    }
+    if (z_basis) {
+        /* Local Z undergoes frx/fry, and participates in the perspective
+         * denominator even when both angles are zero. */
+        z_basis[0] = cx * cy * offs_x - cx * sy * scale_x;
+        z_basis[1] = cx * cy * offs_y - sx * dist;
+        z_basis[2] = cx * cy;
     }
 }
 
@@ -4690,9 +4691,9 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     if (!outline || info->symbol == '\n' || info->symbol == 0 || info->skip)
         return;
 
-    double m1[3][3], m2[3][3], m[3][3];
+    double m1[3][3], m2[3][3], m[3][3], z_basis[3];
     const ASS_Transform *tr = &info->transform;
-    calc_transform_matrix(state, info, m1);
+    calc_transform_matrix(state, info, m1, info->has_rnd ? z_basis : NULL);
     for (int i = 0; i < 3; i++) {
         m2[i][0] = m1[i][0] * tr->scale.x;
         m2[i][1] = m1[i][1] * tr->scale.y;
@@ -4705,40 +4706,42 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
         ass_outline_update_min_transformed_x(&outline->outline[0], m, leftmost_x);
 
     BitmapHashKey key = {0};
-    key.rnd_x = info->rnd_x;
-    key.rnd_y = info->rnd_y;
-    key.rnd_z = info->rnd_z;
-    key.rnd_seed = info->rnd_seed;
     key.outline = outline;
     if (!quantize_transform(m, pos, offset, first, &key))
         return;
 
     *pos_o = *pos;
 
-    bool rnd_active = (info->rnd_x != 0.0) || (info->rnd_y != 0.0) || (info->rnd_z != 0.0);
-    if (rnd_active && !(flags & (FILTER_BORDER_STYLE_3 | FILTER_MULTI_BORDER))) {
-        bool ok = build_rnd_bitmaps(state, info, outline, m, pos, pos_o,
-                                    (flags & FILTER_NONZERO_BORDER), flags);
-        if (ok)
+    bool rnd_active = info->has_rnd;
+    if (rnd_active) {
+        if (!build_rnd_bitmaps(state, info, outline, m1, z_basis, pos, pos_o,
+                              (flags & FILTER_NONZERO_BORDER) &&
+                              !(flags & FILTER_BORDER_STYLE_3)))
             return;
-        // Fall through to cached path if rnd build failed
+        if (!(flags & FILTER_BORDER_STYLE_3))
+            return;
+        // Opaque boxes retain their ordinary geometry; only the text boundary
+        // is randomized. Keep the box bitmap in the same owned lifetime.
+        distorted = true;
     }
 
-    info->bm = NULL;
-    info->bm_o = NULL;
-    if (distorted) {
-        memset(&info->distort_bitmap, 0, sizeof(info->distort_bitmap));
-        if (ass_bitmap_construct(&key, &info->distort_bitmap, state) &&
-                info->distort_bitmap.buffer)
-            info->bm = &info->distort_bitmap;
-        info->has_distort_bitmap = info->bm != NULL;
-    } else {
-        info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-        if (!info->bm || !info->bm->buffer)
-            info->bm = NULL;
-    }
+    if (!rnd_active) {
+        info->bm = NULL;
+        info->bm_o = NULL;
+        if (distorted) {
+            memset(&info->distort_bitmap, 0, sizeof(info->distort_bitmap));
+            if (ass_bitmap_construct(&key, &info->distort_bitmap, state) &&
+                    info->distort_bitmap.buffer)
+                info->bm = &info->distort_bitmap;
+            info->has_distort_bitmap = info->bm != NULL;
+        } else {
+            info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
+            if (!info->bm || !info->bm->buffer)
+                info->bm = NULL;
+        }
 
-    *pos_o = *pos;
+        *pos_o = *pos;
+    }
 
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
         info->bm_border[i] = NULL;
@@ -4862,163 +4865,138 @@ static inline size_t outline_size(const ASS_Outline* outline)
     return sizeof(ASS_Vector) * outline->n_points + outline->n_segments;
 }
 
-static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
-                              OutlineHashValue *outline_src,
-                              const double m[3][3],
-                              ASS_Vector *pos, ASS_Vector *pos_o,
-                              bool need_border, int flags)
+/* Randomize cached source geometry into a short-lived projected outline. The
+ * path seed is independent of event order, frame order and host SIMD support. */
+static bool rnd_transform_outline(ASS_Outline *dst, const ASS_Outline *src,
+                                  const GlyphInfo *info, const double m[3][3],
+                                  const double z_basis[3], uint32_t *rng)
 {
-    ASS_Renderer *render_priv = state->renderer;
-    Bitmap *bm_fill = &info->distort_bitmap;
-    Bitmap *bm_border = &info->distort_bitmap_o;
-    memset(bm_fill, 0, sizeof(*bm_fill));
-    memset(bm_border, 0, sizeof(*bm_border));
-
-    ASS_Outline outline_fill[2] = {{0}};
-    ASS_Outline outline_border[2] = {{0}};
-    bool ok = false;
-
-    // Transform base outline to screen space
-    if (m[2][0] || m[2][1]) {
-        if (!ass_outline_transform_3d(&outline_fill[0], &outline_src->outline[0], m) ||
-            !ass_outline_transform_3d(&outline_fill[1], &outline_src->outline[1], m))
-            goto done;
-    } else {
-        if (!ass_outline_transform_2d(&outline_fill[0], &outline_src->outline[0], m) ||
-            !ass_outline_transform_2d(&outline_fill[1], &outline_src->outline[1], m))
-            goto done;
+    if (!src->n_points || !src->n_segments)
+        return true;
+    if (!ass_outline_alloc(dst, src->n_points, src->n_segments))
+        return false;
+    memcpy(dst->segments, src->segments, src->n_segments);
+    dst->n_points = src->n_points;
+    dst->n_segments = src->n_segments;
+    const int32_t amplitude[3] = {info->rnd_x, info->rnd_y, info->rnd_z};
+    double matrix[3][4];
+    for (int i = 0; i < 3; i++) {
+        memcpy(matrix[i], m[i], sizeof(m[i]));
+        matrix[i][3] = z_basis[i];
     }
-
-    BitmapHashKey temp_key = {0};
-    temp_key.rnd_x = info->rnd_x;
-    temp_key.rnd_y = info->rnd_y;
-    temp_key.rnd_z = info->rnd_z;
-    temp_key.rnd_seed = info->rnd_seed;
-    temp_key.matrix_z.x = m[2][0];
-    temp_key.matrix_z.y = m[2][1];
-
-#ifdef ASS_RND_DEBUG
-    ass_msg(render_priv->library, MSGL_V,
-            "rnd apply: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f seed=%llu",
-            temp_key.rnd_x, temp_key.rnd_y, temp_key.rnd_z,
-            (unsigned long long) temp_key.rnd_seed);
-#endif
-
-        apply_rnd_offsets(&temp_key, &outline_fill[0], render_priv->library);
-        apply_rnd_offsets(&temp_key, &outline_fill[1], render_priv->library);
-
-    if (!ass_outline_to_bitmap(state, bm_fill, &outline_fill[0], &outline_fill[1]))
-        goto done;
-    info->bm = bm_fill;
-    info->bm_o = NULL;
-
-    if (need_border) {
-        double bord_x =
-            64 * state->border_scale_x * info->border_x / info->transform.scale.x /
-                render_priv->par_scale_x;
-        double bord_y =
-            64 * state->border_scale_y * info->border_y / info->transform.scale.y;
-
-        if (bord_x > 0 || bord_y > 0) {
-            if (!ass_outline_stroke(&outline_border[0], &outline_border[1],
-                                    &outline_fill[0],
-                                    bord_x * STROKER_PRECISION,
-                                    bord_y * STROKER_PRECISION,
-                                    STROKER_PRECISION,
-                                    info->border_style == 5))
-                goto done;
-
-            if (!ass_outline_to_bitmap(state, bm_border, &outline_border[0], &outline_border[1]))
-                goto done;
-            info->bm_o = bm_border;
-        } else {
-            info->bm_o = info->bm;
+    /* Font outlines may be normalized to a different FreeType size; drawings
+     * may have an ASS drawing scale. Neither changes the rnd path units.
+     * Only the effective font X/Y scale multiplies the random displacement. */
+    double scale_x = info->scale_x * info->scale_fix;
+    double scale_y = info->scale_y * info->scale_fix;
+    for (size_t first = 0; first < src->n_points; first += 4) {
+        float offset[4][3];
+        ass_rnd_group(rng, amplitude, offset);
+        size_t count = FFMIN((size_t) 4, src->n_points - first);
+        for (size_t j = 0; j < count; j++) {
+            const ASS_Vector *pt = &src->points[first + j];
+            double x = pt->x * info->transform.scale.x + info->transform.offset.x;
+            double y = pt->y * info->transform.scale.y + info->transform.offset.y;
+            double result[2];
+            if (!ass_rnd_project(matrix, x + offset[j][0] * scale_x,
+                                 y + offset[j][1] * scale_y, offset[j][2],
+                                 info->ortho ? 1 : 1000, result) ||
+                fabs(result[0]) >= OUTLINE_MAX || fabs(result[1]) >= OUTLINE_MAX)
+                return false;
+            dst->points[first + j] = (ASS_Vector) {
+                ass_lrint(result[0]), ass_lrint(result[1])
+            };
         }
     }
+    return true;
+}
 
+static bool build_rnd_bitmaps(RenderContext *state, GlyphInfo *info,
+                              OutlineHashValue *outline_src,
+                              const double m[3][3], const double z_basis[3],
+                              ASS_Vector *pos, ASS_Vector *pos_o,
+                              bool need_border)
+{
+    ASS_Outline fill[2] = {{0}};
+    ASS_Outline border[2] = {{0}};
+    uint32_t rng = (uint32_t) info->rnd_seed;
+    bool ok = false;
+    info->bm = info->bm_o = NULL;
+    info->distort_bitmap = (Bitmap) {0};
+    info->distort_bitmap_o = (Bitmap) {0};
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++) {
+        info->bm_border[i] = NULL;
+        info->distort_bitmap_border[i] = (Bitmap) {0};
+        info->pos_border[i] = (ASS_Vector) {0};
+    }
+    /* Mark ownership before the first allocation so every failure unwinds. */
     info->has_distort_bitmap = true;
+    *pos = *pos_o = (ASS_Vector) {0};
+    if (!rnd_transform_outline(&fill[0], &outline_src->outline[0], info, m, z_basis, &rng) ||
+        !rnd_transform_outline(&fill[1], &outline_src->outline[1], info, m, z_basis, &rng) ||
+        !ass_outline_to_bitmap(state, &info->distort_bitmap, &fill[0], &fill[1]))
+        goto done;
+    if (info->distort_bitmap.buffer)
+        info->bm = &info->distort_bitmap;
+    if (need_border) {
+        double outer_x = 0, outer_y = 0;
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            const BorderLayerState *b = &info->border_layers[layer];
+            double x = layer ? FFMAX(0, b->size_x) : FFMAX(0, info->border_x);
+            double y = layer ? FFMAX(0, b->size_y) : FFMAX(0, info->border_y);
+            if (!(x > 0 || y > 0))
+                continue;
+            outer_x += x;
+            outer_y += y;
+            /* VSFilterMod widens after transforming the randomized boundary.
+             * Each layer strokes the same fill, never another random path. */
+            double bx = 64 * state->border_scale_x * outer_x;
+            double by = 64 * state->border_scale_y * outer_y;
+            if (!isfinite(bx) || !isfinite(by) || bx >= OUTLINE_MAX || by >= OUTLINE_MAX)
+                goto done;
+            int ix = ass_lrint(bx), iy = ass_lrint(by);
+            Bitmap *target = layer ? &info->distort_bitmap_border[layer - 1] :
+                                     &info->distort_bitmap_o;
+            int radius = FFMAX(ix, iy);
+            if (!radius) {
+                if (!layer)
+                    info->bm_o = info->bm;
+                continue;
+            }
+            int eps = FFMIN(STROKER_PRECISION, FFMAX(1, radius / 4));
+            if (!fill[0].n_points ||
+                !ass_outline_stroke(&border[0], &border[1], &fill[0], ix, iy,
+                                    eps, info->border_style == 5) ||
+                !ass_outline_to_bitmap(state, target, &border[0], &border[1]))
+                goto done;
+            if (target->buffer) {
+                if (layer)
+                    info->bm_border[layer - 1] = target;
+                else
+                    info->bm_o = target;
+            }
+            ass_outline_free(&border[0]);
+            ass_outline_free(&border[1]);
+        }
+    }
     ok = true;
-
 done:
-    ass_outline_free(&outline_fill[0]);
-    ass_outline_free(&outline_fill[1]);
-    ass_outline_free(&outline_border[0]);
-    ass_outline_free(&outline_border[1]);
+    ass_outline_free(&fill[0]);
+    ass_outline_free(&fill[1]);
+    ass_outline_free(&border[0]);
+    ass_outline_free(&border[1]);
+    if (!ok) {
+        /* Do not destroy the separately owned pre-rnd distortion outline. */
+        ass_free_bitmap(&info->distort_bitmap);
+        ass_free_bitmap(&info->distort_bitmap_o);
+        info->bm = info->bm_o = NULL;
+        for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++) {
+            ass_free_bitmap(&info->distort_bitmap_border[i]);
+            info->bm_border[i] = NULL;
+        }
+        info->has_distort_bitmap = false;
+    }
     return ok;
-}
-
-static inline uint64_t rnd_mix64(uint64_t x)
-{
-    // SplitMix64 scramble for deterministic, per-point seeds
-    x += 0x9e3779b97f4a7c15ULL;
-    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-    return x ^ (x >> 31);
-}
-
-static inline double rnd_pm1(uint64_t seed)
-{
-    // Generate uniform [-1, 1] from 53 random bits
-    double u01 = (rnd_mix64(seed) >> 11) * (1.0 / 9007199254740992.0);
-    return u01 * 2.0 - 1.0;
-}
-
-static void apply_rnd_offsets(const BitmapHashKey *k, ASS_Outline *outline,
-                              ASS_Library *lib)
-{
-    double mag_x = FFMIN(fabs(k->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-    double mag_y = FFMIN(fabs(k->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-    double mag_z = FFMIN(fabs(k->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-    bool has_perspective = k->matrix_z.x || k->matrix_z.y;
-    if (!(mag_x || mag_y || (mag_z && has_perspective)))
-        return;
-
-    static bool eff_logged = false;
-    if (lib && !eff_logged) {
-        eff_logged = true;
-        ass_msg(lib, MSGL_V, "rnd eff (scaled): eff_x=%.3f eff_y=%.3f eff_z=%.3f",
-                mag_x, mag_y, mag_z);
-    }
-
-    double max_dx_px = 0.0, max_dy_px = 0.0;
-    double max_dx_raw = 0.0, max_dy_raw = 0.0;
-    int32_t min_x = INT32_MAX, min_y = INT32_MAX;
-    int32_t max_x = INT32_MIN, max_y = INT32_MIN;
-    for (size_t i = 0; i < outline->n_points; i++) {
-        uint64_t seed = k->rnd_seed ^ (uint64_t) i;
-        double dx = mag_x ? rnd_pm1(seed ^ 0x5851f42d4c957f2dULL) * mag_x : 0.0;
-        double dy = mag_y ? rnd_pm1(seed ^ 0x14057b7ef767814fULL) * mag_y : 0.0;
-        if (mag_z && has_perspective)
-            dy += rnd_pm1(seed ^ 0x94d049bb133111ebULL) * mag_z;
-
-        double raw_dx = dx * 64.0;
-        double raw_dy = dy * 64.0;
-        max_dx_px = FFMAX(max_dx_px, fabs(dx));
-        max_dy_px = FFMAX(max_dy_px, fabs(dy));
-        max_dx_raw = FFMAX(max_dx_raw, fabs(raw_dx));
-        max_dy_raw = FFMAX(max_dy_raw, fabs(raw_dy));
-
-        outline->points[i].x = ass_lrint(outline->points[i].x + raw_dx);
-        outline->points[i].y = ass_lrint(outline->points[i].y + raw_dy);
-        min_x = FFMIN(min_x, outline->points[i].x);
-        min_y = FFMIN(min_y, outline->points[i].y);
-        max_x = FFMAX(max_x, outline->points[i].x);
-        max_y = FFMAX(max_y, outline->points[i].y);
-    }
-    if (lib) {
-#ifdef ASS_RND_DEBUG
-        double w_raw = (max_x > min_x) ? (max_x - min_x) : 0;
-        double h_raw = (max_y > min_y) ? (max_y - min_y) : 0;
-        ass_msg(lib, MSGL_V,
-                "rnd apply: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f max_raw_dx=%.2f max_raw_dy=%.2f max_px_dx=%.2f max_px_dy=%.2f bbox_raw=%.2fx%.2f px=%.2fx%.2f",
-                k->rnd_x, k->rnd_y, k->rnd_z,
-                max_dx_raw, max_dy_raw,
-                max_dx_px, max_dy_px,
-                w_raw, h_raw, w_raw / 64.0, h_raw / 64.0);
-#endif
-    }
-    if (mag_x) assert(max_dx_px <= mag_x + 0.5);
-    if (mag_y) assert(max_dy_px <= mag_y + 0.5);
 }
 
 size_t ass_bitmap_construct(void *key, void *value, void *priv)
@@ -5039,10 +5017,6 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
         ass_outline_transform_2d(&outline[1], &k->outline->outline[1], m);
     }
 
-    if (k->rnd_x || k->rnd_y || k->rnd_z) {
-        apply_rnd_offsets(k, &outline[0], state->renderer->library);
-        apply_rnd_offsets(k, &outline[1], state->renderer->library);
-    }
 
     if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
         memset(bm, 0, sizeof(*bm));
@@ -5834,21 +5808,12 @@ static bool append_glyph_to_target(RenderContext *state,
         info->jitter.up *= object_scale;
         info->jitter.down *= object_scale;
     }
-    info->has_rnd = state->rnd_x || state->rnd_y || state->rnd_z;
-    uint64_t glyph_index = (uint64_t) *length;
-    if (is_furi)
-        glyph_index ^= (uint64_t) (furi_group + 1) << 48;
-    info->rnd_seed = state->rnd_seed_base ^ (glyph_index << 32) ^ (uint64_t) info->glyph_index;
-    info->rnd_x = x2scr_offset(state, state->rnd_x * object_scale);
-    info->rnd_y = y2scr_offset(state, state->rnd_y * object_scale);
-    info->rnd_z = y2scr_offset(state, state->rnd_z * object_scale);
-#ifdef ASS_RND_DEBUG
-    if (info->has_rnd) {
-        ass_msg(render_priv->library, MSGL_WARN,
-                "glyph rnd (screen units): x=%g y=%g z=%g has_rnd=%d",
-                info->rnd_x, info->rnd_y, info->rnd_z, info->has_rnd);
-    }
-#endif
+    info->has_rnd = state->rnd_x > 0 || state->rnd_y > 0 ||
+        (state->rnd_z > 0 && !(info->ortho && !info->frx && !info->fry));
+    info->rnd_seed = state->rnd_seed;
+    info->rnd_x = state->rnd_x;
+    info->rnd_y = state->rnd_y;
+    info->rnd_z = state->rnd_z;
     info->distort_enabled = state->distort_enabled;
     info->distort_extended = state->distort_extended;
     info->distort = state->distort;
@@ -6625,40 +6590,6 @@ static void retrieve_glyphs_from_list(RenderContext *state,
             info->distort = root->distort;
             get_outline_glyph(state, info);
             info->fill_bbox = info->bbox;
-            if (info->has_rnd) {
-                // Pad metrics so bbox/collision/clipping include rnd jitter plus stroke/shadow
-                double rnd_pad_x = FFMIN(fabs(info->rnd_x), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-                double rnd_pad_y = FFMIN(fabs(info->rnd_y), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-                double rnd_pad_z = FFMIN(fabs(info->rnd_z), ASS_RND_MAX_PX) * ASS_RND_SCALE;
-                double rnd_pad = FFMAX(rnd_pad_x, rnd_pad_y);
-                if (info->frx != 0.0 || info->fry != 0.0)
-                    rnd_pad = FFMAX(rnd_pad, rnd_pad_z);
-
-                double border_pad_x =
-                    glyph_border_max_x(info) *
-                    state->border_scale_x / state->renderer->par_scale_x;
-                double border_pad_y =
-                    glyph_border_max_y(info) *
-                    state->border_scale_y;
-                double border_pad = FFMAX(border_pad_x, border_pad_y);
-
-                double shadow_pad =
-                    FFMAX(fabs(info->shadow_x), fabs(info->shadow_y));
-
-                rnd_pad = ceil(rnd_pad + border_pad + shadow_pad);
-                int32_t rnd_pad_d6 = double_to_d6(rnd_pad);
-                info->bbox.x_min -= rnd_pad_d6;
-                info->bbox.x_max += rnd_pad_d6;
-                info->bbox.y_min -= rnd_pad_d6;
-                info->bbox.y_max += rnd_pad_d6;
-                info->asc += rnd_pad_d6;
-                info->desc += rnd_pad_d6;
-#ifdef ASS_RND_DEBUG
-                ass_msg(state->renderer->library, MSGL_V,
-                        "rnd pad: rnd_x=%.3f rnd_y=%.3f rnd_z=%.3f pad_px=%.3f",
-                        info->rnd_x, info->rnd_y, info->rnd_z, rnd_pad);
-#endif
-            }
             info = info->next;
         } while (info);
         info = glyphs + i;
@@ -9089,7 +9020,7 @@ static bool curved_karaoke_wipe(RenderContext *state, GlyphInfo *info,
         return true;
     }
     double m[3][3], p[3];
-    calc_transform_matrix(state, info, m);
+    calc_transform_matrix(state, info, m, NULL);
     for (int i = 0; i < 3; i++)
         p[i] = m[i][0] * info->effect_timing + m[i][2];
     double a = m[1][1] * p[2] - m[2][1] * p[1];
@@ -9357,6 +9288,14 @@ static void move_decoration_distort_bitmaps(CompositeHashValue *owned,
     owned->bm_o = deco->distort_bitmap_o;
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
         owned->bm_border[i] = deco->distort_bitmap_border[i];
+    ass_aligned_retag(owned->bm.buffer, ASS_ALIGNED_ALLOC_GLYPH_BITMAP,
+                      &owned->bm, "owned decoration fill");
+    ass_aligned_retag(owned->bm_o.buffer, ASS_ALIGNED_ALLOC_GLYPH_BITMAP,
+                      &owned->bm_o, "owned decoration border");
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
+        ass_aligned_retag(owned->bm_border[i].buffer,
+                          ASS_ALIGNED_ALLOC_GLYPH_BITMAP,
+                          &owned->bm_border[i], "owned decoration border layer");
     deco->distort_bitmap = (Bitmap) {0};
     deco->distort_bitmap_o = (Bitmap) {0};
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX - 1; i++)
@@ -9407,13 +9346,17 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     bool has_bitmap = deco.bm || deco.bm_o;
     for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1 && !has_bitmap; j++)
         has_bitmap = deco.bm_border[j] != NULL;
-    if (!has_bitmap)
+    if (!has_bitmap) {
+        ass_free_glyph_render_resources(&deco);
         return true;
+    }
 
     if (*nb_bitmaps >= text_info->max_bitmaps) {
         size_t new_size = 2 * text_info->max_bitmaps;
-        if (!ASS_REALLOC_ARRAY(text_info->combined_bitmaps, new_size))
+        if (!ASS_REALLOC_ARRAY(text_info->combined_bitmaps, new_size)) {
+            ass_free_glyph_render_resources(&deco);
             return false;
+        }
         text_info->max_bitmaps = new_size;
         *combined_info = text_info->combined_bitmaps;
     }
@@ -9475,12 +9418,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     current_info->y = pos.y;
     current_info->bitmaps = malloc(sizeof(BitmapRef));
     if (!current_info->bitmaps) {
-        if (deco.has_distort_bitmap) {
-            ass_free_bitmap(&deco.distort_bitmap);
-            ass_free_bitmap(&deco.distort_bitmap_o);
-            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
-                ass_free_bitmap(&deco.distort_bitmap_border[j]);
-        }
+        ass_free_glyph_render_resources(&deco);
         current_info->bitmap_count = current_info->max_bitmap_count = 0;
         return false;
     }
@@ -9491,10 +9429,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     if (deco.has_distort_bitmap) {
         CompositeHashValue *owned = calloc(1, sizeof(*owned));
         if (!owned) {
-            ass_free_bitmap(&deco.distort_bitmap);
-            ass_free_bitmap(&deco.distort_bitmap_o);
-            for (int j = 0; j < ASS_BORDER_LAYERS_MAX - 1; j++)
-                ass_free_bitmap(&deco.distort_bitmap_border[j]);
+            ass_free_glyph_render_resources(&deco);
             free(current_info->bitmaps);
             current_info->bitmaps = NULL;
             current_info->bitmap_count = current_info->max_bitmap_count = 0;
@@ -10300,7 +10235,7 @@ static bool bs4_event_transform_matrix(RenderContext *state,
     info.shift.x = (int32_t) shift_x;
     info.shift.y = (int32_t) shift_y;
 
-    calc_transform_matrix(state, &info, matrix);
+    calc_transform_matrix(state, &info, matrix, NULL);
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             if (!isfinite(matrix[i][j]))

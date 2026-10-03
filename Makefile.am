@@ -32,6 +32,8 @@ EXTRA_DIST += docs/native-scroll.md samples/scroll-lines.ass \
               test/scroll_selftest.c test/scroll_render_selftest.c
 
 EXTRA_DIST += test/clip_transform_selftest.c
+EXTRA_DIST += docs/rnd-tags.md test/rnd_test.c test/rnd_selftest.c \
+              test/decoration_rnd_selftest.c
 
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \

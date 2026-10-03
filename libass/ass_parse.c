@@ -29,6 +29,7 @@
 #include "ass_render.h"
 #include "ass_parse.h"
 #include "ass_string.h"
+#include "ass_rnd.h"
 
 #define MAX_VALID_NARGS 33
 #define CURVED_TEXT_MAX_PATH_BYTES 65536
@@ -210,14 +211,6 @@ static inline int mystrcmp(char **p, const char *sample)
     return 0;
 }
 
-static inline bool rnd_numeric_start(const char *p)
-{
-    if (*p == '+' || *p == '-' || *p == '.' || *p == '~')
-        return true;
-    char *next = (char *) p;
-    return ass_unicode_decimal_value(ass_utf8_get_char(&next)) >= 0;
-}
-
 /**
  * \brief Change current font, using setting from render_priv->state.
  */
@@ -269,6 +262,21 @@ static inline int32_t dtoi32(double val)
 static double calc_anim(double new, double old, double pwr)
 {
    return (1 - pwr) * old + new * pwr;
+}
+
+static int32_t parse_rnd_amplitude(struct arg arg, int32_t current, double pwr)
+{
+    skip_spaces(&arg.start);
+    rskip_spaces(&arg.end, arg.start);
+    if (arg.start >= arg.end)
+        return 0;
+    /* Resolve Mangetsu's explicit relative syntax in tag units, then animate
+     * from the integer path state. Bare signs retain VSFilterMod semantics. */
+    double destination = numeric_argtod(arg, current / 8.0, NUM_SIGNED) * 8;
+    // CalcAnimation skips interpolation for a nearly identical destination.
+    double value = fabs(destination - current) < 0.0001 ? destination :
+        calc_anim(destination, current, pwr);
+    return ass_rnd_truncate(value);
 }
 
 static void apply_curved_text_path(RenderContext *state, struct arg arg)
@@ -3693,47 +3701,30 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     val * pwr + state->fay * (1 - pwr);
             } else
                 state->fay = 0.;
-        } else if (complex_tag("rndx")) {
-            // Match axis-specific rnd* first so \rnd does not swallow them
+        } else if (complex_tag("rnds")) {
             struct arg value = nargs ? *args : (struct arg) {p, name_end};
-            double val = nargs || rnd_numeric_start(p) ?
-                fabs(numeric_argtod(value, state->rnd_x, NUM_NONNEGATIVE)) : 0;
-            if (val > ASS_RND_MAX_PX)
-                val = ASS_RND_MAX_PX;
-            state->rnd_x = calc_anim(val, state->rnd_x, pwr);
+            skip_spaces(&value.start);
+            rskip_spaces(&value.end, value.start);
+            int32_t seed = 0;
+            if (value.start < value.end) {
+                mystrtoi32(&value.start, 16, &seed);
+                state->rnd_seed = ass_rnd_truncate(calc_anim(seed, state->rnd_seed, pwr));
+            } else
+                state->rnd_seed = 0;
+        } else if (complex_tag("rndx")) {
+            struct arg value = nargs ? *args : (struct arg) {p, name_end};
+            state->rnd_x = parse_rnd_amplitude(value, state->rnd_x, pwr);
         } else if (complex_tag("rndy")) {
             struct arg value = nargs ? *args : (struct arg) {p, name_end};
-            double val = nargs || rnd_numeric_start(p) ?
-                fabs(numeric_argtod(value, state->rnd_y, NUM_NONNEGATIVE)) : 0;
-            if (val > ASS_RND_MAX_PX)
-                val = ASS_RND_MAX_PX;
-            state->rnd_y = calc_anim(val, state->rnd_y, pwr);
+            state->rnd_y = parse_rnd_amplitude(value, state->rnd_y, pwr);
         } else if (complex_tag("rndz")) {
             struct arg value = nargs ? *args : (struct arg) {p, name_end};
-            double val = nargs || rnd_numeric_start(p) ?
-                fabs(numeric_argtod(value, state->rnd_z, NUM_NONNEGATIVE)) : 0;
-            if (val > ASS_RND_MAX_PX)
-                val = ASS_RND_MAX_PX;
-            state->rnd_z = calc_anim(val, state->rnd_z, pwr);
-        } else if (name_len >= 3 && !strncmp(p, "rnd", 3)) {
-            if (name_len <= 3 || !rnd_numeric_start(p + 3))
-                continue;
-            if (!mystrcmp(&p, "rnd"))
-                continue;
-
-            push_arg(args, &nargs, p, name_end);
-            NumericOperand operand;
-            if (!parse_numeric_operand(*args, NUM_NONNEGATIVE, false, &operand))
-                operand = (NumericOperand) {.relative = true};
-            double x = fabs(resolve_numeric_operand(operand, state->rnd_x));
-            double y = fabs(resolve_numeric_operand(operand, state->rnd_y));
-            double z = fabs(resolve_numeric_operand(operand, state->rnd_z));
-            x = x > ASS_RND_MAX_PX ? ASS_RND_MAX_PX : x;
-            y = y > ASS_RND_MAX_PX ? ASS_RND_MAX_PX : y;
-            z = z > ASS_RND_MAX_PX ? ASS_RND_MAX_PX : z;
-            state->rnd_x = calc_anim(x, state->rnd_x, pwr);
-            state->rnd_y = calc_anim(y, state->rnd_y, pwr);
-            state->rnd_z = calc_anim(z, state->rnd_z, pwr);
+            state->rnd_z = parse_rnd_amplitude(value, state->rnd_z, pwr);
+        } else if (complex_tag("rnd")) {
+            struct arg value = nargs ? *args : (struct arg) {p, name_end};
+            state->rnd_x = parse_rnd_amplitude(value, state->rnd_x, pwr);
+            state->rnd_y = parse_rnd_amplitude(value, state->rnd_y, pwr);
+            state->rnd_z = parse_rnd_amplitude(value, state->rnd_z, pwr);
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;

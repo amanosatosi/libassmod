@@ -48,7 +48,6 @@
 #define cmp_event_layer ass_cmp_event_layer
 #define fix_collisions ass_fix_collisions
 
-#define ASS_RND_MAX_PX 21.0  // VSFilterMod saturates near this magnitude
 
 #define GLYPH_CACHE_MAX 10000
 #define MEGABYTE (1024 * 1024)
@@ -419,7 +418,7 @@ typedef struct glyph_info {
     OutlineHashValue *outline;
     ASS_Transform transform;
     ASS_Rect bbox;
-    ASS_Rect fill_bbox;         // base outline before rnd/effect padding
+    ASS_Rect fill_bbox;         // original fill bounds for layout/paint
     bool vertical_substitute;   // use CJK OpenType vertical substitutions
     ASS_Vector pos;
     ASS_Vector offset;
@@ -497,8 +496,8 @@ typedef struct glyph_info {
     JitterState jitter;
     double jitter_dx;
     double jitter_dy;
-    double rnd_x, rnd_y, rnd_z; // VSFilterMod random offsets (screen px)
-    uint64_t rnd_seed;          // event/glyph seed for rnd* noise
+    int32_t rnd_x, rnd_y, rnd_z; // signed VSFilterMod path amplitudes (tag * 8)
+    int32_t rnd_seed;           // explicit hexadecimal rnds, default zero
     bool has_rnd;
     bool is_furi;
     bool is_furi_base;
@@ -854,8 +853,8 @@ struct render_context {
     JitterState jitter;
     double z;                   // 3D translation along camera Z
     bool ortho;                 // orthographic projection toggle
-    double rnd_x, rnd_y, rnd_z;
-    uint64_t rnd_seed_base;     // per-event seed for rnd* offsets
+    int32_t rnd_x, rnd_y, rnd_z;
+    int32_t rnd_seed;
     bool column_event;
     bool column_active;
     int column_row;

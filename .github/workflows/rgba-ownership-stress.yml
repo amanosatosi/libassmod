@@ -1,4 +1,4 @@
-name: RGBA Ownership Extended Stress
+name: RGBA and rnd Ownership Extended Stress
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
 jobs:
   rgba-ownership-stress:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 100
 
     steps:
       - uses: actions/checkout@v6
@@ -31,11 +31,11 @@ jobs:
       - name: Build
         run: meson compile -C build
 
-      - name: Run extended RGBA ownership stress
+      - name: Run extended RGBA and rnd ownership stress
         env:
           ASAN_OPTIONS: halt_on_error=1:abort_on_error=1:print_summary=1
           UBSAN_OPTIONS: halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1
-        run: meson test -C build --print-errorlogs rgba-ownership-lifetime-extended
+        run: meson test -C build --print-errorlogs rgba-ownership-lifetime-extended rnd-custom-decoration-lifetime-extended
 
       - name: Upload Meson test log
         if: always()

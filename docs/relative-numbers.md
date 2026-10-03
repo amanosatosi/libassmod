@@ -55,8 +55,9 @@ previous rendered frame.
 
 Results go through each tag's existing conversion, interpolation, and safety
 rules. For example, a nonpositive font-size result falls back to the effective
-Style font size; negative border results clamp to zero. `\rnd` and jitter
-retain their existing magnitude/range rules. No relative-only clamp is added.
+Style font size; negative border results clamp to zero. `\rnd` stores signed
+VSFilterMod amplitudes and disables deformation on nonpositive axes; jitter
+retains its existing magnitude/range rules. No relative-only clamp is added.
 
 ## Percentages are additive percentage points
 
@@ -182,7 +183,8 @@ sequential playback, and backwards frame requests give the same result.
 | Non-negative (bare `+/-` or explicit `~+/-`) | `\fs`, `\fscx`, `\fscy`, `\fsc`, `\scale` |
 | Non-negative | `\bord`, `\xbord`, `\ybord`, numbered `\Nbs`, `\Nbsx`, `\Nbsy`, `\bbs`, `\Nbbs` |
 | Non-negative | `\shad`, `\blur`, `\xblur`, `\yblur`, `\be`, `\boxp`, `\boxpx`, `\boxpy`, `\colsp` |
-| Non-negative | `\rnd`, `\rndx`, `\rndy`, `\rndz`, `\furis`, `\furisx`, `\furisy`, jitter extents and period |
+| Non-negative | `\furis`, `\furisx`, `\furisy`, jitter extents and period |
+| Signed (relative requires explicit `~+/-`) | `\rnd`, `\rndx`, `\rndy`, `\rndz` |
 | Signed (explicit `~+/-` only) | `\fr`, `\frx`, `\fry`, `\frz`, `\frs`, `\fax`, `\fay`, `\z`, `\fsp`, `\fsvp`, `\fshp`, `\xshad`, `\yshad`, `\pbo` |
 | Signed | `\pos` coordinates, `\clippos` coordinates, rectangular `\clip` / `\iclip` coordinates, all `\distort` coordinates, `\furipos`, `\furifsp`, image-fill X/Y offsets |
 | Signed | coordinate fields of `\move`, `\movevc`, `\mover`, `\moves3`, `\moves4`; `\mover` angles and radii |
