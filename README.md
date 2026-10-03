@@ -163,6 +163,12 @@ For `\ortho` semantics and examples, see:
 - `\movevc(x1,y1[,x2,y2[,t1,t2]])`  
   Movable vector clip independent of main motion
 
+- `\clippos(x,y)` / `\clips<percent>`  
+  Translate and uniformly resize the active `\clip` / `\iclip` without rewriting
+  its coordinates. Works with rectangular, vector, inverse, and scaled-vector
+  clips; both properties animate through `\t`, and scaling is centered on the
+  clip geometry. See [clip position and size transforms](docs/clip-transforms.md).
+
 ---
 ### Color & transparency
 
