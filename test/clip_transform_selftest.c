@@ -72,13 +72,15 @@ static ASS_Track *make_track(ASS_Library *lib, const char *tags, bool rgba)
     return track;
 }
 
-static void add_alpha(uint8_t *frame, int width, int height,
-                       int x, int y, unsigned alpha)
+static unsigned add_alpha(uint8_t *frame, int width, int height,
+                           int x, int y, unsigned alpha)
 {
     if (x < 0 || x >= width || y < 0 || y >= height)
-        return;
+        return 0;
     uint8_t *dst = &frame[(size_t) y * width + x];
-    *dst = alpha + (*dst * (255 - alpha) + 127) / 255;
+    unsigned previous = *dst;
+    *dst = alpha + (previous * (255 - alpha) + 127) / 255;
+    return *dst - previous;
 }
 
 static uint64_t capture(ASS_Renderer *renderer, ASS_Track *track, long long time,
@@ -86,6 +88,9 @@ static uint64_t capture(ASS_Renderer *renderer, ASS_Track *track, long long time
 {
     memset(frame, 0, (size_t) width * height);
     int change;
+    // Accumulate the change in composed coverage while visiting image pixels,
+    // avoiding another scan of the entire (possibly mostly empty) frame.
+    uint64_t coverage = 0;
     if (rgba) {
         ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, time, &change);
         // Force native RGBA painting so the RGBA vector-mask path is exercised.
@@ -94,7 +99,7 @@ static uint64_t capture(ASS_Renderer *renderer, ASS_Track *track, long long time
         for (ASS_ImageRGBA *img = images; img; img = img->next)
             for (int y = 0; y < img->h; y++)
                 for (int x = 0; x < img->w; x++)
-                    add_alpha(frame, width, height, img->dst_x + x, img->dst_y + y,
+                    coverage += add_alpha(frame, width, height, img->dst_x + x, img->dst_y + y,
                         img->rgba[(size_t) y * img->stride + 4 * x + 3]);
         ass_free_images_rgba(images);
     } else {
@@ -102,19 +107,25 @@ static uint64_t capture(ASS_Renderer *renderer, ASS_Track *track, long long time
         for (ASS_Image *img = images; img; img = img->next)
             for (int y = 0; y < img->h; y++)
                 for (int x = 0; x < img->w; x++)
-                    add_alpha(frame, width, height, img->dst_x + x, img->dst_y + y,
+                    coverage += add_alpha(frame, width, height, img->dst_x + x, img->dst_y + y,
                         (img->bitmap[(size_t) y * img->stride + x] *
                          (255 - (img->color & 255)) + 127) / 255);
     }
-    uint64_t coverage = 0;
-    for (size_t i = 0; i < (size_t) width * height; i++)
-        coverage += frame[i];
     return coverage;
+}
+
+static void progress(const char *name, bool rgba, int width, int height,
+                       long long time)
+{
+    fprintf(stderr, "%s (%s, %dx%d, %lldms)\n",
+        name, rgba ? "RGBA" : "legacy", width, height, time);
+    fflush(stderr);
 }
 
 static void compare_case(ASS_Library *lib, ASS_Renderer *renderer,
                           const Case *tc, bool rgba, int width, int height)
 {
+    progress(tc->name, rgba, width, height, tc->time);
     ASS_Track *a = make_track(lib, tc->tags, rgba);
     ASS_Track *b = make_track(lib, tc->expected, rgba);
     size_t size = (size_t) width * height;
@@ -124,13 +135,17 @@ static void compare_case(ASS_Library *lib, ASS_Renderer *renderer,
     uint64_t cb = capture(renderer, b, tc->time, rgba, width, height, expected);
     // Every table case has visible coverage; empty output cannot falsely pass.
     CHECK(ca && cb);
-    for (size_t i = 0; i < size; i++) {
-        int diff = abs((int) actual[i] - expected[i]);
-        if (diff > tc->tolerance) {
-            fprintf(stderr, "%s (%s, %dx%d, %lldms): pixel %zu,%zu = %u vs %u\n",
-                tc->name, rgba ? "RGBA" : "legacy", width, height, tc->time,
-                i % width, i / width, actual[i], expected[i]);
-            exit(1);
+    // Most comparisons are byte-exact. Use the optimized bulk comparison
+    // first; retain the original per-pixel tolerance and failure diagnostics.
+    if (memcmp(actual, expected, size)) {
+        for (size_t i = 0; i < size; i++) {
+            int diff = abs((int) actual[i] - expected[i]);
+            if (diff > tc->tolerance) {
+                fprintf(stderr, "%s (%s, %dx%d, %lldms): pixel %zu,%zu = %u vs %u\n",
+                    tc->name, rgba ? "RGBA" : "legacy", width, height, tc->time,
+                    i % width, i / width, actual[i], expected[i]);
+                exit(1);
+            }
         }
     }
     free(actual); free(expected);
@@ -268,6 +283,7 @@ static void animation_frames(ASS_Library *lib, ASS_Renderer *renderer,
     uint8_t *a = malloc(size), *b = malloc(size);
     CHECK(a && b);
     for (size_t f = 0; f < sizeof(times) / sizeof(times[0]); f++) {
+        progress("animation seek", rgba, width, height, times[f]);
         double t = (times[f] - 200) / 1000.0;
         if (t < 0) t = 0;
         if (t > 1) t = 1;
@@ -292,6 +308,7 @@ static void zero_scale(ASS_Library *lib, ASS_Renderer *renderer,
     uint8_t *frame = malloc((size_t) width * height);
     CHECK(frame);
     for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+        progress(tags[i], rgba, width, height, 0);
         ASS_Track *track = make_track(lib, tags[i], rgba);
         CHECK(!capture(renderer, track, 0, rgba, width, height, frame));
         ass_free_track(track);
@@ -299,8 +316,28 @@ static void zero_scale(ASS_Library *lib, ASS_Renderer *renderer,
     free(frame);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    int first_config = 0, last_config = 2;
+    int first_rgba = 0, last_rgba = 2;
+    int batch = -1;
+    // No arguments retain the complete standalone suite. CI selects one
+    // configuration/backend and one half of the unchanged case table so a
+    // single timeout does not cover hundreds of large sanitized RGBA frames.
+    if (argc != 1) {
+        if (argc != 4 || strlen(argv[1]) != 1 || strlen(argv[2]) != 1 ||
+                strlen(argv[3]) != 1 || argv[1][0] < '0' || argv[1][0] > '1' ||
+                argv[2][0] < '0' || argv[2][0] > '1' ||
+                argv[3][0] < '0' || argv[3][0] > '1') {
+            fprintf(stderr, "usage: %s [config(0|1) rgba(0|1) batch(0|1)]\n", argv[0]);
+            return 2;
+        }
+        first_config = argv[1][0] - '0';
+        last_config = first_config + 1;
+        first_rgba = argv[2][0] - '0';
+        last_rgba = first_rgba + 1;
+        batch = argv[3][0] - '0';
+    }
     ASS_Library *lib = ass_library_init();
     CHECK(lib);
     ass_set_message_cb(lib, quiet, NULL);
@@ -309,7 +346,7 @@ int main(void)
     CHECK(renderer);
     ass_set_fonts(renderer, font_path, "sans-serif", ASS_FONTPROVIDER_NONE, NULL, 1);
     ass_set_storage_size(renderer, W, H);
-    for (int config = 0; config < 2; config++) {
+    for (int config = first_config; config < last_config; config++) {
         // Integer device scales keep rectangle hard edges comparable to vector
         // AA edges, while testing unequal axis scales and nonzero margins.
         int width = config ? 2 * W + 32 : W;
@@ -317,11 +354,16 @@ int main(void)
         ass_set_frame_size(renderer, width, height);
         ass_set_margins(renderer, config ? 17 : 0, config ? 11 : 0,
                         config ? 13 : 0, config ? 19 : 0);
-        for (int rgba = 0; rgba < 2; rgba++) {
-            for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        for (int rgba = first_rgba; rgba < last_rgba; rgba++) {
+            size_t count = sizeof(cases) / sizeof(cases[0]);
+            size_t first = batch < 0 ? 0 : batch * count / 2;
+            size_t last = batch < 0 ? count : (batch + 1) * count / 2;
+            for (size_t i = first; i < last; i++)
                 compare_case(lib, renderer, &cases[i], rgba, width, height);
-            animation_frames(lib, renderer, rgba, width, height);
-            zero_scale(lib, renderer, rgba, width, height);
+            if (batch <= 0) {
+                animation_frames(lib, renderer, rgba, width, height);
+                zero_scale(lib, renderer, rgba, width, height);
+            }
         }
     }
     ass_renderer_done(renderer);
