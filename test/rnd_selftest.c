@@ -18,6 +18,7 @@ typedef struct {
     uint8_t *pixels;
     int32_t x, y, z, seed;
     uint64_t coverage[3];
+    unsigned images[3];
 } Sample;
 
 static void quiet(int level, const char *fmt, va_list args, void *data)
@@ -54,6 +55,7 @@ static Sample capture(ASS_Renderer *renderer, ASS_Track *track, long long time)
     out.x = s->rnd_x; out.y = s->rnd_y; out.z = s->rnd_z; out.seed = s->rnd_seed;
     for (ASS_Image *img = images; img; img = img->next) {
         if ((unsigned) img->type > 2) { failures++; continue; }
+        out.images[img->type]++;
         for (int y = 0; y < img->h; y++) {
             int py = img->dst_y + y;
             if (py < 0 || py >= H) continue;
@@ -86,6 +88,21 @@ static Sample sample(ASS_Library *lib, ASS_Renderer *renderer, const char *tags,
 static int equal(const Sample *a, const Sample *b, int layers)
 {
     return a->pixels && b->pixels && !memcmp(a->pixels, b->pixels, layers * PIXELS);
+}
+
+static int equal_layer(const Sample *a, const Sample *b, int layer)
+{
+    return a->pixels && b->pixels &&
+        !memcmp(a->pixels + layer * PIXELS, b->pixels + layer * PIXELS, PIXELS);
+}
+
+static uint64_t exterior_border_coverage(const Sample *sample, const Sample *fill)
+{
+    if (!sample->pixels || !fill->pixels) return 0;
+    uint64_t coverage = 0;
+    for (int p = 0; p < PIXELS; p++)
+        if (!fill->pixels[p]) coverage += sample->pixels[PIXELS + p];
+    return coverage;
 }
 
 static void parser_cases(ASS_Library *lib, ASS_Renderer *renderer)
@@ -178,18 +195,34 @@ static void geometry_cases(ASS_Library *lib, ASS_Renderer *renderer)
     Sample ortho_depth = sample(lib, renderer, "\\ortho1\\rndz100", 0);
     CHECK(equal(&plain,&ortho_depth,1));
     CHECK(!equal(&ortho,&ortho_z,1));
-    Sample fill = sample(lib, renderer, "\\rnd30\\rndsabc", 0);
+    /* Keep the shadow setting identical: the existing ASS projection origin
+     * includes shadow offsets, which affect a randomized local Z coordinate. */
+    Sample fill = sample(lib, renderer, "\\rnd30\\rndsabc\\shad4", 0);
     Sample border = sample(lib, renderer, "\\rnd30\\rndsabc\\bord3\\shad4", 0);
     Sample multi = sample(lib, renderer, "\\rnd30\\rndsabc\\xbord2\\ybord3\\2bs4\\3bs2\\shad4", 0);
-    CHECK(equal(&fill,&border,1) && equal(&fill,&multi,1));
+    CHECK(equal(&fill,&border,1));
+    CHECK(equal(&fill,&multi,1));
     CHECK(border.coverage[1] && border.coverage[2]);
-    CHECK(multi.coverage[1] > border.coverage[1] && multi.coverage[2]);
+    /* Opaque ordinary borders retain the fill, while multi-border masks are
+     * disjoint rings. Compare only the exterior of the common fill. */
+    CHECK(exterior_border_coverage(&multi,&fill) > exterior_border_coverage(&border,&fill));
+    CHECK(multi.images[IMAGE_TYPE_OUTLINE] == 3 && multi.coverage[2]);
+    /* The outer cumulative geometry is 2+4+2 by 3+4+2. Its shadow must be
+     * exactly the one produced by widening the same randomized base once. */
+    Sample outer = sample(lib, renderer, "\\rnd30\\rndsabc\\xbord8\\ybord9\\shad4", 0);
+    CHECK(equal(&fill,&outer,1));
+    CHECK(equal_layer(&multi,&outer,IMAGE_TYPE_SHADOW));
+    /* Without depth perturbation, adding borders/shadow cannot change fill. */
+    Sample xy_fill = sample(lib, renderer, "\\rndx30\\rndy30\\rndsabc", 0);
+    Sample xy_multi = sample(lib, renderer, "\\rndx30\\rndy30\\rndsabc\\xbord2\\ybord3\\2bs4\\3bs2\\shad4", 0);
+    CHECK(equal(&xy_fill,&xy_multi,1));
     Sample large30 = sample(lib, renderer, "\\rndx30", 0);
     Sample large100 = sample(lib, renderer, "\\rndx100", 0);
     Sample old_limit = sample(lib, renderer, "\\rndx21", 0);
     CHECK(!equal(&large30,&old_limit,1) && !equal(&large100,&old_limit,1));
     Sample *samples[] = {&plain,&negative,&explicit_zero,&seed0,&seed0_explicit,&seed1,
-        &ortho,&ortho_z,&ortho_depth,&fill,&border,&multi,&large30,&large100,&old_limit};
+        &ortho,&ortho_z,&ortho_depth,&fill,&border,&multi,&outer,&xy_fill,&xy_multi,
+        &large30,&large100,&old_limit};
     for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) free(samples[i]->pixels);
     // Finite but unsafe amplitudes must fail geometry construction safely.
     Sample invalid = sample(lib,renderer,"\\rnd1e100\\bord3\\2bs4",0);
