@@ -60,7 +60,6 @@ libass_src = files(
     'ass_font.c',
     'ass_fontselect.c',
     'ass_distort.c',
-    'ass_perspective.c',
     'ass_library.c',
     'ass_outline.c',
     'ass_parse.c',

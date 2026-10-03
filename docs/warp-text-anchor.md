@@ -28,9 +28,14 @@ placement when an event contains no warped text glyphs.
 
 The anchor uses outline control bounds after `\distort` and baseline layout.
 The existing distortion pass does not deform ruby outlines; ruby is included
-at its rendered position. Later 3D/perspective bitmap transforms are outside
+at its rendered position. Later ordinary ASS 3D projection transforms are outside
 these bounds, so combining those transforms with `\wtan` can produce a
 different final pixel extent. Raster hinting can also shift edges slightly.
+
+Six-value `\distort` keeps its legacy line-local domains. Eight-value `\distort`
+can use one shared multiline source rectangle, including when its final P0 pair
+is `(0,0)`. `\wtan` anchors the union of the resulting outlines in either case;
+it does not change which glyphs belong to each distortion unit.
 
 For manual comparison, paste these dialogue texts into a 1280×720 ASS script.
 Give each line a different time interval and add a visible guide at

@@ -49,24 +49,6 @@ override_annotations_unit = executable(
     link_with: libass_for_tools,
 )
 
-perspective_unit = executable(
-    'perspective_unit',
-    files('perspective_test.c'),
-    install: false,
-    include_directories: incs,
-    dependencies: deps,
-    link_with: libass_for_tools,
-)
-
-perspective_render_unit = executable(
-    'perspective_render_unit',
-    files('perspective_selftest.c'),
-    install: false,
-    include_directories: incs,
-    dependencies: deps,
-    link_with: libass_for_tools,
-)
-
 curved_text_unit = executable(
     'curved_text_unit',
     files('curved_text_selftest.c'),
@@ -235,9 +217,7 @@ if get_option('default_library') != 'shared'
 endif
 
 test('distortion-warp', distort_unit)
-test('distortion-render', distort_render_unit)
-test('perspective-homography', perspective_unit)
-test('perspective-render', perspective_render_unit, timeout: 120)
+test('distortion-render', distort_render_unit, timeout: 120)
 test('curved-text-render', curved_text_unit, timeout: 120)
 test('relative-numbers', relative_numbers_unit, timeout: 120)
 test('override-annotations', override_annotations_unit, timeout: 120)

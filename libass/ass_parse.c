@@ -3734,82 +3734,6 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_x = calc_anim(x, state->rnd_x, pwr);
             state->rnd_y = calc_anim(y, state->rnd_y, pwr);
             state->rnd_z = calc_anim(z, state->rnd_z, pwr);
-        } else if (complex_tag("perspective")) {
-            if (*name_end != '(' || has_backslash_arg)
-                continue;
-
-            char *raw_start = name_end + 1;
-            char *raw_end = q;
-            if (raw_start >= raw_end || raw_end[-1] != ')')
-                continue;
-            raw_end--;
-
-            // Eight values are the historical text-bounds corner pin. Nine
-            // values are a dimension-independent local plane matrix with a
-            // final version sentinel of 1.
-            int count = 1;
-            for (char *scan = raw_start; scan < raw_end; scan++)
-                count += *scan == ',';
-            if (count != 8 && count != 9)
-                continue;
-            char *ptr = raw_start;
-            bool ok = true;
-            double values[9];
-            for (int i = 0; i < count; i++) {
-                char *next = i < count - 1 ? memchr(ptr, ',', raw_end - ptr) : NULL;
-                if ((i < count - 1 && !next) ||
-                        (i == count - 1 && memchr(ptr, ',', raw_end - ptr))) {
-                    ok = false;
-                    break;
-                }
-                char *tok_end = next ? next : raw_end;
-                rskip_spaces(&tok_end, ptr);
-                skip_spaces(&ptr);
-                double current = 0;
-                if (count == 8)
-                    current = i & 1 ? state->perspective.corner[i / 2].y :
-                                      state->perspective.corner[i / 2].x;
-                else if (i < 8) {
-                    static const int row[8] = {0, 0, 0, 1, 1, 1, 2, 2};
-                    static const int col[8] = {0, 1, 2, 0, 1, 2, 0, 1};
-                    current = state->perspective.plane ?
-                        state->perspective.matrix[row[i]][col[i]] :
-                        (i == 0 || i == 4);
-                }
-                double value;
-                if (tok_end <= ptr ||
-                        !numeric_arg_strict((struct arg) {ptr, tok_end}, current,
-                                            NUM_SIGNED, &value)) {
-                    ok = false;
-                    break;
-                }
-                values[i] = value;
-                ptr = next ? next + 1 : raw_end;
-            }
-            skip_spaces(&ptr);
-            if (!ok || ptr != raw_end || (count == 9 && values[8] != 1.0))
-                continue;
-
-            state->perspective_enabled = true;
-            bool plane = count == 9;
-            if (plane) {
-                static const int row[8] = {0, 0, 0, 1, 1, 1, 2, 2};
-                static const int col[8] = {0, 1, 2, 0, 1, 2, 0, 1};
-                for (int i = 0; i < 8; i++)
-                    state->perspective.matrix[row[i]][col[i]] = calc_anim(
-                        values[i], state->perspective.plane ?
-                        state->perspective.matrix[row[i]][col[i]] :
-                        (i == 0 || i == 4), pwr);
-                state->perspective.matrix[2][2] = 1;
-            } else {
-                for (int i = 0; i < 4; i++) {
-                    state->perspective.corner[i].x = calc_anim(
-                        values[2 * i], state->perspective.corner[i].x, pwr);
-                    state->perspective.corner[i].y = calc_anim(
-                        values[2 * i + 1], state->perspective.corner[i].y, pwr);
-                }
-            }
-            state->perspective.plane = plane;
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;
@@ -3864,6 +3788,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 continue;
 
             state->distort_enabled = true;
+            // The form is discrete, just like other nonnumeric override state:
+            // select the target form even at pwr=0; only the pins interpolate.
+            state->distort_extended = count == 8;
             state->distort.u1 = calc_anim(target[0], state->distort.u1, pwr);
             state->distort.v1 = calc_anim(target[1], state->distort.v1, pwr);
             state->distort.u2 = calc_anim(target[2], state->distort.u2, pwr);

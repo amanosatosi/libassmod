@@ -36,7 +36,6 @@
 #include "ass_parse.h"
 #include "ass_priv.h"
 #include "ass_distort.h"
-#include "ass_perspective.h"
 #include "ass_shaper.h"
 #include "ass_chat.h"
 #include "ass_vertical.h"
@@ -3609,11 +3608,10 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->rnd_z = 0.0;
     state->needs_rgba = false;
     state->distort_enabled = false;
+    state->distort_extended = false;
     state->distort = (ASS_DistortParams) {
         .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
     };
-    state->perspective_enabled = false;
-    state->perspective = (ASS_PerspectiveParams) {0};
 
     memset(state->chat_side, 0, sizeof(state->chat_side));
     state->chat_receipt = (ASS_ChatReceipt) {.mark = 2};
@@ -3718,11 +3716,10 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->text_info.native_vertical = false;
     state->fade_color = (FadeColorState) {0};
     state->distort_enabled = false;
+    state->distort_extended = false;
     state->distort = (ASS_DistortParams) {
         .u1 = 1.0, .u2 = 1.0, .v2 = 1.0, .v3 = 1.0,
     };
-    state->perspective_enabled = false;
-    state->perspective = (ASS_PerspectiveParams) {0};
     state->curved_path_outline = NULL;
     state->curved_text_align = 0;
     state->warp_text_alignment = 0;
@@ -4406,8 +4403,8 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
 /**
  * \brief Calculate outline transformation matrix
  */
-static void calc_transform_matrix_base(RenderContext *state,
-                                       GlyphInfo *info, double m[3][3])
+static void calc_transform_matrix(RenderContext *state,
+                                  GlyphInfo *info, double m[3][3])
 {
     ASS_Renderer *render_priv = state->renderer;
 
@@ -4501,30 +4498,6 @@ static void calc_transform_matrix_base(RenderContext *state,
         m[1][i] = z4[i] * offs_y + y3[i] * dist;
         m[2][i] = z4[i];
     }
-}
-
-static void calc_transform_matrix(RenderContext *state,
-                                  GlyphInfo *info, double m[3][3])
-{
-    calc_transform_matrix_base(state, info, m);
-    if (!info->perspective_valid)
-        return;
-
-    double result[3][3] = {{0}};
-    const double (*h)[3] = info->perspective_homography.m;
-    double scroll = info->scroll_id ?
-        state->scroll_contexts[info->scroll_id - 1].displacement * 64.0 : 0.0;
-    if (scroll)
-        for (int col = 0; col < 3; col++)
-            m[1][col] += scroll * m[2][col];
-    for (int row = 0; row < 3; row++)
-        for (int col = 0; col < 3; col++)
-            for (int k = 0; k < 3; k++)
-                result[row][col] += h[row][k] * m[k][col];
-    if (scroll)
-        for (int col = 0; col < 3; col++)
-            result[1][col] -= scroll * result[2][col];
-    memcpy(m, result, sizeof(result));
 }
 
 /**
@@ -5527,6 +5500,8 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
 
     Effect last_effect_type = glyphs[0].effect_type;
     glyphs[0].starts_new_run = true;
+    glyphs[0].distort_style_run_id = 0;
+    int distort_run = 0;
     for (int i = 1; i < length; i++) {
         GlyphInfo *info = glyphs + i;
         GlyphInfo *last = glyphs + (i - 1);
@@ -5581,6 +5556,10 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
             last->italic != info->italic ||
             last->bold != info->bold ||
             ((last->flags ^ info->flags) & ~DECO_ROTATE);
+        // Line trimming later adds shaping boundaries to starts_new_run.
+        // Keep the original effective-style boundaries for multiline distort.
+        distort_run += info->starts_new_run;
+        info->distort_style_run_id = distort_run;
         if (effect_type != EF_NONE)
             last_effect_type = effect_type;
     }
@@ -5826,10 +5805,9 @@ static bool append_glyph_to_target(RenderContext *state,
     }
 #endif
     info->distort_enabled = state->distort_enabled;
+    info->distort_extended = state->distort_extended;
     info->distort = state->distort;
-    info->perspective_enabled = state->perspective_enabled;
-    info->perspective = state->perspective;
-    info->perspective_valid = false;
+    info->distort_bbox = (ASS_DRect) {0};
     info->distorted_outline = NULL;
     info->has_distort_bitmap = false;
     info->has_distort_outline = false;
@@ -5892,201 +5870,6 @@ static bool append_text_segment(RenderContext *state, char *start, char *end,
         state->reset_effect = false;
     }
     return true;
-}
-
-typedef struct {
-    ASS_PerspectiveParams params;
-    double min_x, min_y, max_x, max_y;
-    bool has_point;
-    bool invalid;
-    bool solved;
-    ASS_Homography homography;
-} PerspectiveGroup;
-
-static bool perspective_params_match(const ASS_PerspectiveParams *a,
-                                     const ASS_PerspectiveParams *b)
-{
-    if (a->plane != b->plane)
-        return false;
-    if (a->plane) {
-        for (int row = 0; row < 3; row++)
-            for (int col = 0; col < 3; col++)
-                if (a->matrix[row][col] != b->matrix[row][col])
-                    return false;
-        return true;
-    }
-    for (int i = 0; i < 4; i++)
-        if (a->corner[i].x != b->corner[i].x ||
-                a->corner[i].y != b->corner[i].y)
-            return false;
-    return true;
-}
-
-static PerspectiveGroup *perspective_group_for(PerspectiveGroup *groups,
-                                                int *count, int capacity,
-                                                const ASS_PerspectiveParams *p)
-{
-    for (int i = 0; i < *count; i++)
-        if (perspective_params_match(&groups[i].params, p))
-            return &groups[i];
-    if (*count >= capacity)
-        return NULL;
-    PerspectiveGroup *group = &groups[(*count)++];
-    group->params = *p;
-    group->min_x = group->min_y = DBL_MAX;
-    group->max_x = group->max_y = -DBL_MAX;
-    return group;
-}
-
-static void perspective_accumulate_glyph(RenderContext *state, GlyphInfo *info,
-                                         PerspectiveGroup *groups,
-                                         int *count, int capacity)
-{
-    info->perspective_valid = false;
-    if (!info->perspective_enabled || info->skip || info->symbol == '\n')
-        return;
-
-    PerspectiveGroup *group = perspective_group_for(
-        groups, count, capacity, &info->perspective);
-    if (!group || group->invalid)
-        return;
-    // Plane matrices operate on local coordinates, not on the current fill
-    // outline. Skip the old bounds scan entirely for the new syntax.
-    if (info->perspective.plane)
-        return;
-    OutlineHashValue *outline = info->distorted_outline ?
-        info->distorted_outline : info->outline;
-    if (!outline || !outline->outline[0].n_points)
-        return;
-
-    double base[3][3], matrix[3][3];
-    calc_transform_matrix_base(state, info, base);
-    const ASS_Transform *tr = &info->transform;
-    for (int row = 0; row < 3; row++) {
-        matrix[row][0] = base[row][0] * tr->scale.x;
-        matrix[row][1] = base[row][1] * tr->scale.y;
-        matrix[row][2] = base[row][0] * tr->offset.x +
-                         base[row][1] * tr->offset.y + base[row][2];
-    }
-
-    const ASS_Outline *fill = &outline->outline[0];
-    for (size_t i = 0; i < fill->n_points; i++) {
-        double x = fill->points[i].x, y = fill->points[i].y;
-        double X = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2];
-        double Y = matrix[1][0] * x + matrix[1][1] * y + matrix[1][2];
-        double W = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2];
-        if (!isfinite(X) || !isfinite(Y) || !isfinite(W) || fabs(W) <= DBL_MIN) {
-            group->invalid = true;
-            return;
-        }
-        x = X / W;
-        y = Y / W;
-        if (!isfinite(x) || !isfinite(y)) {
-            group->invalid = true;
-            return;
-        }
-        group->min_x = FFMIN(group->min_x, x);
-        group->min_y = FFMIN(group->min_y, y);
-        group->max_x = FFMAX(group->max_x, x);
-        group->max_y = FFMAX(group->max_y, y);
-        group->has_point = true;
-    }
-}
-
-static void perspective_accumulate_list(RenderContext *state,
-                                        GlyphInfo *glyphs, int length,
-                                        PerspectiveGroup *groups,
-                                        int *count, int capacity)
-{
-    for (int i = 0; i < length; i++)
-        for (GlyphInfo *info = glyphs + i; info; info = info->next)
-            perspective_accumulate_glyph(state, info, groups, count, capacity);
-}
-
-static void perspective_assign_list(GlyphInfo *glyphs, int length,
-                                    PerspectiveGroup *groups, int count)
-{
-    for (int i = 0; i < length; i++) {
-        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
-            if (!info->perspective_enabled)
-                continue;
-            for (int group = 0; group < count; group++) {
-                if (groups[group].solved && perspective_params_match(
-                        &groups[group].params, &info->perspective)) {
-                    info->perspective_homography = groups[group].homography;
-                    info->perspective_valid = true;
-                    break;
-                }
-            }
-        }
-    }
-}
-
-static void prepare_perspective(RenderContext *state,
-                                const ASS_DVector *object_anchor)
-{
-    TextInfo *text_info = &state->text_info;
-    int capacity = text_info->length;
-    for (int i = 0; i < text_info->n_furi_groups; i++)
-        capacity += text_info->furi_groups[i].length;
-    if (capacity <= 0)
-        return;
-
-    PerspectiveGroup *groups = calloc(capacity, sizeof(*groups));
-    if (!groups)
-        return;
-    int count = 0;
-    perspective_accumulate_list(state, text_info->glyphs, text_info->length,
-                                groups, &count, capacity);
-    for (int i = 0; i < text_info->n_furi_groups; i++) {
-        FuriGroup *furi = &text_info->furi_groups[i];
-        perspective_accumulate_list(state, furi->glyphs, furi->length,
-                                    groups, &count, capacity);
-    }
-    if (!count) {
-        free(groups);
-        return;
-    }
-
-    ASS_Renderer *render_priv = state->renderer;
-    double left = render_priv->settings.left_margin;
-    /* calc_transform_matrix() and outline points use 26.6 coordinates. */
-    double anchor_x = 64 * ((object_anchor->x - left) *
-                            render_priv->par_scale_x + left);
-    double anchor_y = 64 * object_anchor->y;
-    double scale_x = 64 * render_priv->frame_content_width /
-                     (double) render_priv->track->PlayResX;
-    double scale_y = 64 * render_priv->frame_content_height /
-                     (double) render_priv->track->PlayResY;
-    for (int i = 0; i < count; i++) {
-        PerspectiveGroup *group = &groups[i];
-        if (group->params.plane) {
-            group->solved = ass_perspective_plane_matrix(
-                &group->params, anchor_x, anchor_y, scale_x, scale_y,
-                &group->homography);
-            continue;
-        }
-        if (!group->has_point || group->invalid ||
-                !(group->min_x < group->max_x) || !(group->min_y < group->max_y))
-            continue;
-        ASS_PerspectiveParams destination;
-        for (int corner = 0; corner < 4; corner++) {
-            destination.corner[corner].x = anchor_x +
-                group->params.corner[corner].x * scale_x;
-            destination.corner[corner].y = anchor_y +
-                group->params.corner[corner].y * scale_y;
-        }
-        group->solved = ass_perspective_solve(
-            &destination, group->min_x, group->min_y,
-            group->max_x, group->max_y, &group->homography);
-    }
-
-    perspective_assign_list(text_info->glyphs, text_info->length, groups, count);
-    for (int i = 0; i < text_info->n_furi_groups; i++) {
-        FuriGroup *furi = &text_info->furi_groups[i];
-        perspective_assign_list(furi->glyphs, furi->length, groups, count);
-    }
-    free(groups);
 }
 
 static bool secondary_outline_equal(const KaraokeOutlinePaint *a,
@@ -6793,6 +6576,7 @@ static void retrieve_glyphs_from_list(RenderContext *state,
         GlyphInfo *root = info;
         do {
             info->distort_enabled = root->distort_enabled;
+            info->distort_extended = root->distort_extended;
             info->distort = root->distort;
             get_outline_glyph(state, info);
             info->fill_bbox = info->bbox;
@@ -7809,7 +7593,8 @@ static bool distort_params_match(const GlyphInfo *a, const GlyphInfo *b)
 {
     if (!a->distort_enabled || !b->distort_enabled)
         return false;
-    return a->distort.u1 == b->distort.u1 && a->distort.v1 == b->distort.v1 &&
+    return a->distort_extended == b->distort_extended &&
+           a->distort.u1 == b->distort.u1 && a->distort.v1 == b->distort.v1 &&
            a->distort.u2 == b->distort.u2 && a->distort.v2 == b->distort.v2 &&
            a->distort.u3 == b->distort.u3 && a->distort.v3 == b->distort.v3 &&
            a->distort.u0 == b->distort.u0 && a->distort.v0 == b->distort.v0;
@@ -8052,6 +7837,8 @@ static bool distort_warp_glyph(GlyphInfo *info,
 
     info->distorted_outline = distorted;
     info->has_distort_outline = true;
+    if (info->distort_extended)
+        info->distort_bbox = (ASS_DRect) {min_x, min_y, max_x, max_y};
     info->bbox.x_min = ass_lrint(distorted->cbox.x_min * scale_x + off_x);
     info->bbox.y_min = ass_lrint(distorted->cbox.y_min * scale_y + off_y);
     info->bbox.x_max = ass_lrint(distorted->cbox.x_max * scale_x + off_x);
@@ -8100,6 +7887,7 @@ static bool apply_distortion(RenderContext *state)
         if (root->symbol == '\n' || !root->distort_enabled)
             continue;
         int root_run_id = style_run_ids[root_index];
+        bool multiline = root->distort_extended;
 
         double min_x = DBL_MAX, min_y = DBL_MAX;
         double max_x = -DBL_MAX, max_y = -DBL_MAX;
@@ -8109,13 +7897,20 @@ static bool apply_distortion(RenderContext *state)
         while (end < text_info->length) {
             int cur_index = cmap[end];
             GlyphInfo *cur = text_info->glyphs + cur_index;
-            if ((text_info->glyphs[end].linebreak && end != i) ||
-                    cur->symbol == '\n')
+            if (!multiline && ((text_info->glyphs[end].linebreak && end != i) ||
+                               cur->symbol == '\n'))
                 break;
-            if (style_run_ids[cur_index] != root_run_id)
+            if (multiline ? cur->distort_style_run_id != root->distort_style_run_id :
+                            style_run_ids[cur_index] != root_run_id)
                 break;
             if (!distort_params_match(root, cur))
                 break;
+            // A hard break may belong to this extended unit but never supplies
+            // outline geometry. Style/parameter boundaries still apply to it.
+            if (cur->symbol == '\n') {
+                end++;
+                continue;
+            }
 
             /*
              * Match VSFilterMod's path-point bounds. Whitespace has no path
@@ -8138,7 +7933,7 @@ static bool apply_distortion(RenderContext *state)
 
         for (int j = i; j < end; j++) {
             GlyphInfo *cur = text_info->glyphs + cmap[j];
-            if (cur->skip)
+            if (cur->skip || cur->symbol == '\n')
                 continue;
             /*
              * HarfBuzz can emit several positioned glyphs for one logical
@@ -10356,37 +10151,6 @@ static BS4BoxGeometry *capture_scroll_boxes(RenderContext *state,
     return boxes;
 }
 
-static void sync_bs4_perspective_from_list(BS4BoxGeometry *box,
-                                           GlyphInfo *glyphs, int length)
-{
-    if (box->geometry.perspective_valid)
-        return;
-    for (int i = 0; i < length; i++) {
-        for (GlyphInfo *info = glyphs + i; info; info = info->next) {
-            if (info->perspective_valid && perspective_params_match(
-                    &info->perspective, &box->geometry.perspective)) {
-                box->geometry.perspective_homography =
-                    info->perspective_homography;
-                box->geometry.perspective_valid = true;
-                return;
-            }
-        }
-    }
-}
-
-static void sync_bs4_perspective(RenderContext *state, BS4BoxGeometry *box)
-{
-    if (!box->valid || !box->geometry.perspective_enabled)
-        return;
-    TextInfo *text_info = &state->text_info;
-    sync_bs4_perspective_from_list(box, text_info->glyphs, text_info->length);
-    for (int i = 0; !box->geometry.perspective_valid &&
-            i < text_info->n_furi_groups; i++) {
-        FuriGroup *group = &text_info->furi_groups[i];
-        sync_bs4_perspective_from_list(box, group->glyphs, group->length);
-    }
-}
-
 static uint32_t box_border_layer_color(RenderContext *state,
                                        const BorderLayerState *layer)
 {
@@ -10571,8 +10335,9 @@ static bool bs4_unit_square_to_quad(const ASS_DVector points[4],
 /*
  * Map a local rectangle through the canonical event distortion first, then
  * through the normal event transform.  All box-border rectangles share the
- * padded fill rectangle as their distortion domain so their common edges stay
- * attached instead of being independently re-normalised.
+ * same distortion domain so their common edges stay attached instead of being
+ * independently re-normalised: the padded fill rectangle for legacy distortion,
+ * or the canonical glyph's source bbox for extended distortion.
  */
 static bool bs4_box_matrix(RenderContext *state, const BS4BoxGeometry *box,
                            double left, double top, double right, double bottom,
@@ -10592,10 +10357,16 @@ static bool bs4_box_matrix(RenderContext *state, const BS4BoxGeometry *box,
         { left * 64.0,  bottom * 64.0 },
     };
     if (box->geometry.distort_enabled) {
-        const double x0 = domain_left * 64.0;
-        const double y0 = domain_top * 64.0;
-        const double x1 = domain_right * 64.0;
-        const double y1 = domain_bottom * 64.0;
+        // Six-slot boxes retain their padded fill domain. Extended boxes use
+        // the canonical glyph's shared source domain, including all its lines,
+        // so padding and box borders continue the same bilinear deformation.
+        bool shared = box->geometry.distort_extended &&
+                      box->geometry.has_distort_outline;
+        const ASS_DRect *bbox = &box->geometry.distort_bbox;
+        const double x0 = shared ? bbox->x_min : domain_left * 64.0;
+        const double y0 = shared ? bbox->y_min : domain_top * 64.0;
+        const double x1 = shared ? bbox->x_max : domain_right * 64.0;
+        const double y1 = shared ? bbox->y_max : domain_bottom * 64.0;
         for (int i = 0; i < 4; i++)
             points[i] = ass_distort_map_point(&box->geometry.distort, x0, y0, x1, y1,
                                               points[i].x, points[i].y);
@@ -12083,11 +11854,6 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     }
 
     position_glyphs_for_render(state, device_x, device_y);
-    prepare_perspective(state, &object_anchor);
-    if (state->bs4_box_mode)
-        sync_bs4_perspective(state, &bs4_box_geometry);
-    for (int i = 0; i < n_scroll_boxes; i++)
-        sync_bs4_perspective(state, &scroll_boxes[i]);
     /* Rotation origins and perspective are resolved from normal layout first.
      * Translating the glyph position now moves the complete raster result
      * vertically without rotating the scroll vector or changing \org. */

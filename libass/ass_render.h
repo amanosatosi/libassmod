@@ -41,7 +41,6 @@
 #include "ass_scroll.h"
 #include "ass_chat.h"
 #include "ass_distort.h"
-#include "ass_perspective.h"
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
 #include "gradient.h"
@@ -470,11 +469,10 @@ typedef struct glyph_info {
     double hspacing;
     int hspacing_scaled;        // 26.6
     bool distort_enabled;
+    bool distort_extended;     // eight-slot form, including an explicit zero P0
     ASS_DistortParams distort;
-    bool perspective_enabled;
-    ASS_PerspectiveParams perspective;
-    bool perspective_valid;
-    ASS_Homography perspective_homography;
+    int distort_style_run_id;  // style boundary before line-break run splitting
+    ASS_DRect distort_bbox;    // shared source domain, d6; valid after outline warp
     OutlineHashValue *distorted_outline;
     Bitmap distort_bitmap, distort_bitmap_o;
     Bitmap distort_bitmap_border[ASS_BORDER_LAYERS_MAX - 1];
@@ -893,9 +891,8 @@ struct render_context {
     double vertical_spacing;
     double vertical_column_spacing;
     bool distort_enabled;
+    bool distort_extended;
     ASS_DistortParams distort;
-    bool perspective_enabled;
-    ASS_PerspectiveParams perspective;
     OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
     int curved_text_align;                 // 0 = inherit \an, 1..9 = path anchor
     double curved_text_x;                  // along-path offset, script units
