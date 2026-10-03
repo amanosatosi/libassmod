@@ -21,6 +21,17 @@ typedef struct {
     unsigned images[3];
 } Sample;
 
+/* Full GlyphInfo copies include large gradient arrays. Snapshot only logical
+ * metrics so layout coverage fits within the default Windows stack budget. */
+typedef struct {
+    unsigned symbol;
+    ASS_Vector advance, pos;
+    char linebreak;
+    int asc, desc;
+    ASS_Rect bbox;
+    int32_t effect_timing, effect_skip_timing;
+} GlyphLayout;
+
 static void quiet(int level, const char *fmt, va_list args, void *data)
 {
     (void) level; (void) fmt; (void) args; (void) data;
@@ -307,10 +318,12 @@ static void layout(ASS_Library *lib, ASS_Renderer *renderer)
         "{\\kf100}WRAP WRAP WRAP WRAP WRAP",
         "{\\rnd100\\kf100}WRAP WRAP WRAP WRAP WRAP"
     };
-    GlyphInfo logical[32];
+    GlyphLayout logical[32];
     struct {int32_t leftmost, timing; double origin_y;} karaoke[32];
     unsigned runs = 0;
     int count = (int) strlen(content);
+    CHECK(count <= 32);
+    if (count > 32) return;
     Sample samples[2];
     for (int pass = 0; pass < 2; pass++) {
         ASS_Track *track = read_track(lib,texts[pass]);
@@ -324,7 +337,17 @@ static void layout(ASS_Library *lib, ASS_Renderer *renderer)
         CHECK(glyphs && renderer->state.text_info.max_glyphs >= count);
         if (glyphs && renderer->state.text_info.max_glyphs >= count) {
             for (int i = 0; i < count; i++) {
-                if (!pass) logical[i] = glyphs[i];
+                if (!pass) logical[i] = (GlyphLayout) {
+                    .symbol = glyphs[i].symbol,
+                    .advance = glyphs[i].advance,
+                    .pos = glyphs[i].pos,
+                    .linebreak = glyphs[i].linebreak,
+                    .asc = glyphs[i].asc,
+                    .desc = glyphs[i].desc,
+                    .bbox = glyphs[i].bbox,
+                    .effect_timing = glyphs[i].effect_timing,
+                    .effect_skip_timing = glyphs[i].effect_skip_timing,
+                };
                 else {
                     CHECK(logical[i].symbol == glyphs[i].symbol);
                     CHECK(logical[i].advance.x == glyphs[i].advance.x);
