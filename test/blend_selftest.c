@@ -125,6 +125,45 @@ static bool different_render(ASS_Library *library, ASS_Renderer *renderer,
                   message);
 }
 
+static bool test_flat_rgba_paint(ASS_Library *library, ASS_Renderer *renderer)
+{
+    const int modes[] = {0, 1, 4, 8};
+    const int alpha[] = {0, 1, 127, 254};
+    const char *fades[] = {"", "\\fad(500,500)",
+        "\\fad(500,500,&HABCDEF&,&H123456&)"};
+    bool ok = true;
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++)
+        for (size_t a = 0; a < sizeof(alpha) / sizeof(alpha[0]); a++)
+            for (size_t f = 0; f < sizeof(fades) / sizeof(fades[0]); f++) {
+                // A faded 1/255 opacity is culled before tile painting. Keep
+                // the existing render helper's nonempty-output requirement.
+                if (alpha[a] == 254 && f)
+                    continue;
+                char flat[512], gradient[512];
+                // An unused secondary gradient forces native RGBA in both
+                // tracks, including normal blend mode. Fractional placement
+                // and a sloping edge exercise zero and partial mask coverage.
+                const char *format =
+                    "{\\an7\\pos(8.125,8.375)\\p1\\bord0\\shad0\\blend%d"
+                    "\\1c&H204080&\\1a&H%02X&%s"
+                    "\\2vc(&H204080&,&H204080&,&H204080&,&H204080&)%s}"
+                    "m 0 0 l 32 0 29 24 0 24";
+                snprintf(flat, sizeof(flat), format, modes[m], alpha[a], fades[f], "");
+                // Four equal corners still enable the existing generic paint
+                // path. Compare all composed RGB channels over a nonuniform
+                // backdrop, which also checks the blend RGB sidecar.
+                snprintf(gradient, sizeof(gradient), format, modes[m], alpha[a], fades[f],
+                    "\\1vc(&H204080&,&H204080&,&H204080&,&H204080&)");
+                bool match = same_render(library, renderer, flat, gradient, 250,
+                                         "flat RGBA paint differs from generic paint");
+                if (!match)
+                    fprintf(stderr, "flat paint mode=%d alpha=%d fade=%zu\n",
+                            modes[m], alpha[a], f);
+                ok &= match;
+            }
+    return ok;
+}
+
 int main(void)
 {
     bool ok = test_channel_boundaries();
@@ -141,6 +180,7 @@ int main(void)
     ass_set_storage_size(renderer, WIDTH, HEIGHT);
     ass_set_fonts(renderer, NULL, "sans-serif",
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+    ok &= test_flat_rgba_paint(library, renderer);
 
     static const char *numeric[] = {
         "\\blend0", "\\blend1", "\\blend2", "\\blend3", "\\blend4",

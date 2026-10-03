@@ -925,6 +925,51 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
         style_alpha = mult_alpha(style_alpha, fade);
     uint8_t style_opacity = 255 - style_alpha;
 
+    // Flat paint needs neither gradient coordinates nor per-pixel color fade.
+    // Keep the generic path's exact truncation for every mask coverage value,
+    // including the straight RGB sidecar used by non-normal blend modes.
+    if (!use_tag_image && !use_mangetsu && !use_mangetsu_alpha &&
+            !use_polka && !vals->color_enabled && !vals->alpha_enabled &&
+            (int64_t) w * h >= 256) {
+        uint32_t color = base_color;
+        ass_apply_fade_color(&color, info->fade_color);
+        uint8_t r = _r(color), g = _g(color), b = _b(color);
+        uint8_t pixels[256][4];
+        for (int cov = 0; cov < 256; cov++) {
+            uint8_t a = (uint8_t) ((cov * style_opacity) / 255);
+            pixels[cov][0] = (uint8_t) ((r * a) / 255);
+            pixels[cov][1] = (uint8_t) ((g * a) / 255);
+            pixels[cov][2] = (uint8_t) ((b * a) / 255);
+            pixels[cov][3] = a;
+        }
+        const uint8_t straight[4] = {r, g, b, 0};
+        int valid_w = (int) FFMIN((int64_t) w,
+                                  FFMAX((int64_t) full_w - src_x, 0));
+        for (int y = 0; y < h; y++) {
+            uint8_t *row = rgba + (size_t) y * rgba_stride;
+            if ((int64_t) src_y + y >= full_h) {
+                memset(row, 0, (size_t) w * 4);
+                continue;
+            }
+            const uint8_t *src = mask + (size_t) y * stride;
+            if (blend_rgb) {
+                uint8_t *blend = blend_rgb + (size_t) y * blend_stride;
+                for (int x = 0; x < valid_w; x++) {
+                    memcpy(row + (size_t) x * 4, pixels[src[x]], 4);
+                    // Zero-coverage sidecar pixels were cleared at allocation.
+                    if (src[x])
+                        memcpy(blend + (size_t) x * 4, straight, 4);
+                }
+            } else {
+                for (int x = 0; x < valid_w; x++)
+                    memcpy(row + (size_t) x * 4, pixels[src[x]], 4);
+            }
+            if (valid_w < w)
+                memset(row + (size_t) valid_w * 4, 0, (size_t) (w - valid_w) * 4);
+        }
+        return img;
+    }
+
     for (int y = 0; y < h; y++) {
         int32_t vf = 0;
         if (denom_h > 0) {

@@ -229,12 +229,16 @@ foreach config : [0, 1]
     foreach rgba : [0, 1]
         backend = rgba == 1 ? 'rgba' : 'legacy'
         foreach batch : [0, 1]
+            # Large native RGBA tiles are CPU-heavy under ASan/UBSan. Keep
+            # their deadline separate from contention with the other tests.
+            large_rgba = config == 1 and rgba == 1
             test('clip-transform-regression-@0@-@1@-@2@'.format(backend, config, batch),
                 clip_transform_unit,
                 args: [config.to_string(), rgba.to_string(), batch.to_string()],
                 env: {'CLIP_TRANSFORM_TEST_FONT': join_paths(
                     meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
-                timeout: 120)
+                timeout: large_rgba ? 300 : 120,
+                is_parallel: not large_rgba)
         endforeach
     endforeach
 endforeach
