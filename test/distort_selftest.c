@@ -291,6 +291,90 @@ static bool same_box(ASS_DRect a, ASS_DRect b)
            a.x_max == b.x_max && a.y_max == b.y_max;
 }
 
+static bool test_multiline_identity(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    static Mask mask, actual, expected;
+    ASS_Track *plain = text_case(lib, "", MULTILINE);
+    ASS_Track *identity = text_case(lib, "\\distort(1,0,1,1,0,1)", MULTILINE);
+    bool ok = plain && identity && capture(renderer, plain, 0, &mask);
+    ASS_Rect bbox[11];
+    ASS_Vector pos[11];
+    if (ok) {
+        for (int i = 0; i < 11; i++) {
+            const GlyphInfo *g = &renderer->state.text_info.glyphs[i];
+            bbox[i] = g->bbox;
+            pos[i] = g->pos;
+        }
+        ok = capture(renderer, identity, 0, &actual);
+    }
+    if (ok) {
+        const GlyphInfo *g = renderer->state.text_info.glyphs;
+        int dx = g[0].pos.x - pos[0].x, dy = g[0].pos.y - pos[0].y;
+        for (int i = 0; i < 11; i++) {
+            if (g[i].skip || g[i].symbol == '\n') continue;
+            // Identity must preserve outline geometry and relative layout.
+            // Distorted text already anchors its final ink bounds, whereas
+            // ordinary text uses layout metrics. That common placement shift
+            // is legacy behavior, even when the distortion pins are identity.
+            ok &= g[i].bbox.x_min == bbox[i].x_min &&
+                  g[i].bbox.y_min == bbox[i].y_min &&
+                  g[i].bbox.x_max == bbox[i].x_max &&
+                  g[i].bbox.y_max == bbox[i].y_max &&
+                  g[i].pos.x - pos[i].x == dx && g[i].pos.y - pos[i].y == dy &&
+                  !g[i].distort_extended;
+        }
+        // Place the independent ordinary-text reference at the same origin;
+        // use a single \pos because ASS accepts only the first position tag.
+        char text[256];
+        snprintf(text, sizeof(text), "{\\q2\\an5\\pos(%.17g,%.17g)\\fs32}%s",
+            320 + dx / 64.0, 180 + dy / 64.0, MULTILINE);
+        ASS_Track *reference = read_text_track(lib, text);
+        ok &= reference && capture(renderer, reference, 0, &expected) &&
+              !memcmp(actual.pixels, expected.pixels, sizeof(actual.pixels));
+        if (reference) ass_free_track(reference);
+    }
+    if (!ok) fprintf(stderr, "six-slot multiline identity geometry/mask failed\n");
+    if (plain) ass_free_track(plain);
+    if (identity) ass_free_track(identity);
+    return ok;
+}
+
+static bool test_inline_mode_boundary(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    static Mask mask;
+    ASS_Track *track = text_case(lib, EXTENDED_PIN,
+        "M{\\distort(1,-.125,1.375,1.125,-.125,1)}MMMMMM\\NMM");
+    bool ok = track && capture(renderer, track, 0, &mask);
+    if (ok) {
+        const GlyphInfo *g = renderer->state.text_info.glyphs;
+        ok = g[0].distort_extended && !g[1].distort_extended &&
+             g[0].outline && g[0].outline->outline[0].n_points;
+        if (ok) {
+            // The first extended unit contains just one M. Its source bbox
+            // must exclude the following legacy unit even with identical
+            // numerical pins. Observe geometry without inserting a style
+            // override that would also change shaping/composite runs.
+            const ASS_Outline *ol = &g[0].outline->outline[0];
+            ASS_DRect box = {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+            for (size_t i = 0; i < ol->n_points; i++) {
+                double x = ol->points[i].x * g[0].transform.scale.x;
+                double y = ol->points[i].y * g[0].transform.scale.y;
+                box.x_min = fmin(box.x_min, x);
+                box.x_max = fmax(box.x_max, x);
+                box.y_min = fmin(box.y_min, y);
+                box.y_max = fmax(box.y_max, y);
+            }
+            ok = fabs((box.x_max - box.x_min) -
+                      (g[0].distort_bbox.x_max - g[0].distort_bbox.x_min)) <= 1e-6 &&
+                 fabs((box.y_max - box.y_min) -
+                      (g[0].distort_bbox.y_max - g[0].distort_bbox.y_min)) <= 1e-6;
+        }
+    }
+    if (!ok) fprintf(stderr, "inline mode boundary source bbox failed\n");
+    if (track) ass_free_track(track);
+    return ok;
+}
+
 /* Event cleanup frees warped outlines and linked glyphs, but retains the root
  * glyphs' scalar observations. Read them before another frame can reuse them. */
 static bool check_shared_bbox(ASS_Library *lib, ASS_Renderer *renderer,
@@ -350,8 +434,7 @@ static bool test_multiline(ASS_Library *lib, ASS_Renderer *renderer)
 {
     bool ok = check_shared_bbox(lib, renderer, "MM\\NMMMMMM", "MM\nMMMMMM");
     ok &= check_shared_bbox(lib, renderer, MULTILINE, "M\nMMMMMM\nMM");
-    ok &= check_text_pair(lib, renderer, "\\distort(1,0,1,1,0,1)", MULTILINE,
-        "", MULTILINE, true, "six-slot multiline identity");
+    ok &= test_multiline_identity(lib, renderer);
     ok &= check_text_pair(lib, renderer, LEGACY_PIN, MULTILINE,
         LEGACY_PIN, SPLIT_LINES, true, "six slots remain line-local");
     ok &= check_text_pair(lib, renderer, LEGACY_PIN, MULTILINE,
@@ -369,9 +452,10 @@ static bool test_multiline(ASS_Library *lib, ASS_Renderer *renderer)
         "NBSP and no-op override preserve multiline unit");
 
     // Equal visible corner values cannot hide a change of syntax mode.
+    ok &= test_inline_mode_boundary(lib, renderer);
     ok &= check_text_pair(lib, renderer, EXTENDED_PIN,
-        "M{\\distort(1,-.125,1.375,1.125,-.125,1)}MMMMMM\\NMM",
-        EXTENDED_PIN, "M{\\1c&HFEFEFE&\\distort(1,-.125,1.375,1.125,-.125,1)}MMMMMM\\NMM",
+        "M\\N{\\distort(1,-.125,1.375,1.125,-.125,1)}MMMMMM\\NMM",
+        EXTENDED_PIN, "M\\N{\\1c&HFEFEFE&\\distort(1,-.125,1.375,1.125,-.125,1)}MMMMMM\\NMM",
         true, "mode change is a unit boundary");
     ok &= check_text_pair(lib, renderer, EXTENDED_PIN,
         "M\\N{\\distort(1,0,1.5,1,0,1,0,0)}MMMMMM\\NMM",
