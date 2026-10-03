@@ -184,8 +184,13 @@ sequential playback, and backwards frame requests give the same result.
 | Non-negative | `\shad`, `\blur`, `\xblur`, `\yblur`, `\be`, `\boxp`, `\boxpx`, `\boxpy`, `\colsp` |
 | Non-negative | `\rnd`, `\rndx`, `\rndy`, `\rndz`, `\furis`, `\furisx`, `\furisy`, jitter extents and period |
 | Signed (explicit `~+/-` only) | `\fr`, `\frx`, `\fry`, `\frz`, `\frs`, `\fax`, `\fay`, `\z`, `\fsp`, `\fsvp`, `\fshp`, `\xshad`, `\yshad`, `\pbo` |
-| Signed | `\pos` coordinates, rectangular `\clip` / `\iclip` coordinates, all `\distort` coordinates, `\furipos`, `\furifsp`, image-fill X/Y offsets |
+| Signed | `\pos` coordinates, `\clippos` coordinates, rectangular `\clip` / `\iclip` coordinates, all `\distort` coordinates, `\furipos`, `\furifsp`, image-fill X/Y offsets |
 | Signed | coordinate fields of `\move`, `\movevc`, `\mover`, `\moves3`, `\moves4`; `\mover` angles and radii |
+
+`\clips` is a special clip percentage state: it is non-negative after
+resolution, but its parser intentionally uses signed-value syntax so bare
+`+N` / `-N` remain absolute. Use `\clips~+N` / `\clips~-N` for relative
+percentage-point changes. See [clip position and size transforms](clip-transforms.md).
 
 Combined axis tags such as `\bord+2` add the delta to each current axis
 independently. Motion-parameter deltas use their corresponding stored motion
