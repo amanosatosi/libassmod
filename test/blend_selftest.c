@@ -30,7 +30,7 @@ static bool test_channel_boundaries(void)
         {0, 1, 127, 128, 254, 255},
         {255, 255, 129, 126, 0, 0},
         {255, 255, 255, 255, 255, 255},
-        {255, 253, 1, 0, 0, 0},
+        {0, 0, 0, 1, 253, 255},
         {0, 0, 63, 63, 0, 0},
         {255, 255, 192, 192, 255, 255},
         {255, 253, 1, 1, 253, 255},
@@ -49,6 +49,43 @@ static bool test_channel_boundaries(void)
                  "half coverage used incorrect VSFilterMod weighting");
     ok &= expect(ass_blend_compose_channel(ASS_BLEND_MULTIPLY, 128, 127, 255) ==
                  multiplied, "full coverage did not produce blend result");
+    return ok;
+}
+
+static bool test_subtract_operand_order(void)
+{
+    // VSFilterMod 5e18b49, Rasterizer.cpp: blendMixColor() subtracts
+    // *dst from *color for BLEND_SUBSTRACT, before alpha weighting.
+    static const uint8_t source[] = {219, 151, 34};
+    static const uint8_t destination[] = {11, 9, 11};
+    static const uint8_t subtracted[] = {208, 142, 23};
+    static const uint8_t half_coverage[] = {110, 76, 17};
+    static const uint8_t overlaid[] = {18, 10, 2};
+    bool ok = true;
+    for (int c = 0; c < 3; c++) {
+        ok &= expect(ass_blend_channel(ASS_BLEND_SUBSTRACT,
+                         source[c], destination[c]) == subtracted[c],
+                     "subtract must use source minus destination");
+        ok &= expect(ass_blend_channel(ASS_BLEND_SUBSTRACT,
+                         destination[c], source[c]) == 0,
+                     "subtract must clamp negative results to zero");
+        ok &= expect(ass_blend_channel(ASS_BLEND_SUBSTRACT,
+                         source[c], source[c]) == 0,
+                     "subtract of equal channels must be zero");
+        ok &= expect(ass_blend_compose_channel(ASS_BLEND_SUBSTRACT,
+                         source[c], destination[c], 0) == destination[c],
+                     "subtract zero coverage changed destination");
+        ok &= expect(ass_blend_compose_channel(ASS_BLEND_SUBSTRACT,
+                         source[c], destination[c], 128) == half_coverage[c],
+                     "subtract changed partial coverage weighting");
+        ok &= expect(ass_blend_compose_channel(ASS_BLEND_SUBSTRACT,
+                         source[c], destination[c], 255) == subtracted[c],
+                     "subtract full coverage did not produce blend result");
+        // Overlay is asymmetric: this detects a global operand swap.
+        ok &= expect(ass_blend_channel(ASS_BLEND_OVERLAY,
+                         source[c], destination[c]) == overlaid[c],
+                     "overlay source/destination order changed");
+    }
     return ok;
 }
 
@@ -164,9 +201,66 @@ static bool test_flat_rgba_paint(ASS_Library *library, ASS_Renderer *renderer)
     return ok;
 }
 
+static bool test_subtract_render(ASS_Library *library, ASS_Renderer *renderer)
+{
+    static const struct {
+        const char *blend;
+        unsigned color;
+        unsigned alpha;
+        uint8_t expected_rgb[3];
+    } cases[] = {
+        {"\\blend3",     0x2297DB, 0x00, {208, 142, 23}},
+        {"\\blend(sub)", 0x2297DB, 0x00, {208, 142, 23}},
+        {"\\blend3",     0x2297DB, 0x7F, {110, 76, 17}},
+        // Every source channel is below the destination; saturate at zero.
+        {"\\blend3",     0x080708, 0x00, {0, 0, 0}},
+        // Unaffected, asymmetric mode checks the compositor's operand order.
+        {"\\blend1",     0x2297DB, 0x00, {18, 10, 2}},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char tags[256];
+        snprintf(tags, sizeof(tags),
+            "{\\an7\\pos(8,8)\\p1\\bord0\\shad0%s\\1c&H%06X&\\1a&H%02X&}"
+            "m 0 0 l 32 0 32 24 0 24",
+            cases[i].blend, cases[i].color, cases[i].alpha);
+        char *script = make_script(tags);
+        if (!script)
+            return false;
+        ASS_Track *track = ass_read_memory(library, script, strlen(script), NULL);
+        free(script);
+        if (!track)
+            return false;
+
+        int change = 0;
+        ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, 0, &change);
+        uint8_t frame[HEIGHT][WIDTH][4];
+        for (int y = 0; y < HEIGHT; y++)
+            for (int x = 0; x < WIDTH; x++) {
+                frame[y][x][0] = 11; // BGRA destination: RGB (11, 9, 11).
+                frame[y][x][1] = 9;
+                frame[y][x][2] = 11;
+                frame[y][x][3] = 77;
+            }
+        bool match = images && ass_composite_images_bgra(
+            images, &frame[0][0][0], WIDTH, HEIGHT, WIDTH * 4) == 0;
+        // Check an interior pixel with full drawing mask coverage.
+        for (int c = 0; c < 3; c++)
+            match &= frame[16][16][2 - c] == cases[i].expected_rgb[c];
+        match &= frame[16][16][3] == 0; // Existing preview alpha contract.
+        ok &= expect(match, "blend operand order render regression");
+        if (!match)
+            fprintf(stderr, "blend render case=%zu\n", i);
+        ass_free_images_rgba(images);
+        ass_free_track(track);
+    }
+    return ok;
+}
+
 int main(void)
 {
     bool ok = test_channel_boundaries();
+    ok &= test_subtract_operand_order();
     ASS_Library *library = ass_library_init();
     if (!library)
         return 1;
@@ -181,6 +275,7 @@ int main(void)
     ass_set_fonts(renderer, NULL, "sans-serif",
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     ok &= test_flat_rgba_paint(library, renderer);
+    ok &= test_subtract_render(library, renderer);
 
     static const char *numeric[] = {
         "\\blend0", "\\blend1", "\\blend2", "\\blend3", "\\blend4",

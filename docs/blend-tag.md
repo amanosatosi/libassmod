@@ -70,10 +70,18 @@ All operations use ordinary encoded 8-bit channels.  With straight source
 
 - overlay: `d < 128 ? 2*div255(s*d) : 255-2*div255((255-s)*(255-d))`
 - add: `min(s+d, 255)`
-- substract: `max(d-s, 0)`
+- substract (`\blend3` / `\blend(sub)`): `max(s-d, 0)`
 - multiply: `div255(s*d)`
 - screen: `255-div255((255-s)*(255-d))`
 - difference: `abs(s-d)`
+
+Mode 3 follows `blendMixColor()` in the VSFilterMod
+[reference revision 5e18b49](https://github.com/computerfan/VSFilterMod/blob/5e18b49cccdc82dc8329ddaa632a3cd32dada737/src/subtitles/Rasterizer.cpp#L916-L921):
+`color` is the subtitle source and `dst` is the current destination.  Both
+the scalar and SSE2 pixel mixers use that clamped source-minus-destination
+result.  Later VSFilterMod revisions can differ in operand order.  For
+example, source RGB `(219,151,34)` over destination `(11,9,11)` produces
+`(208,142,23)` before coverage weighting.
 
 The glyph/image mask, ASS alpha, fades, clipping, and texture alpha first
 produce the tile coverage `a`.  RGB is then written with VSFilterMod's SSE2

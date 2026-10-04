@@ -105,7 +105,7 @@ static inline uint8_t ass_blend_channel(ASS_BlendMode mode,
     case ASS_BLEND_ADD:
         return source > 255 - destination ? 255 : source + destination;
     case ASS_BLEND_SUBSTRACT:
-        return destination > source ? destination - source : 0;
+        return source > destination ? source - destination : 0;
     case ASS_BLEND_MULTIPLY:
         return ass_blend_div255(source * destination);
     case ASS_BLEND_SCREEN:
