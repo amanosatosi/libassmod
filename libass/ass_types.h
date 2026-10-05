@@ -320,6 +320,7 @@ typedef struct ass_track {
     int LayoutResY;  // also takes precedence over ass_set_pixel_aspect
 
     int has_rgba;            // track contains features needing RGBA output
+    int has_blend;           // track contains a Mangetsu \\blend override
 
     ASS_ColorcodeConfig colorcode;
 

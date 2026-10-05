@@ -456,6 +456,41 @@ int ass_track_has_rgba(ASS_Track *track)
     return track && track->has_rgba;
 }
 
+static bool ass_text_has_blend_override(const char *text)
+{
+    bool override = false;
+    for (const char *p = text; p && *p; p++) {
+        if (!override) {
+            if (*p == '{')
+                override = true;
+            continue;
+        }
+        if (*p == '}') {
+            override = false;
+            continue;
+        }
+        if (*p == '\\' && !strncmp(p + 1, "blend", 5))
+            return true;
+    }
+    return false;
+}
+
+int ass_track_has_blend(ASS_Track *track)
+{
+    if (!track)
+        return 0;
+    if (track->has_blend)
+        return 1;
+
+    for (int i = 0; i < track->n_events; i++) {
+        if (ass_text_has_blend_override(track->events[i].Text)) {
+            track->has_blend = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
                                        long long now, int *detect_change)
 {

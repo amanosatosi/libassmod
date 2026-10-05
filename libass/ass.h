@@ -660,6 +660,11 @@ void ass_free_images_rgba(ASS_ImageRGBA *img);
 int ass_composite_images_bgra(ASS_ImageRGBA *img, uint8_t *dst,
                               int width, int height, int stride);
 int ass_track_has_rgba(ASS_Track *track);
+/**
+ * Return non-zero once the track contains a Mangetsu \\blend override.
+ * A false result is not cached because streaming tracks may append events.
+ */
+int ass_track_has_blend(ASS_Track *track);
 int ass_frame_needs_rgba(ASS_Renderer *priv);
 int ass_set_tag_image_rgba(ASS_Renderer *priv, const char *path,
                            ASS_TagImageFormat format, int width, int height,
