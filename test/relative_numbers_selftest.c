@@ -610,26 +610,31 @@ static bool test_seeking(ASS_Library *lib, ASS_Renderer *renderer, bool automati
         automatic ? "" : "\\pos(500,350)");
     ASS_Track *track = read_track(lib, text);
     if (!track) return false;
-    ASS_Track *base = read_track(lib, automatic ? "{\\pos(~+0,~+0)}Relative" :
-                                                "{\\pos(500,350)}Relative");
+    // Automatic placement depends on the current layout metrics, including
+    // quantized advances from animated size/scale. Observe an independent
+    // layout with the same scalar tags and no position animation at each time.
+    char base_text[1024];
+    snprintf(base_text, sizeof(base_text), "{%s\\fs40\\fsc50"
+             "\\t(0,1000,\\fs+20\\fsc+50)\\t(250,1250,2,\\fs-10\\fsc+25)}Relative",
+             automatic ? "\\pos(~+0,~+0)" : "\\pos(500,350)");
+    ASS_Track *base = read_track(lib, base_text);
     if (!base) { ass_free_track(track); return false; }
-    Sample origin = capture(renderer, base, 0);
-    ass_free_track(base);
     // Independent fixed targets: at 250ms, the first motion has moved
     // right 25 / down 12.5. The second target moves left 100 / up 80.
     char absolute[1024];
-    double x = origin.values[POSX], y = origin.values[POSY];
-    snprintf(absolute, sizeof(absolute), "{\\pos(%.17g,%.17g)\\fs40\\fsc50"
-             "\\t(0,1000,\\fs60\\fsc100\\pos(%.17g,%.17g))"
-             "\\t(250,1250,2,\\fs-10\\fsc+25\\pos(%.17g,%.17g))}Relative",
-             x, y, x + 100, y + 50, x - 75, y - 67.5);
     const long long times[] = {0, 250, 500, 750, 1000, 1250, 1750};
     Sample direct[7];
     bool ok = true;
     for (int i = 0; i < 7; i++) {
+        Sample origin = capture(renderer, base, times[i]);
+        double x = origin.values[POSX], y = origin.values[POSY];
+        snprintf(absolute, sizeof(absolute), "{\\pos(%.17g,%.17g)\\fs40\\fsc50"
+                 "\\t(0,1000,\\fs60\\fsc100\\pos(%.17g,%.17g))"
+                 "\\t(250,1250,2,\\fs-10\\fsc+25\\pos(%.17g,%.17g))}Relative",
+                 x, y, x + 100, y + 50, x - 75, y - 67.5);
         ok &= compare_samples(lib, renderer, text, absolute, times[i], true);
         ASS_Renderer *fresh = ass_renderer_init(lib);
-        if (!fresh) { ass_free_track(track); return false; }
+        if (!fresh) { ass_free_track(base); ass_free_track(track); return false; }
         ass_set_frame_size(fresh, 1000, 700);
         ass_set_storage_size(fresh, 1000, 700);
         ass_set_fonts(fresh, NULL, "sans-serif", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
@@ -647,6 +652,7 @@ static bool test_seeking(ASS_Library *lib, ASS_Renderer *renderer, bool automati
             for (int f = 0; f < COUNT; f++)
                 if (!near(out.values[f], direct[i].values[f])) ok = false;
         }
+    ass_free_track(base);
     ass_free_track(track);
     return ok;
 }

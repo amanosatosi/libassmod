@@ -727,6 +727,33 @@ static int expect_y_order(const char *up, const char *down)
     return ok ? 0 : 1;
 }
 
+static int expect_relative_furi_directions(void)
+{
+    const char *operands[] = {"", "\\furipos(~+0,~+8)", "\\furipos(~+0,~-8)"};
+    Mask ruby[3] = {{0}}, base[3] = {{0}};
+    int err = 0;
+    for (int i = 0; i < 3 && !err; i++) {
+        char text[256];
+        // Anchor the base at the bottom; measure only green ruby ink. The
+        // whole block's top can stop moving once ruby overlaps the white base.
+        snprintf(text, sizeof(text), "{\\an2\\pos(192,170)\\bord0\\shad0"
+                 "\\furipos(0,0)%s}<A|{\\c&H00FF00&}B>", operands[i]);
+        err = render_mask_color(text, 0x00FF0000u, &ruby[i]);
+        if (!err) err = render_mask_color(text, 0xFFFFFF00u, &base[i]);
+    }
+    bool ok = !err && !ruby[0].empty && !ruby[1].empty && !ruby[2].empty &&
+        !base[0].empty && !base[1].empty && !base[2].empty &&
+        ruby[1].y0 == ruby[0].y0 - 8 && ruby[2].y0 == ruby[0].y0 + 8 &&
+        base[1].y0 == base[0].y0 && base[2].y0 == base[0].y0;
+    if (!ok) fprintf(stderr, "relative ruby Y direction failed: %d, %d, %d\n",
+                     ruby[0].y0, ruby[1].y0, ruby[2].y0);
+    for (int i = 0; i < 3; i++) {
+        free_mask(&ruby[i]);
+        free_mask(&base[i]);
+    }
+    return ok ? 0 : 1;
+}
+
 static int expect_bottom_anchor_with_taller_block(const char *with_furi,
                                                   const char *without_furi)
 {
@@ -1434,10 +1461,7 @@ int main(void)
                         "{\\furipos(0,8)}<A|B>");
     fail |= expect_same("{\\furipos(0,0)\\furipos(~+0,~-8)}<A|B>",
                         "{\\furipos(0,-8)}<A|B>");
-    fail |= expect_y_order("{\\furipos(0,0)\\furipos(~+0,~+8)}<A|B>",
-                           "{\\furipos(0,0)}<A|B>");
-    fail |= expect_y_order("{\\furipos(0,0)}<A|B>",
-                           "{\\furipos(0,0)\\furipos(~+0,~-8)}<A|B>");
+    fail |= expect_relative_furi_directions();
     fail |= expect_same("{\\furipos(0,3)}<A|B>",
                         "{\\furiap1\\furipos(0,3)}<A|B>");
     fail |= expect_same("{\\furipos(0,3)}<A|B>",
