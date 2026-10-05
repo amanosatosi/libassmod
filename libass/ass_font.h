@@ -45,6 +45,8 @@ struct ass_font {
     ASS_Library *library;
     FT_Library ftlibrary;
     int faces_uid[ASS_FONT_MAX_FACES];
+    // faces[0] is the selected font's immutable decoration metric source.
+    // Automatic glyph fallback only appends faces; it does not replace it.
     FT_Face faces[ASS_FONT_MAX_FACES];
     struct hb_font_t *hb_fonts[ASS_FONT_MAX_FACES];
     int n_faces;
@@ -66,7 +68,7 @@ bool ass_font_get_glyph(ASS_Font *font, int face_index, int index,
 void ass_font_clear(ASS_Font *font);
 
 bool ass_get_glyph_outline(ASS_Outline *outline, int32_t *advance,
-                           FT_Face face, unsigned flags);
+                           FT_Face face, FT_Face decoration_face, unsigned flags);
 
 FT_Face ass_face_open(ASS_Library *lib, FT_Library ftlib, const char *path,
                       const char *postscript_name, int index);

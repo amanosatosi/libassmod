@@ -92,6 +92,8 @@ END(GlyphMetricsHashKey)
 // describes an outline glyph
 // font is refed when inserted and unrefed when dropped
 START(glyph, glyph_hash_key)
+    // Owns both the glyph faces and the immutable decoration source faces[0].
+    // Keeping this font ref also pins that source for the outline's lifetime.
     GENERIC(ASS_Font *, font)
     GENERIC(double, size) // font size
     GENERIC(int, face_index)

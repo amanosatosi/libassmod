@@ -32,6 +32,10 @@ EXTRA_DIST += docs/native-scroll.md samples/scroll-lines.ass \
               test/scroll_selftest.c test/scroll_render_selftest.c
 
 EXTRA_DIST += test/clip_transform_selftest.c
+EXTRA_DIST += docs/decoration-fallback.md test/decoration_fallback_selftest.c \
+              test/fonts/README.md test/fonts/generate-decoration-fonts.py \
+              test/fonts/decoration-primary-a.ttf test/fonts/decoration-primary-b.ttf \
+              test/fonts/decoration-fallback.ttf test/fonts/decoration-complete.ttf
 EXTRA_DIST += docs/rnd-tags.md test/rnd_test.c test/rnd_selftest.c \
               test/decoration_rnd_selftest.c
 

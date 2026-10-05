@@ -159,6 +159,25 @@ decoration_rnd_unit = executable(
     link_with: libass_for_tools,
 )
 
+decoration_fallback_args = []
+if get_option('default_library') != 'shared'
+    # Exact outline checks use private helpers; public rendering checks also
+    # run against the shared library on Windows.
+    decoration_fallback_args += ['-DDECO_TEST_INTERNAL']
+endif
+decoration_fallback_unit = executable('decoration_fallback_unit',
+    files('decoration_fallback_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    c_args: decoration_fallback_args,
+    link_with: libass_for_tools, install: false)
+test('selected-font-decoration-fallback', decoration_fallback_unit,
+    args: [
+        join_paths(meson.current_source_dir(), 'fonts', 'decoration-primary-a.ttf'),
+        join_paths(meson.current_source_dir(), 'fonts', 'decoration-primary-b.ttf'),
+        join_paths(meson.current_source_dir(), 'fonts', 'decoration-fallback.ttf'),
+        join_paths(meson.current_source_dir(), 'fonts', 'decoration-complete.ttf'),
+    ])
+
 unicode_digits_unit = executable(
     'unicode_digits_unit',
     files('unicode_digits_selftest.c'),

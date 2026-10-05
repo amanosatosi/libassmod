@@ -765,7 +765,7 @@ void ass_font_clear(ASS_Font *font)
  * \brief Convert glyph into ASS_Outline according to decoration flags
  **/
 bool ass_get_glyph_outline(ASS_Outline *outline, int32_t *advance,
-                           FT_Face face, unsigned flags)
+                           FT_Face face, FT_Face decoration_face, unsigned flags)
 {
     int32_t y_scale = face->size->metrics.y_scale;
     int32_t adv = face->glyph->advance.x;
@@ -775,11 +775,15 @@ bool ass_get_glyph_outline(ASS_Outline *outline, int32_t *advance,
 
     int n_lines = 0;
     int32_t line_y[2][2];
+    // GDI/VSFilter decorations belong to the selected ASS font, not to a face
+    // linked for a missing glyph. Use that face's own size scale as well as its
+    // metrics: fallback faces can have different units and cell heights.
     if (adv > 0 && (flags & DECO_UNDERLINE)) {
-        TT_Postscript *ps = FT_Get_Sfnt_Table(face, ft_sfnt_post);
+        int32_t decoration_scale = decoration_face->size->metrics.y_scale;
+        TT_Postscript *ps = FT_Get_Sfnt_Table(decoration_face, ft_sfnt_post);
         if (ps && ps->underlinePosition <= 0 && ps->underlineThickness > 0) {
-            int64_t pos  = ((int64_t) ps->underlinePosition  * y_scale + 0x8000) >> 16;
-            int64_t size = ((int64_t) ps->underlineThickness * y_scale + 0x8000) >> 16;
+            int64_t pos  = ((int64_t) ps->underlinePosition  * decoration_scale + 0x8000) >> 16;
+            int64_t size = ((int64_t) ps->underlineThickness * decoration_scale + 0x8000) >> 16;
             pos = -pos - (size >> 1);
             if (pos >= -OUTLINE_MAX && pos + size <= OUTLINE_MAX) {
                 line_y[n_lines][0] = pos;
@@ -789,10 +793,11 @@ bool ass_get_glyph_outline(ASS_Outline *outline, int32_t *advance,
         }
     }
     if (adv > 0 && (flags & DECO_STRIKETHROUGH)) {
-        TT_OS2 *os2 = FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+        int32_t decoration_scale = decoration_face->size->metrics.y_scale;
+        TT_OS2 *os2 = FT_Get_Sfnt_Table(decoration_face, FT_SFNT_OS2);
         if (os2 && os2->yStrikeoutPosition >= 0 && os2->yStrikeoutSize > 0) {
-            int64_t pos  = ((int64_t) os2->yStrikeoutPosition * y_scale + 0x8000) >> 16;
-            int64_t size = ((int64_t) os2->yStrikeoutSize     * y_scale + 0x8000) >> 16;
+            int64_t pos  = ((int64_t) os2->yStrikeoutPosition * decoration_scale + 0x8000) >> 16;
+            int64_t size = ((int64_t) os2->yStrikeoutSize     * decoration_scale + 0x8000) >> 16;
             pos = -pos - (size >> 1);
             if (pos >= -OUTLINE_MAX && pos + size <= OUTLINE_MAX) {
                 line_y[n_lines][0] = pos;
