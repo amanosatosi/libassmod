@@ -153,6 +153,49 @@ static double resolve_numeric_operand(NumericOperand operand, double current)
     return operand.relative ? current + operand.value : operand.value;
 }
 
+typedef enum {
+    POSITION_X,
+    POSITION_Y,
+} PositionAxis;
+
+/* Relative position operands are author-facing directional shorthand:
+ * +X means right and +Y means up. Absolute ASS screen Y increases downward.
+ * Convert only relative positional Y to a screen-space delta; raw coordinates
+ * and signed scalar properties must keep numeric increase/decrease semantics.
+ * Deferred position transforms store this delta but still resolve their base
+ * at the existing start boundary, after automatic placement is available. */
+static NumericOperand position_operand_to_screen(NumericOperand operand,
+                                                 PositionAxis axis)
+{
+    if (operand.relative && axis == POSITION_Y)
+        operand.value = -operand.value;
+    return operand;
+}
+
+static double resolve_position_operand(NumericOperand operand, double current,
+                                       PositionAxis axis)
+{
+    return resolve_numeric_operand(position_operand_to_screen(operand, axis), current);
+}
+
+static double position_argtod(struct arg arg, double current, PositionAxis axis)
+{
+    NumericOperand operand;
+    if (!parse_numeric_operand(arg, NUM_SIGNED, false, &operand))
+        return current;
+    return resolve_position_operand(operand, current, axis);
+}
+
+static bool position_arg_strict(struct arg arg, double current,
+                                PositionAxis axis, double *value)
+{
+    NumericOperand operand;
+    if (!parse_numeric_operand(arg, NUM_SIGNED, true, &operand))
+        return false;
+    *value = resolve_position_operand(operand, current, axis);
+    return isfinite(*value);
+}
+
 static double numeric_argtod(struct arg arg, double current, NumericDomain domain)
 {
     NumericOperand operand;
@@ -423,16 +466,16 @@ static void apply_relative_position(RenderContext *state,
             .type = MOTION_POS, .relative_x = true, .relative_y = true,
         };
     }
-    state->pos_offset.x = resolve_numeric_operand(x, state->pos_offset.x);
-    state->pos_offset.y = resolve_numeric_operand(y, state->pos_offset.y);
+    state->pos_offset.x = resolve_position_operand(x, state->pos_offset.x, POSITION_X);
+    state->pos_offset.y = resolve_position_operand(y, state->pos_offset.y, POSITION_Y);
     state->pos_override_x |= !x.relative;
     state->pos_override_y |= !y.relative;
     for (int i = 0; i < state->n_pos_transforms; i++) {
         PosTransformState *tr = &state->pos_transforms[i];
         if (!x.relative || !tr->relative_x)
-            tr->x = resolve_numeric_operand(x, tr->x);
+            tr->x = resolve_position_operand(x, tr->x, POSITION_X);
         if (!y.relative || !tr->relative_y)
-            tr->y = resolve_numeric_operand(y, tr->y);
+            tr->y = resolve_position_operand(y, tr->y, POSITION_Y);
         tr->relative_x &= x.relative;
         tr->relative_y &= y.relative;
     }
@@ -469,8 +512,8 @@ static bool append_pos_transform(RenderContext *state, NumericOperand x, Numeric
     }
 
     state->pos_transforms[state->n_pos_transforms++] = (PosTransformState) {
-        .x = x.value,
-        .y = y.value,
+        .x = position_operand_to_screen(x, POSITION_X).value,
+        .y = position_operand_to_screen(y, POSITION_Y).value,
         .relative_x = x.relative,
         .relative_y = y.relative,
         .accel = accel,
@@ -3966,11 +4009,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("movevc")) {
             if (nargs == 2 || nargs == 4 || nargs == 6) {
                 MoveVCState mv = { .active = true };
-                mv.x1 = numeric_argtod(args[0], state->movevc.x1, NUM_SIGNED);
-                mv.y1 = numeric_argtod(args[1], state->movevc.y1, NUM_SIGNED);
+                mv.x1 = position_argtod(args[0], state->movevc.x1, POSITION_X);
+                mv.y1 = position_argtod(args[1], state->movevc.y1, POSITION_Y);
                 if (nargs >= 4) {
-                    mv.x2 = numeric_argtod(args[2], state->movevc.x2, NUM_SIGNED);
-                    mv.y2 = numeric_argtod(args[3], state->movevc.y2, NUM_SIGNED);
+                    mv.x2 = position_argtod(args[2], state->movevc.x2, POSITION_X);
+                    mv.y2 = position_argtod(args[3], state->movevc.y2, POSITION_Y);
                     mv.animated = true;
                 } else {
                     mv.x2 = mv.x1;
@@ -3994,10 +4037,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("mover")) {
             MotionState mv = { .type = MOTION_MOVER };
             if (nargs == 4 || nargs == 6 || nargs == 8 || nargs == 10) {
-                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
-                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
-                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
-                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
+                mv.x1 = position_argtod(args[0], state->motion.x1, POSITION_X);
+                mv.y1 = position_argtod(args[1], state->motion.y1, POSITION_Y);
+                mv.x2 = position_argtod(args[2], state->motion.x2, POSITION_X);
+                mv.y2 = position_argtod(args[3], state->motion.y2, POSITION_Y);
                 if (nargs >= 8) {
                     mv.angle1 = numeric_argtod(args[4], state->motion.angle1, NUM_SIGNED);
                     mv.angle2 = numeric_argtod(args[5], state->motion.angle2, NUM_SIGNED);
@@ -4015,12 +4058,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("moves3")) {
             MotionState mv = { .type = MOTION_MOVES3 };
             if (nargs == 6 || nargs == 8) {
-                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
-                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
-                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
-                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
-                mv.x3 = numeric_argtod(args[4], state->motion.x3, NUM_SIGNED);
-                mv.y3 = numeric_argtod(args[5], state->motion.y3, NUM_SIGNED);
+                mv.x1 = position_argtod(args[0], state->motion.x1, POSITION_X);
+                mv.y1 = position_argtod(args[1], state->motion.y1, POSITION_Y);
+                mv.x2 = position_argtod(args[2], state->motion.x2, POSITION_X);
+                mv.y2 = position_argtod(args[3], state->motion.y2, POSITION_Y);
+                mv.x3 = position_argtod(args[4], state->motion.x3, POSITION_X);
+                mv.y3 = position_argtod(args[5], state->motion.y3, POSITION_Y);
                 if (nargs == 8) {
                     mv.has_timing = true;
                     mv.t1 = argtoi32(args[6]);
@@ -4032,14 +4075,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("moves4")) {
             MotionState mv = { .type = MOTION_MOVES4 };
             if (nargs == 8 || nargs == 10) {
-                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
-                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
-                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
-                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
-                mv.x3 = numeric_argtod(args[4], state->motion.x3, NUM_SIGNED);
-                mv.y3 = numeric_argtod(args[5], state->motion.y3, NUM_SIGNED);
-                mv.x4 = numeric_argtod(args[6], state->motion.x4, NUM_SIGNED);
-                mv.y4 = numeric_argtod(args[7], state->motion.y4, NUM_SIGNED);
+                mv.x1 = position_argtod(args[0], state->motion.x1, POSITION_X);
+                mv.y1 = position_argtod(args[1], state->motion.y1, POSITION_Y);
+                mv.x2 = position_argtod(args[2], state->motion.x2, POSITION_X);
+                mv.y2 = position_argtod(args[3], state->motion.y2, POSITION_Y);
+                mv.x3 = position_argtod(args[4], state->motion.x3, POSITION_X);
+                mv.y3 = position_argtod(args[5], state->motion.y3, POSITION_Y);
+                mv.x4 = position_argtod(args[6], state->motion.x4, POSITION_X);
+                mv.y4 = position_argtod(args[7], state->motion.y4, POSITION_Y);
                 if (nargs == 10) {
                     mv.has_timing = true;
                     mv.t1 = argtoi32(args[8]);
@@ -4051,10 +4094,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (complex_tag("move")) {
             MotionState mv = { .type = MOTION_MOVE };
             if (nargs == 4 || nargs == 6) {
-                mv.x1 = numeric_argtod(args[0], state->motion.x1, NUM_SIGNED);
-                mv.y1 = numeric_argtod(args[1], state->motion.y1, NUM_SIGNED);
-                mv.x2 = numeric_argtod(args[2], state->motion.x2, NUM_SIGNED);
-                mv.y2 = numeric_argtod(args[3], state->motion.y2, NUM_SIGNED);
+                mv.x1 = position_argtod(args[0], state->motion.x1, POSITION_X);
+                mv.y1 = position_argtod(args[1], state->motion.y1, POSITION_Y);
+                mv.x2 = position_argtod(args[2], state->motion.x2, POSITION_X);
+                mv.y2 = position_argtod(args[3], state->motion.y2, POSITION_Y);
                 if (nargs == 6) {
                     mv.has_timing = true;
                     mv.t1 = argtoi32(args[4]);
@@ -4443,8 +4486,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             int count = split_clip_args(name_end + 1, q - 1, tokens, &empty);
             double x, y;
             if (count == 2 && !empty &&
-                    numeric_arg_strict(tokens[0], state->clip_pos.x, NUM_SIGNED, &x) &&
-                    numeric_arg_strict(tokens[1], state->clip_pos.y, NUM_SIGNED, &y)) {
+                    position_arg_strict(tokens[0], state->clip_pos.x, POSITION_X, &x) &&
+                    position_arg_strict(tokens[1], state->clip_pos.y, POSITION_Y, &y)) {
                 state->clip_pos.x = calc_anim(x, state->clip_pos.x, pwr);
                 state->clip_pos.y = calc_anim(y, state->clip_pos.y, pwr);
             }

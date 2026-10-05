@@ -210,22 +210,53 @@ static const Case cases[] = {
     {"inverse combined animation", IRECT "\\t(0,1000,\\clippos(120,-40)\\clips140)",
         "\\iclip(140,44,380,236)", 500, 0},
     {"relative position", RECT "\\clippos(20,10)\\clippos(~+20,~-10)",
-        "\\clip(140,80,340,240)", 0, 0},
+        "\\clip(140,100,340,260)", 0, 0},
     {"vector relative position", VECTOR "\\clippos(20,10)\\clippos(~+20,~-10)",
-        "\\clip(m 140 80 l 340 80 340 240 140 240)", 0, 0},
+        "\\clip(m 140 100 l 340 100 340 260 140 260)", 0, 0},
+    {"rect relative up", RECT "\\clippos(20,10)\\clippos(~-20,~+10)", RECT, 0, 0},
+    {"vector relative up", VECTOR "\\clippos(20,10)\\clippos(~-20,~+10)", VECTOR, 0, 0},
+    {"inverse rect relative down", IRECT "\\clippos(~+20,~-10)",
+        "\\iclip(120,90,320,250)", 0, 0},
+    {"inverse scaled vector relative up", ISCALED "\\clippos(~-20,~+10)",
+        "\\iclip(4,m 640 560 l 2240 560 2240 1840 640 1840)", 0, 0},
+    {"relative mixed absolute Y", RECT "\\clippos(20,10)\\clippos(~+20,-10)",
+        "\\clip(140,70,340,230)", 0, 0},
+    {"relative mixed absolute X", VECTOR "\\clippos(20,10)\\clippos(-20,~-10)",
+        "\\clip(m 80 100 l 280 100 280 260 80 260)", 0, 0},
     {"relative scale plus", RECT "\\clips120\\clips~+10",
         "\\clip(70,56,330,264)", 0, 0},
     {"relative scale minus", VECTOR "\\clips120\\clips~-20", VECTOR, 0, 0},
     {"bare plus scale absolute", RECT "\\clips120\\clips+80",
         "\\clip(120,96,280,224)", 0, 0},
     {"relative animated position", RECT "\\clippos(20,10)\\t(0,1000,\\clippos(~+40,~-20))",
-        "\\clip(140,80,340,240)", 500, 0},
+        "\\clip(140,100,340,260)", 500, 0},
+    {"vector relative animated up", VECTOR "\\clippos(20,10)\\t(0,1000,\\clippos(~-40,~+20))",
+        VECTOR, 500, 0},
+    {"inverse vector relative animated down", IVECTOR "\\clippos(20,10)\\t(0,1000,\\clippos(~+40,~-20))",
+        "\\iclip(m 140 100 l 340 100 340 260 140 260)", 500, 0},
+    {"relative position transform shorthand", RECT "\\clippos(20,10)\\t(\\clippos(~+40,~-20))",
+        "\\clip(140,100,340,260)", 1500, 0},
+    {"relative position transform acceleration", RECT "\\clippos(20,10)\\t(2,\\clippos(~+40,~-20))",
+        "\\clip(130,95,330,255)", 1500, 0},
+    {"relative position timed acceleration", VECTOR "\\clippos(20,10)\\t(0,1000,2,\\clippos(~+40,~-20))",
+        "\\clip(m 130 95 l 330 95 330 255 130 255)", 500, 0},
+    // \movevc uses directional operands but keeps its vector-only geometry
+    // and its existing motion timing, independently of clippos.
+    {"movevc relative down", VECTOR "\\movevc(20,10)\\movevc(~+20,~-10)",
+        "\\clip(m 140 100 l 340 100 340 260 140 260)", 0, 0},
+    {"movevc relative up", VECTOR "\\movevc(20,10)\\movevc(~-20,~+10)", VECTOR, 0, 0},
+    {"movevc relative animated endpoints", VECTOR "\\movevc(20,10,40,30,200,1200)"
+        "\\movevc(~-10,~+5,~+10,~-5,200,1200)",
+        "\\clip(m 130 100 l 330 100 330 260 130 260)", 700, 0},
+    {"inverse movevc relative endpoints", IVECTOR "\\movevc(20,10,40,30,200,1200)"
+        "\\movevc(~-10,~+5,~+10,~-5,200,1200)",
+        "\\iclip(m 130 100 l 330 100 330 260 130 260)", 700, 0},
     {"relative animated scale", RECT "\\clips120\\t(0,1000,\\clips~-40)", RECT, 500, 0},
     {"rect reset", RECT "\\clippos(40,-20)\\clips150\\r", RECT, 0, 0},
     {"vector reset", VECTOR "\\clippos(40,-20)\\clips150\\r", VECTOR, 0, 0},
     {"named inverse reset", IVECTOR "\\clippos(40,-20)\\clips150\\rOther", IVECTOR, 0, 0},
     {"reset then relative", RECT "\\clips150\\clippos(40,20)\\r\\clips~+25\\clippos(~+20,~-10)",
-        "\\clip(95,50,345,250)", 0, 0},
+        "\\clip(95,70,345,270)", 0, 0},
     {"ordinary rect control", RECT, "\\clip(100.9,80.1,300.9,240.1)", 0, 0},
     {"ordinary vector scale control", SCALED, VECTOR, 0, 0},
     {"ordinary first vector wins", VECTOR "\\clip(m 0 0 l 20 0 20 20 0 20)", VECTOR, 0, 0},
@@ -268,7 +299,7 @@ static const Case cases[] = {
     {"annotation does not enable replacement", VECTOR
         "[\\clips125]\\clip(m 0 0 l 40 0 40 40 0 40)", VECTOR, 0, 0},
     {"whitespace relative operands", RECT "\\clippos(  ~+20 , ~-10  )\\clips125",
-        "\\clip(95,50,345,250)", 0, 0},
+        "\\clip(95,70,345,270)", 0, 0},
 };
 
 /* Reuse one track with nonmonotonic frame times to catch accumulated geometry,
@@ -277,7 +308,7 @@ static void animation_frames(ASS_Library *lib, ASS_Renderer *renderer,
                               bool rgba, int width, int height)
 {
     ASS_Track *track = make_track(lib, SCALED
-        "\\t(200,1200,2,\\clippos(120,-40)\\clips140)", rgba);
+        "\\t(200,1200,2,\\clippos(~+120,~+40)\\clips140)", rgba);
     const long long times[] = {0, 200, 700, 1200, 1500, 700, 200};
     size_t size = (size_t) width * height;
     uint8_t *a = malloc(size), *b = malloc(size);

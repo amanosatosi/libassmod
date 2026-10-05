@@ -59,11 +59,19 @@ Both axes are signed, so ordinary signs remain absolute:
 
 Relative movement therefore uses Mangetsu's explicit signed-relative syntax:
 
+- X `~+N` moves right; X `~-N` moves left.
+- Y `~+N` moves up; Y `~-N` moves down.
+
+These are author-facing directional signs, as for relative `\pos`. Absolute
+offsets retain ordinary ASS screen coordinates, with positive Y downward.
+
 ```ass
 \clippos(20,10)\clippos(~+20,~-10)
 ```
 
-The resulting offset is `(40,0)`. A malformed tuple is rejected atomically:
+The resulting offset is `(40,20)`: the second tag moves right 20 and down 10.
+This differs from relative rectangular `\clip` / `\iclip` corner operands,
+which retain raw coordinate addition on both axes. A malformed tuple is rejected atomically:
 one invalid component does not partially update the other axis.
 
 ## `\clipsN`
@@ -149,6 +157,9 @@ Relative targets work inside transforms as well:
 ```
 
 The normal Mangetsu transform timing and acceleration rules apply.
+The target offset is `(60,30)` (right 40, down 20 from `(20,10)`); at 500 ms
+the offset is `(40,20)`. Using `~+20` for the relative Y target instead would
+animate upward toward `(60,-10)`.
 
 ## Reset behavior
 

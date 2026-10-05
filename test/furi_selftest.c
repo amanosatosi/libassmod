@@ -1428,6 +1428,16 @@ int main(void)
     fail |= expect_different("<A|B>", "{\\furipos(8,0)}<A|B>");
     fail |= expect_y_order("{\\furipos(0,8)}<A|B>",
                            "{\\furipos(0,-8)}<A|B>");
+    // furipos stores an upward-positive offset, which placement subtracts.
+    // Relative +Y must move ruby up; do not convert it like screen positions.
+    fail |= expect_same("{\\furipos(0,0)\\furipos(~+0,~+8)}<A|B>",
+                        "{\\furipos(0,8)}<A|B>");
+    fail |= expect_same("{\\furipos(0,0)\\furipos(~+0,~-8)}<A|B>",
+                        "{\\furipos(0,-8)}<A|B>");
+    fail |= expect_y_order("{\\furipos(0,0)\\furipos(~+0,~+8)}<A|B>",
+                           "{\\furipos(0,0)}<A|B>");
+    fail |= expect_y_order("{\\furipos(0,0)}<A|B>",
+                           "{\\furipos(0,0)\\furipos(~+0,~-8)}<A|B>");
     fail |= expect_same("{\\furipos(0,3)}<A|B>",
                         "{\\furiap1\\furipos(0,3)}<A|B>");
     fail |= expect_same("{\\furipos(0,3)}<A|B>",

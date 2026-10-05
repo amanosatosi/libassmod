@@ -1,6 +1,6 @@
 # Mangetsu relative numeric values
 
-Eligible override parameters accept a delta from their current numeric state,
+Eligible override parameters accept a delta from their current state,
 both in ordinary override blocks and inside existing `\t()` transforms.
 Arithmetic uses the units written in ASS scripts.
 
@@ -17,7 +17,7 @@ accepts a bare sign as relative syntax:
 | `~+N` | explicit relative increase |
 | `~-N` | explicit relative decrease |
 
-For signed parameters, bare signs remain absolute. Relative values require `~`:
+For signed numeric parameters, bare signs remain absolute. Relative values require `~`:
 
 | Spelling | Meaning |
 | --- | --- |
@@ -30,6 +30,11 @@ For signed parameters, bare signs remain absolute. Relative values require `~`:
 generate explicit relative operands. A sign and a complete finite number must
 follow it: use `~+10` or `~-10`, not `~10` or `+-10`. Fractional numbers and
 supported Unicode decimal digits work as usual.
+
+Numeric relative values use `~+N` to increase and `~-N` to decrease the numeric
+value. Directional position coordinates use the same spelling but describe
+movement: X `~+N` means right, X `~-N` means left, Y `~+N` means up, and Y `~-N`
+means down. Bare signs on these coordinates remain literal absolute signs.
 
 ## Current state, Styles, and resets
 
@@ -115,7 +120,7 @@ See [motion and object scale](motion-scale.md).
 With axis scales 80/120, the first animation produces effective glyph scales
 40/60 -> 80/120. The factor itself is interpolated.
 
-## Signed values and position
+## Signed numeric values
 
 ```ass
 \frz-50                    ; absolute -50 degrees
@@ -125,9 +130,34 @@ With axis scales 80/120, the first animation produces effective glyph scales
 \fax~+0.2                  ; add 0.2 shear
 \fsp-2                     ; absolute -2 spacing
 \fsp~-2                    ; subtract 2 from current spacing
-\pos(-100,500)             ; absolute coordinates
-\pos(~-100,~+50)           ; offset current position
 ```
+
+## Directional position coordinates
+
+Relative position syntax is author-facing directional shorthand, not raw
+screen-coordinate arithmetic. On the X axis, positive moves right and negative
+moves left. On the Y axis, positive moves up and negative moves down. Absolute
+coordinates retain normal ASS screen-coordinate semantics.
+
+```ass
+\pos(-100,500)                       ; literal absolute coordinates
+\pos(500,500)\pos(~+100,~+100)        ; right 100 / up 100 -> (600,400)
+\pos(500,500)\pos(~-100,~-100)        ; left 100 / down 100 -> (400,600)
+\pos(500,500)\pos(~+200,~-100)        ; right 200 / down 100 -> (700,600)
+\pos(500,500)\pos(~+20,400)          ; (520,400): absolute Y stays literal
+\pos(500,500)\pos(520,~-10)          ; (520,510): absolute X stays literal
+```
+
+Only relative Y positional operands are converted to upward-positive movement;
+absolute Y values continue increasing downward. The same directional rule
+applies to every X/Y point of `\move`, `\moves3`, `\moves4`, and `\mover`,
+both translation endpoints of `\movevc`, and the offsets of `\clippos`.
+For example, the coordinate resolver maps offsets `(~+20,~-10,~+40,~+10)`
+from stored endpoints `(400,300,600,400)` to `(420,310,640,390)`.
+This does not change when a motion tag is accepted: an ordinary later `\move`
+still loses to the existing first position/motion. `\mover` angles and radii
+remain signed numeric values; `~+N` increases them and `~-N` decreases them.
+Timing fields are unchanged and do not accept relative operands.
 
 Without an earlier explicit position or motion, relative `\pos` uses automatic
 placement: the active Style/event margins, alignment (including `\an`), and
@@ -149,9 +179,34 @@ collision displacement. `\r` retains its normal line-level position semantics.
 ```ass
 {\pos(500,500)\t(0,500,\pos(~+200,400))}Text
 {\pos(500,500)\t(0,500,\pos(~+200,~-100))}Text
+{\pos(500,500)\t(0,500,\pos(~+200,~+100))}Text
 ```
 
-Both examples animate toward `(700,400)`.
+The first and third examples animate toward `(700,400)`. The second animates
+toward `(700,600)` because `~-100` means down 100. The sign conversion does not
+change transform timing, acceleration, or the point where a relative target's
+reference position is resolved.
+
+### Raw coordinates and other Y-bearing parameters
+
+Rectangular `\clip` / `\iclip` corners are literal screen-space coordinates:
+relative values use numeric addition on both axes. For example,
+`\clip(100,80,300,240)\clip(~+20,~-10,~+20,~-10)` yields corners
+`(120,70,320,230)`. To move the clip with directional signs instead, use
+`\clippos(~+20,~-10)`, which moves it right 20 and down 10.
+
+`\distort` contains normalized distortion pins, not screen-position movement;
+both U and V retain numeric addition. Image-fill `\img` offsets are texture
+sampling offsets and also retain numeric addition. Signed scalars such as
+`\yshad`, `\fay`, `\fry`, and `\fsvp` keep numeric increase/decrease.
+The curved-text tangent/normal offsets `\ctx` / `\cty` and vertical spacing
+`\vcolsp` / `\vsp` likewise retain their existing numeric semantics.
+
+`\furipos` already stores an upward-positive Y offset, which the renderer
+subtracts when placing furigana. Its resolver therefore retains numeric
+addition: relative `~+Y` increases that offset and visually moves ruby upward;
+`~-Y` moves it downward. Applying the screen-position Y conversion there
+would reverse the intended visual direction.
 
 ## Transforms and seeking
 
@@ -186,8 +241,9 @@ sequential playback, and backwards frame requests give the same result.
 | Non-negative | `\furis`, `\furisx`, `\furisy`, jitter extents and period |
 | Signed (relative requires explicit `~+/-`) | `\rnd`, `\rndx`, `\rndy`, `\rndz` |
 | Signed (explicit `~+/-` only) | `\fr`, `\frx`, `\fry`, `\frz`, `\frs`, `\fax`, `\fay`, `\z`, `\fsp`, `\fsvp`, `\fshp`, `\xshad`, `\yshad`, `\pbo` |
-| Signed | `\pos` coordinates, `\clippos` coordinates, rectangular `\clip` / `\iclip` coordinates, all `\distort` coordinates, `\furipos`, `\furifsp`, image-fill X/Y offsets |
-| Signed | coordinate fields of `\move`, `\movevc`, `\mover`, `\moves3`, `\moves4`; `\mover` angles and radii |
+| Directional position (explicit `~+/-` only) | `\pos`, `\clippos`; X/Y coordinate fields of `\move`, `\movevc`, `\mover`, `\moves3`, `\moves4` |
+| Signed numeric | rectangular `\clip` / `\iclip` corners, all `\distort` pins, `\furipos`, `\furifsp`, image-fill X/Y sampling offsets |
+| Signed numeric | `\mover` angles/radii, `\ctx`, `\cty`, `\vcolsp`, `\vsp` |
 
 `\clips` is a special clip percentage state: it is non-negative after
 resolution, but its parser intentionally uses signed-value syntax so bare
@@ -219,6 +275,11 @@ Unsigned absolute operands, signed absolute operands, ordinary absolute
 transform evaluation, color parsing, and distortion order retain their existing
 behavior, with these intentional syntax/semantic changes:
 
+- Relative positional signs describe right/left and up/down movement as above.
+  Scripts written for the earlier generalized numeric-Y behavior must reverse
+  only their relative positional Y signs; absolute Y and other numeric Y values
+  are unaffected.
+
 - Bare signed operands on the listed non-negative parameters now mean deltas.
   In particular, `\fs+10` now adds 10 script units instead of using the previous
   proportional font-size rule.
@@ -231,6 +292,15 @@ must be complete finite numbers. An invalid relative scalar supplies its current
 value to the tag's existing interpolation/validation; strict tags reject invalid
 operands. This does not bypass the tag's normal clamping or other side effects.
 
+The public VSFilterMod parsers inspected in
+[sorayuki's RTS.cpp](https://github.com/sorayuki/VSFilterMod/blob/master/src/subtitles/RTS.cpp)
+and [computerfan's RTS.cpp](https://github.com/computerfan/VSFilterMod/blob/master/src/subtitles/RTS.cpp)
+parse `\pos` and motion coordinates with `wcstod` and do not implement
+Mangetsu's `~` relative syntax. These sources confirm literal absolute parsing,
+but do not independently establish the relative-sign convention. Mangetsu's
+explicit author-facing directional rule is specified here; existing absolute
+ASS/VSFilter behavior and first-use restrictions remain in force.
+
 ## Regression coverage
 
 The Meson `relative-numbers` test checks numeric state and rendered signatures:
@@ -239,6 +309,13 @@ composition, four transform forms, acceleration, overlap targets, automatic
 placement for nine alignments, frame/event margins, mixed coordinates, ordinary
 offsets after animated motion, event isolation, malformed operands, Unicode
 digits, and fresh/sequential/reversed seeking. Existing distortion and
-motion/scale tests remain registered unchanged.
+motion/scale tests remain registered unchanged. Directional coverage includes
+four directions at all nine alignments, direct motion control-point/timing
+assertions, separation of `\mover` positions from angles/radii, `\movevc`
+endpoints, and fixed absolute targets as seeking oracles. Numeric controls cover
+raw clip corners, six/eight-slot distortion, scalar/percentage state, and image
+sampling offsets. The furigana selftest checks relative ruby movement visually;
+clip-transform regressions compare relative clip/`\movevc` movement with
+independently rewritten rectangular/vector geometry.
 Compilation and execution belong to GitHub Actions under this repository's
 no-local-compilation policy.

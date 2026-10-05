@@ -718,7 +718,7 @@ typedef struct {
  * overlapping transforms compose as simultaneous motion intents.
  */
 typedef struct {
-    double x, y;
+    double x, y;              // absolute coordinates or converted screen-space deltas
     double accel;
     int32_t t1, t2;
     bool relative_x, relative_y;

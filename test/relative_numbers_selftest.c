@@ -21,6 +21,8 @@ enum Field {
 
 typedef struct {
     double values[COUNT];
+    MotionState motion;
+    MoveVCState movevc;
     uint64_t hash, coverage;
     int images;
     int min_x, min_y, max_x, max_y;
@@ -73,6 +75,8 @@ static Sample capture(ASS_Renderer *renderer, ASS_Track *track, long long now)
     // Event cleanup has already released column layout and cleared the glyph
     // count. Observe surviving scalar state here; check geometry using images.
     Sample out = {
+        .motion = s->motion,
+        .movevc = s->movevc,
         .values = {
             s->font_size, s->scale_x * 100, s->scale_y * 100,
             s->soft_scale * 100, s->object_scale * 100, s->hspacing,
@@ -269,6 +273,20 @@ static bool test_values(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\img(\"\",10,20)\\img(\"\",~+2,~-3)", IMGX, 12},
         {"\\img(\"\",10,20)\\img(\"\",~+2,~-3)", IMGY, 17},
         {"\\pos(-100,350)", POSX, -100},
+        // Directional movement is distinct from literal ASS coordinates.
+        {"\\pos(500,500)\\pos(~+100,~+100)", POSX, 600},
+        {"\\pos(500,500)\\pos(~+100,~+100)", POSY, 400},
+        {"\\pos(500,500)\\pos(~-100,~-100)", POSX, 400},
+        {"\\pos(500,500)\\pos(~-100,~-100)", POSY, 600},
+        {"\\pos(500,500)\\pos(~+200,~-100)", POSY, 600},
+        {"\\pos(500,500)\\pos(~+20,400)", POSY, 400},
+        {"\\pos(500,500)\\pos(520,~-10)", POSY, 510},
+        {"\\pos(500,500)\\pos(~+20,~-10)\\pos(~-10,~+30)", POSY, 480},
+        {"\\pos(500,-100)", POSY, -100},
+        {"\\iclip(10,20,900,600)\\iclip(~+5,~+5,~+10,~-10)", CLIPY0, 25},
+        {"\\distort(1,0,1,1,0,1)\\distort(1,~+.1,1,~-.2,0,~+.3)", P1Y, .1},
+        {"\\distort(1,0,1,1,0,1)\\distort(1,~+.1,1,~-.2,0,~+.3)", P2Y, .8},
+        {"\\distort(1,0,1,1,0,1)\\distort(1,~+.1,1,~-.2,0,~+.3)", P3Y, 1.3},
         {"\\1c&H00FF00&\\alpha&H20&", PRIMARY, 0x00FF0020},
         {"\\fs~+\xEF\xBC\x91\xEF\xBC\x90", FS, 50},
         {"\\fax~-\xEF\xBC\x90.\xEF\xBC\x92", FAX, -.2},
@@ -304,20 +322,27 @@ static bool test_transforms(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\fscx50", "\\fscx+50", "\\fscx100"},
         {"\\fscy150", "\\fscy-50", "\\fscy100"},
         {"\\img(\"\",10,20)", "\\img(\"\",~+2,~-3)", "\\img(\"\",12,17)"},
+        {"\\furipos(10,20)", "\\furipos(~+5,~-3)", "\\furipos(15,17)"},
+        {"\\clip(10,20,900,600)", "\\clip(~+5,~+5,~-10,~-10)", "\\clip(15,25,890,590)"},
         {"\\fax.25\\fs40\\bord2", "\\fax~-.5\\fs+10.5\\bord+1.25", "\\fax-.25\\fs50.5\\bord3.25"},
         {"\\pos(500,500)", "\\pos(~+200,400)", "\\pos(700,400)"},
-        {"\\pos(500,500)", "\\pos(~+200,~-100)", "\\pos(700,400)"},
-        {"\\move(400,300,600,400,0,1000)",
-         "\\move(~+20,~-10,~+40,~+10,0,1000)", "\\move(420,290,640,410,0,1000)"},
+        {"\\pos(500,500)", "\\pos(~+200,~-100)", "\\pos(700,600)"},
+        {"\\pos(500,500)", "\\pos(~-200,~+100)", "\\pos(300,400)"},
+        {"\\pos(500,500)", "\\pos(520,~-10)", "\\pos(520,510)"},
+        // A later \move is ignored by the existing first-motion-wins rule.
+        // Exercise a first-use relative motion so equivalence cannot pass
+        // merely because both candidate tags were ignored.
+        {"", "\\move(~+400,~-300,~+600,~-400,0,1000)",
+         "\\move(400,300,600,400,0,1000)"},
         {"\\mover(400,300,600,400,0,90,10,20)",
          "\\mover(~+20,~-10,~+40,~+10,~-10,~+10,~-5,~+5)",
-         "\\mover(420,290,640,410,-10,100,5,25)"},
+         "\\mover(420,310,640,390,-10,100,5,25)"},
         {"\\moves3(400,300,500,200,600,400)",
          "\\moves3(~+20,~-10,~+30,~-20,~+40,~+10)",
-         "\\moves3(420,290,530,180,640,410)"},
+         "\\moves3(420,310,530,220,640,390)"},
         {"\\moves4(400,300,450,200,550,200,600,400)",
          "\\moves4(~+20,~-10,~+30,~-20,~+30,~-20,~+40,~+10)",
-         "\\moves4(420,290,480,180,580,180,640,410)"},
+         "\\moves4(420,310,480,220,580,220,640,390)"},
         {"\\distort(1,0,1,1,0,1,.125,.25)",
          "\\distort(~+.25,0,1,1,0,1,~+.125,~-.125)", "\\distort(1.25,0,1,1,0,1,.25,.125)"},
     };
@@ -335,6 +360,77 @@ static bool test_transforms(ASS_Library *lib, ASS_Renderer *renderer)
     return ok;
 }
 
+static bool test_motion_coordinates(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const struct {
+        const char *tags;
+        MotionType type;
+        double points[8];
+        double polar[4];
+    } cases[] = {
+        // First-use \move resolves from zero; later \move still loses.
+        {"\\move(~+400,~-300,~-600,~+400,200,1200)", MOTION_MOVE,
+         {400,300,-600,-400}, {0}},
+        {"\\move(~-400,~+300,~+600,~-400,200,1200)", MOTION_MOVE,
+         {-400,-300,600,400}, {0}},
+        {"\\move(400,300,600,400,200,1200)\\move(~+20,~-10,~+40,~+10)", MOTION_MOVE,
+         {400,300,600,400}, {0}},
+        {"\\moves3(400,300,500,200,600,400,200,1200)"
+         "\\moves3(~+20,~-10,~-30,~+20,~+40,~-30,200,1200)", MOTION_MOVES3,
+         {420,310,470,180,640,430}, {0}},
+        {"\\moves4(400,300,450,200,550,200,600,400,200,1200)"
+         "\\moves4(~-20,~+10,~+30,~-20,~-30,~+20,~+40,~-10,200,1200)", MOTION_MOVES4,
+         {380,290,480,220,520,180,640,410}, {0}},
+        // Keep angles/radii fixed while positions change, then the inverse.
+        {"\\mover(400,300,600,400,10,-90,-10,20,200,1200)"
+         "\\mover(~+20,~-10,~-40,~+10,10,-90,-10,20,200,1200)", MOTION_MOVER,
+         {420,310,560,390}, {10,-90,-10,20}},
+        {"\\mover(400,300,600,400,10,-90,-10,20,200,1200)"
+         "\\mover(400,300,600,400,~-20,~+10,~+5,~-25,200,1200)", MOTION_MOVER,
+         {400,300,600,400}, {-10,-80,-5,-5}},
+    };
+    bool ok = true;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char text[1024];
+        snprintf(text, sizeof(text), "{%s}Motion", cases[c].tags);
+        ASS_Track *track = read_track(lib, text);
+        if (!track) return false;
+        MotionState m = capture(renderer, track, 700).motion;
+        double points[] = {m.x1,m.y1,m.x2,m.y2,m.x3,m.y3,m.x4,m.y4};
+        double polar[] = {m.angle1,m.angle2,m.radius1,m.radius2};
+        bool matched = m.type == cases[c].type && m.has_timing && m.t1 == 200 && m.t2 == 1200;
+        for (int p = 0; p < 8; p++) matched &= near(points[p], cases[c].points[p]);
+        for (int p = 0; p < 4; p++) matched &= near(polar[p], cases[c].polar[p]);
+        if (!matched) fprintf(stderr, "motion coordinate/timing mismatch: %s\n", cases[c].tags);
+        ok &= matched;
+        ass_free_track(track);
+    }
+    const struct { const char *tags; double points[4]; bool animated, timed; } clips[] = {
+        {"\\movevc(20,10)\\movevc(~+20,~-10)", {40,20,40,20}, false, false},
+        {"\\movevc(20,10)\\movevc(~-20,~+10)", {0,0,0,0}, false, false},
+        {"\\movevc(20,10,40,30)\\movevc(~-10,~+5,~+10,~-5)", {10,5,50,35}, true, false},
+        {"\\movevc(20,10,40,30)\\movevc(~+10,~-5,~-10,~+5,1200,200)", {30,15,30,25}, true, true},
+        // \movevc remains immediate inside \t rather than interpolated.
+        {"\\movevc(20,10,40,30)\\t(0,1000,\\movevc(~+10,~-5,~-10,~+5,200,1200))",
+         {30,15,30,25}, true, true},
+    };
+    for (size_t c = 0; c < sizeof(clips) / sizeof(clips[0]); c++) {
+        char text[1024];
+        snprintf(text, sizeof(text), "{%s\\clip(m 0 0 l 900 0 900 600 0 600)}Motion", clips[c].tags);
+        ASS_Track *track = read_track(lib, text);
+        if (!track) return false;
+        MoveVCState m = capture(renderer, track, 700).movevc;
+        double points[] = {m.x1,m.y1,m.x2,m.y2};
+        bool matched = m.active && m.animated == clips[c].animated && m.has_timing == clips[c].timed;
+        if (m.has_timing) matched &= m.t1 == 200 && m.t2 == 1200;
+        for (int p = 0; p < 4; p++) matched &= near(points[p], clips[c].points[p]);
+        if (!matched) fprintf(stderr, "movevc coordinate/timing mismatch: %s\n", clips[c].tags);
+        ok &= matched;
+        ass_free_track(track);
+    }
+    return ok;
+}
+
 static bool test_automatic_position(ASS_Library *lib, ASS_Renderer *renderer)
 {
     bool ok = true;
@@ -345,9 +441,9 @@ static bool test_automatic_position(ASS_Library *lib, ASS_Renderer *renderer)
             snprintf(base, sizeof(base), "{%s\\an%d\\bord0\\shad0\\frz0}Margins", reset, align);
             snprintf(zero, sizeof(zero), "{%s\\an%d\\bord0\\shad0\\frz0\\pos(~+0,~+0)}Margins", reset, align);
             snprintf(shifted, sizeof(shifted), "{%s\\an%d\\bord0\\shad0\\frz0"
-                     "\\pos(~+20,~-10)\\pos(~+44,~+42)}Margins", reset, align);
+                     "\\pos(~+20,~-10)\\pos(~+44,~+12)}Margins", reset, align);
             snprintf(animated, sizeof(animated), "{%s\\an%d\\bord0\\shad0\\frz0"
-                     "\\t(250,1250,\\pos(~+128,~+64))}Margins", reset, align);
+                     "\\t(250,1250,\\pos(~+128,~+4))}Margins", reset, align);
             snprintf(mixed, sizeof(mixed), "{%s\\an%d\\bord0\\shad0\\frz0\\pos(~+64,400)}Margins", reset, align);
             ok &= compare(lib, renderer, base, zero, 0);
             ok &= compare(lib, renderer, animated, shifted, 750);
@@ -361,11 +457,34 @@ static bool test_automatic_position(ASS_Library *lib, ASS_Renderer *renderer)
             }
             Sample a = capture(renderer, tz, 0), b = capture(renderer, ts, 0);
             Sample m = capture(renderer, tm, 0);
+            // All four directions must be independent of alignment. Small
+            // deltas keep text inside the margins even at edge alignments.
+            const struct { const char *operand; int dx, dy; } directions[] = {
+                {"~+4,~+0", 4, 0}, {"~-4,~+0", -4, 0},
+                {"~+0,~+4", 0, -4}, {"~+0,~-4", 0, 4},
+            };
+            for (size_t d = 0; d < sizeof(directions) / sizeof(directions[0]); d++) {
+                char text[256];
+                snprintf(text, sizeof(text), "{%s\\an%d\\bord0\\shad0\\frz0"
+                         "\\pos(%s)}Margins", reset, align, directions[d].operand);
+                ASS_Track *td = read_track(lib, text);
+                if (!td) { ok = false; continue; }
+                Sample shifted_direction = capture(renderer, td, 0);
+                bool directed = near(shifted_direction.values[POSX] - a.values[POSX], directions[d].dx) &&
+                    near(shifted_direction.values[POSY] - a.values[POSY], directions[d].dy) &&
+                    shifted_direction.min_x - a.min_x == directions[d].dx &&
+                    shifted_direction.min_y - a.min_y == directions[d].dy;
+                if (!directed)
+                    fprintf(stderr, "direction %s failed for style %d, alignment %d\n",
+                            directions[d].operand, style, align);
+                ok &= directed;
+                ass_free_track(td);
+            }
             if (!near(b.values[POSX] - a.values[POSX], 64) ||
-                    !near(b.values[POSY] - a.values[POSY], 32) ||
+                    !near(b.values[POSY] - a.values[POSY], -2) ||
                     !near(m.values[POSX] - a.values[POSX], 64) ||
                     !near(m.values[POSY], 400) ||
-                    b.min_x - a.min_x != 64 || b.min_y - a.min_y != 32) {
+                    b.min_x - a.min_x != 64 || b.min_y - a.min_y != -2) {
                 fprintf(stderr, "automatic placement failed for style %d, alignment %d\n", style, align);
                 ok = false;
             }
@@ -387,27 +506,30 @@ static bool test_overlap(ASS_Library *lib, ASS_Renderer *renderer)
         ok &= compare(lib, renderer, text, fixed, times[i]);
     }
     // The second position's relative target is resolved at its own start:
-    // first motion is at X=450 at 250ms, so relative +200 targets X=650.
+    // At 250ms the first motion is (450,300). Right 200 / down 200
+    // targets (650,500), which stays fixed when the timeline is rebased.
     ok &= compare(lib, renderer,
-        "{\\pos(500,350)\\t(0,500,\\pos(~-100,350))"
-        "\\t(250,1000,\\pos(~+200,350))}Relative",
-        "{\\pos(500,350)\\t(0,500,\\pos(400,350))"
-        "\\t(250,1000,\\pos(650,350))}Relative", 750);
+        "{\\pos(500,350)\\t(0,500,\\pos(~-100,~+100))"
+        "\\t(250,1000,\\pos(~+200,~-200))}Relative",
+        "{\\pos(500,350)\\t(0,500,\\pos(400,250))"
+        "\\t(250,1000,\\pos(650,500))}Relative", 750);
     // An ordinary relative position translates the existing animation once.
     const struct { const char *a, *b; } positions[] = {
+        {"\\pos(500,350)\\t(0,1000,\\pos(~+100,~+100))\\t(0,1000,\\pos(~-50,~-50))",
+         "\\pos(500,350)\\t(0,1000,\\pos(600,250))\\t(0,1000,\\pos(450,400))"},
         {"\\pos(500,350)\\t(0,1000,\\pos(700,450))\\pos(~+20,~-10)",
-         "\\pos(520,340)\\t(0,1000,\\pos(720,440))"},
+         "\\pos(520,360)\\t(0,1000,\\pos(720,460))"},
         {"\\t(0,1000,\\pos(~+100,~-20))\\pos(~+20,~+10)",
          "\\pos(~+20,~+10)\\t(0,1000,\\pos(~+100,~-20))"},
         {"\\t(0,1000,\\pos(700,450))\\pos(~+20,~-10)",
-         "\\pos(~+20,~-10)\\t(0,1000,\\pos(720,440))"},
+         "\\pos(~+20,~-10)\\t(0,1000,\\pos(720,460))"},
         {"\\pos(500,350)\\t(0,1000,\\pos(~+100,~-20))\\pos(~+20,400)",
          "\\pos(520,400)\\t(0,1000,\\pos(~+100,400))"},
         {"\\move(400,350,600,450,0,1000)\\pos(~+20,~-10)",
-         "\\move(420,340,620,440,0,1000)"},
+         "\\move(420,360,620,460,0,1000)"},
         {"\\pos(~+20,~-10)\\pos(700,450)", "\\pos(~+20,~-10)"},
         {"\\pos(~+20,~-10)\\move(400,350,600,450)", "\\pos(~+20,~-10)"},
-        {"\\pos(~+20,400)\\pos(520,~-10)", "\\pos(520,390)"},
+        {"\\pos(~+20,400)\\pos(520,~-10)", "\\pos(520,410)"},
     };
     for (size_t i = 0; i < sizeof(positions) / sizeof(positions[0]); i++) {
         char a[1024], b[1024];
@@ -488,10 +610,24 @@ static bool test_seeking(ASS_Library *lib, ASS_Renderer *renderer, bool automati
         automatic ? "" : "\\pos(500,350)");
     ASS_Track *track = read_track(lib, text);
     if (!track) return false;
+    ASS_Track *base = read_track(lib, automatic ? "{\\pos(~+0,~+0)}Relative" :
+                                                "{\\pos(500,350)}Relative");
+    if (!base) { ass_free_track(track); return false; }
+    Sample origin = capture(renderer, base, 0);
+    ass_free_track(base);
+    // Independent fixed targets: at 250ms, the first motion has moved
+    // right 25 / down 12.5. The second target moves left 100 / up 80.
+    char absolute[1024];
+    double x = origin.values[POSX], y = origin.values[POSY];
+    snprintf(absolute, sizeof(absolute), "{\\pos(%.17g,%.17g)\\fs40\\fsc50"
+             "\\t(0,1000,\\fs60\\fsc100\\pos(%.17g,%.17g))"
+             "\\t(250,1250,2,\\fs-10\\fsc+25\\pos(%.17g,%.17g))}Relative",
+             x, y, x + 100, y + 50, x - 75, y - 67.5);
     const long long times[] = {0, 250, 500, 750, 1000, 1250, 1750};
     Sample direct[7];
     bool ok = true;
     for (int i = 0; i < 7; i++) {
+        ok &= compare_samples(lib, renderer, text, absolute, times[i], true);
         ASS_Renderer *fresh = ass_renderer_init(lib);
         if (!fresh) { ass_free_track(track); return false; }
         ass_set_frame_size(fresh, 1000, 700);
@@ -549,7 +685,7 @@ int main(void)
         {"{\\fs50}A{\\fs-10}B", "{\\fs50}A{\\fs40}B"},
         {"{\\fs50}{\\fs+20}A", "{\\fs70}A"},
         {"{\\fs50\\rOther\\fs+10}A", "{\\rOther\\fs30}A"},
-        {"{\\pos(500,350)\\pos(~-100,~+50)}A", "{\\pos(400,400)}A"},
+        {"{\\pos(500,350)\\pos(~-100,~+50)}A", "{\\pos(400,300)}A"},
         {"{\\distort(1.5,-.125,1.25,1,-.25,1)}A",
          "{\\distort(1.5,-.125,1.25,1,-.25,1,0,0)}A"},
     };
@@ -557,6 +693,7 @@ int main(void)
         ok &= compare(lib, renderer, pairs[i].a, pairs[i].b, 500);
     ok &= test_geometry_changes(lib, renderer);
     ok &= test_transforms(lib, renderer);
+    ok &= test_motion_coordinates(lib, renderer);
     ok &= test_automatic_position(lib, renderer);
     ok &= test_overlap(lib, renderer);
     ok &= test_event_reset(lib, renderer);
