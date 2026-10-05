@@ -97,6 +97,7 @@ typedef struct ass_image_rgba {
 #define LIBASSMOD_FEATURE_RGBA 1
 #define LIBASSMOD_FEATURE_TAG_IMAGE 1
 #define LIBASSMOD_FEATURE_BLEND_BGRA 1
+#define LIBASSMOD_FEATURE_BLEND_TRACK_QUERY 1
 
 /* Returns non-zero when this libass build tracks aligned allocation ownership.
  * This is intended for host-side diagnostic build verification. */
