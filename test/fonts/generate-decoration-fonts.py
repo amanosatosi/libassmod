@@ -97,7 +97,7 @@ font("decoration-complete.ttf", "Deco Complete", 2048, 1800, 248, -900, 100, 600
 
 # Deliberately place the same rectangle ink outside the nominal ascent or
 # descent. These probe ruby clearance against shaped geometry, not metrics.
-furi_chars = {ord(c) for c in "WM"}
+furi_chars = {ord(c) for c in "WM漢字かんじ"}
 font("furi-tight-ascent.ttf", "Furi Tight Ascent", 1000, 250, 750,
      -100, 50, 200, 50, furi_chars)
 font("furi-tight-descent.ttf", "Furi Tight Descent", 1000, 900, 100,

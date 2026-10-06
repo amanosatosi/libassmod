@@ -884,6 +884,9 @@ static int test_ruby_geometry(void)
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M|M>\\N<W|M|M>",
         2, 4, four_base, four_side, true);
+    fail |= expect_ruby_geometry(two_plain,
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1\\furichangepos1}<W|M|M>\\N<W|M|M>",
+        2, 4, four_base, four_side, false);
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0\\fs32}W\\NW\\NW",
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M>\\N<W|M>\\N<W|M>",
@@ -898,6 +901,12 @@ static int test_ruby_geometry(void)
     fail |= expect_same("<W|M>\\N<W|M>",
                         "{\\furiplaceauto1\\r}<W|M>\\N<W|M>");
     fail |= expect_same("<W|M>", "{\\furichangepos1\\r}<W|M>");
+    // Wrapping, rather than a literal hard break, must also select two-line
+    // auto placement. The long first word supplies exactly one soft break.
+    fail |= expect_ruby_geometry(
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\q1}WWWWWWWWWWWWWWWWWWWWW W",
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\q1\\furiplaceauto1}WWWWWWWWWWWWWWWWWWWWW <W|M>",
+        2, 1, (int[]) {1}, lower, true);
     // Default collision handling changes only reading positions, even when
     // all three readings are much wider than their one-glyph bases.
     fail |= expect_ruby_geometry(
@@ -910,6 +919,9 @@ static int test_ruby_geometry(void)
         "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM><W|MMMM>", 1, 3);
     fail |= expect_ruby_gap(
         "{\\pos(192,80)\\bord0\\shad0\\furis80}<W||MMMM><W||MMMM>", 1, 2);
+    fail |= expect_ruby_gap(
+        "{\\pos(192,108)\\bord0\\shad0\\furis30}<W|MMMM>"
+        "{\\furis80}<W|MMMM>{\\furis50}<W|MM>", 1, 3);
     // An odd sidecar count forces reallocation while appending a gyaku run.
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0}WWWWW",
@@ -930,6 +942,27 @@ static int test_ruby_geometry(void)
     fail |= expect_reading_style("\\fscx120\\fscy80\\t(0,1000,\\furis80)");
     fail |= expect_different("{\\bord0}<W||M>", "{\\bord4}<W||M>");
     fail |= expect_different("{\\shad0}<W||M>", "{\\shad4}<W||M>");
+    // The original rectangle fixtures also cover these codepoints, so the
+    // explicit UTF-8 probes do not depend on installed Japanese fonts.
+    if (getenv("FURI_TEST_FAMILY")) {
+        const char *base = "\xE6\xBC\xA2\xE5\xAD\x97";
+        const char *reading = "\xE3\x81\x8B\xE3\x82\x93\xE3\x81\x98";
+        char control[160], ruby[256];
+        snprintf(control, sizeof(control),
+                 "{\\pos(192,108)\\bord0\\shad0}%s", base);
+        snprintf(ruby, sizeof(ruby),
+                 "{\\pos(192,108)\\bord0\\shad0\\furichangepos0}<%s|%s>", base, reading);
+        fail |= expect_ruby_geometry(control, ruby, 1, 1, first, upper, true);
+        snprintf(ruby, sizeof(ruby),
+                 "{\\pos(192,108)\\bord0\\shad0\\furichangepos0}<%s|%s|M>", base, reading);
+        fail |= expect_ruby_geometry(control, ruby, 1, 2, first, both, true);
+        snprintf(control, sizeof(control),
+                 "{\\pos(192,108)\\bord0\\shad0\\fs32}%s\\N%s", base, base);
+        snprintf(ruby, sizeof(ruby),
+                 "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<%s|%s|M>\\N<%s|%s|M>",
+                 base, reading, base, reading);
+        fail |= expect_ruby_geometry(control, ruby, 2, 4, four_base, four_side, true);
+    }
     return fail;
 }
 

@@ -179,7 +179,9 @@ itself add main-line spacing. Ordinary non-furigana text does not participate
 in ruby collision avoidance. If separately annotated furigana groups visually
 approach too closely, Mangetsu measures their occupied bounds, including
 overhang, strokes and shadows, separately on each side of each visual line.
-It moves the annotations by the smallest total squared displacement from their
+The occupied bounds include the rasterizer's antialias fringe so mathematically
+separate outlines also retain visible separation. It moves annotations by the
+smallest total squared displacement from their
 centered positions that maintains a small size-scaled horizontal gap. Base
 advances and positions stay unchanged with `\furichangepos0`. With
 `\furichangepos1`, the older base-spacing path is also available.
