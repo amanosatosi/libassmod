@@ -156,6 +156,12 @@ static void compare_frame(ASS_Renderer *fast, ASS_Renderer *reference,
 
 static void stress(ASS_Library *lib, ASS_Renderer *fast, ASS_Renderer *reference)
 {
+    /* Earlier lifetime controls deliberately evict only one renderer. Start
+     * each comparison with identical cache temperatures for build counters. */
+    ass_set_frame_size(fast, 640, 361);
+    ass_set_frame_size(reference, 640, 361);
+    ass_set_frame_size(fast, 640, 360);
+    ass_set_frame_size(reference, 640, 360);
     ASS_Track *track = new_track(lib);
     CHECK(track);
     if (!track) return;
