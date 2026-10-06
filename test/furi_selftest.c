@@ -898,9 +898,9 @@ static int test_ruby_geometry(void)
                         "{\\furiplaceauto0}<W|M>\\N<W|M>");
     fail |= expect_same("{\\furiplaceauto1}<W|M>\\N<W|M>",
                         "{\\furiplaceauto1\\furiap1}<W|M>\\N<W|M>");
-    fail |= expect_same("<W|M>\\N<W|M>",
+    fail |= expect_same("{\\r}<W|M>\\N<W|M>",
                         "{\\furiplaceauto1\\r}<W|M>\\N<W|M>");
-    fail |= expect_same("<W|M>", "{\\furichangepos1\\r}<W|M>");
+    fail |= expect_same("{\\r}<W|M>", "{\\furichangepos1\\r}<W|M>");
     // Wrapping, rather than a literal hard break, must also select two-line
     // auto placement. The long first word supplies exactly one soft break.
     fail |= expect_ruby_geometry(
