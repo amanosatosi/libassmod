@@ -879,6 +879,9 @@ static int test_ruby_geometry(void)
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W||M>\\N<W||M>",
         2, 2, two_base, inward, true);
     fail |= expect_ruby_geometry(two_plain,
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W| |M>\\N<W| |M>",
+        2, 2, two_base, inward, true);
+    fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M|M>\\N<W|M|M>",
         2, 4, four_base, four_side, true);
     fail |= expect_ruby_geometry(
@@ -892,6 +895,9 @@ static int test_ruby_geometry(void)
                         "{\\furiplaceauto0}<W|M>\\N<W|M>");
     fail |= expect_same("{\\furiplaceauto1}<W|M>\\N<W|M>",
                         "{\\furiplaceauto1\\furiap1}<W|M>\\N<W|M>");
+    fail |= expect_same("<W|M>\\N<W|M>",
+                        "{\\furiplaceauto1\\r}<W|M>\\N<W|M>");
+    fail |= expect_same("<W|M>", "{\\furichangepos1\\r}<W|M>");
     // Default collision handling changes only reading positions, even when
     // all three readings are much wider than their one-glyph bases.
     fail |= expect_ruby_geometry(
@@ -904,6 +910,12 @@ static int test_ruby_geometry(void)
         "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM><W|MMMM>", 1, 3);
     fail |= expect_ruby_gap(
         "{\\pos(192,80)\\bord0\\shad0\\furis80}<W||MMMM><W||MMMM>", 1, 2);
+    // An odd sidecar count forces reallocation while appending a gyaku run.
+    fail |= expect_ruby_geometry(
+        "{\\pos(192,108)\\bord0\\shad0}WWWWW",
+        "{\\pos(192,108)\\bord0\\shad0}<W|M><W|M|M><W|M|M><W|M|M><W|M|M>",
+        1, 9, (int[]) {0, 0, 0, 0, 0, 0, 0, 0, 0},
+        (int[]) {-1, -1, 1, -1, 1, -1, 1, -1, 1}, true);
     fail |= expect_ruby_geometry(
         "{\\an8\\pos(192,70)\\bord0\\shad0}W",
         "{\\an8\\pos(192,70)\\bord0\\shad0\\furichangepos1}<W|M>",

@@ -6930,7 +6930,10 @@ static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
 
 /* Occupied outline/stroke/shadow bounds in event-local screen units. Keep
  * these separate from base advances and typographic line metrics. Blur is a
- * soft filter, not an attachment edge. No bitmap scan is needed. */
+ * soft filter, not an attachment edge. Include the rasterizer's one-pixel
+ * antialias footprint on each edge; touching fringe pixels are visually
+ * occupied even when the mathematical outlines do not touch. This padding
+ * belongs only to ruby geometry, never ordinary glyph/line metrics. */
 static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
                                   int length, ASS_DRect *bounds,
                                   ASS_DRect *ink, double *top, double *bottom)
@@ -6961,13 +6964,13 @@ static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
                         state->renderer->par_scale_x;
             double sy = info->shadow_y * state->border_scale_y;
             bounds->x_min = FFMIN(bounds->x_min,
-                x + d6_to_double(info->bbox.x_min) - bx + FFMIN(0, sx));
+                x + d6_to_double(info->bbox.x_min) - bx + FFMIN(0, sx) - 1);
             bounds->x_max = FFMAX(bounds->x_max,
-                x + d6_to_double(info->bbox.x_max) + bx + FFMAX(0, sx));
+                x + d6_to_double(info->bbox.x_max) + bx + FFMAX(0, sx) + 1);
             bounds->y_min = FFMIN(bounds->y_min,
-                y + d6_to_double(info->bbox.y_min) - by + FFMIN(0, sy));
+                y + d6_to_double(info->bbox.y_min) - by + FFMIN(0, sy) - 1);
             bounds->y_max = FFMAX(bounds->y_max,
-                y + d6_to_double(info->bbox.y_max) + by + FFMAX(0, sy));
+                y + d6_to_double(info->bbox.y_max) + by + FFMAX(0, sy) + 1);
         }
     }
     return bounds->x_min < bounds->x_max && bounds->y_min < bounds->y_max;
