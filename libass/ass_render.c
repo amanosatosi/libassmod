@@ -6108,7 +6108,6 @@ typedef enum {
     FURI_CANDIDATE_GROUP,
 } FuriCandidateType;
 
-
 static bool furi_part_has_text(char *start, char *end)
 {
     for (char *p = start; p < end;) {
@@ -6894,8 +6893,6 @@ static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
 {
     int32_t base_width = furi_base_advance_width(state, group);
     group->base_width = base_width;
-    group->layout_width = base_width;
-    group->base_shift = 0;
 
     // Styles 0 and 1 keep the base's normal shaped advance.  Ruby may
     // overhang ordinary text; only ruby/ruby overlap is resolved later.
@@ -6907,85 +6904,6 @@ static void apply_furi_group_layout(RenderContext *state, FuriGroup *group)
         double scale = (double) base_width / furi_width;
         scale_furi_group_x(group, scale);
     }
-}
-
-static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
-                              double *left, double *right,
-                              double *top, int *line)
-{
-    TextInfo *text_info = &state->text_info;
-    bool have = false;
-    *left = DBL_MAX;
-    *right = -DBL_MAX;
-    *top = DBL_MAX;
-    *line = 0;
-
-    GlyphInfo *first = &text_info->glyphs[group->base_start];
-    double group_left = d6_to_double(first->pos.x - first->offset.x -
-                                     group->base_shift);
-    if (group->layout_width > 0) {
-        *left = group_left;
-        *right = group_left + d6_to_double(group->layout_width);
-    }
-
-    for (int i = 0; i < group->base_len; i++) {
-        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
-        double x0 = d6_to_double(root->pos.x);
-        double x1 = x0 + d6_to_double(root->cluster_advance.x);
-        if (group->layout_width <= 0) {
-            *left = FFMIN(*left, FFMIN(x0, x1));
-            *right = FFMAX(*right, FFMAX(x0, x1));
-        }
-        if (!have)
-            *line = root->line;
-
-        for (GlyphInfo *info = root; info; info = info->next) {
-            /*
-             * Ruby belongs above the base run's typographic line box, not
-             * above the topmost ink of an individual glyph.  A glyph such
-             * as a horizontal bar can have its ink near the middle of the
-             * em box, whereas a Latin ascender or a CJK ideograph reaches
-             * much higher.  Using the font ascent keeps adjacent groups at
-             * one ruby height for every writing system.
-             */
-            double y0 = d6_to_double(info->pos.y - info->asc);
-            *top = FFMIN(*top, y0);
-        }
-        have = true;
-    }
-
-    return have && *left < *right;
-}
-
-
-
-/*
- * Advances define the space a run occupies, but are not necessarily centred
- * on its visible ink.  This is particularly noticeable with narrow CJK
- * glyphs whose font bearings can be asymmetric.  Use these bounds for final
- * visual alignment without changing the base run's shaped advance.
- */
-static bool furi_base_visual_x_bounds(RenderContext *state, FuriGroup *group,
-                                      double *left, double *right)
-{
-    TextInfo *text_info = &state->text_info;
-    bool have = false;
-    *left = DBL_MAX;
-    *right = -DBL_MAX;
-
-    for (int i = 0; i < group->base_len; i++) {
-        GlyphInfo *root = &text_info->glyphs[group->base_start + i];
-        if (root->skip)
-            continue;
-        for (GlyphInfo *info = root; info; info = info->next) {
-            double x = d6_to_double(info->pos.x);
-            *left = FFMIN(*left, x + d6_to_double(info->bbox.x_min));
-            *right = FFMAX(*right, x + d6_to_double(info->bbox.x_max));
-            have = true;
-        }
-    }
-
-    return have && *left < *right;
 }
 
 static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
@@ -7014,18 +6932,28 @@ static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
  * these separate from base advances and typographic line metrics. Blur is a
  * soft filter, not an attachment edge. No bitmap scan is needed. */
 static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
-                                  int length, ASS_DRect *bounds)
+                                  int length, ASS_DRect *bounds,
+                                  ASS_DRect *ink, double *top, double *bottom)
 {
+    *ink = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+    if (top) *top = DBL_MAX;
+    if (bottom) *bottom = -DBL_MAX;
     *bounds = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
     for (int i = 0; i < length; i++) {
         if (glyphs[i].skip)
             continue;
         for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
+            if (top) *top = FFMIN(*top, d6_to_double(info->pos.y - info->asc));
+            if (bottom) *bottom = FFMAX(*bottom, d6_to_double(info->pos.y + info->desc));
             if (info->bbox.x_min >= info->bbox.x_max ||
                     info->bbox.y_min >= info->bbox.y_max)
                 continue;
             double x = d6_to_double(info->pos.x);
             double y = d6_to_double(info->pos.y);
+            ink->x_min = FFMIN(ink->x_min, x + d6_to_double(info->bbox.x_min));
+            ink->x_max = FFMAX(ink->x_max, x + d6_to_double(info->bbox.x_max));
+            ink->y_min = FFMIN(ink->y_min, y + d6_to_double(info->bbox.y_min));
+            ink->y_max = FFMAX(ink->y_max, y + d6_to_double(info->bbox.y_max));
             double bx = glyph_border_max_x(info) * state->border_scale_x /
                         state->renderer->par_scale_x;
             double by = glyph_border_max_y(info) * state->border_scale_y;
@@ -7061,31 +6989,30 @@ static void shift_furi_group(FuriGroup *group, int32_t dx, int32_t dy)
 static void position_furi_group(RenderContext *state, FuriGroup *group)
 {
     TextInfo *text = &state->text_info;
-    double base_left, base_right, base_top, furi_left, furi_right;
+    ASS_DRect base_ink, reading_ink;
+    double base_top, base_bottom;
     int line;
     group->geometry_valid = false;
-    if (!furi_base_metrics(state, group, &base_left, &base_right,
-                           &base_top, &line) ||
-            !furi_base_visual_x_bounds(state, group, &base_left, &base_right) ||
-            !furi_group_visual_x_bounds(group, &furi_left, &furi_right) ||
-            !furi_occupied_bounds(state, text->glyphs + group->base_start,
-                                   group->base_len, &group->base_bounds) ||
+    // Even an all-space reading has a logical side. Its visible companion
+    // must remain opposite it when there is no annotation ink to measure.
+    line = text->glyphs[group->base_start].line;
+    group->below = group->place_auto && text->n_lines == 2 && line == 1;
+    if (group->opposite_side)
+        group->below = !group->below;
+    if (!group->owns_base)
+        group->below = !text->furi_groups[group->base_group].below;
+    if (!furi_occupied_bounds(state, text->glyphs + group->base_start,
+                                   group->base_len, &group->base_bounds,
+                                   &base_ink, &base_top, &base_bottom) ||
             !furi_occupied_bounds(state, group->glyphs, group->length,
-                                   &group->annotation_bounds))
+                                   &group->annotation_bounds, &reading_ink,
+                                   NULL, NULL))
         return;
 
     // Retain the common typographic attachment height, extending it when ink
     // or strokes exceed an unusual font's ascender/descender metrics.
     base_top = FFMIN(base_top, group->base_bounds.y_min);
-    double base_bottom = group->base_bounds.y_max;
-    for (int i = 0; i < group->base_len; i++) {
-        GlyphInfo *root = &text->glyphs[group->base_start + i];
-        if (root->skip)
-            continue;
-        for (GlyphInfo *info = root; info; info = info->next)
-            base_bottom = FFMAX(base_bottom,
-                                d6_to_double(info->pos.y + info->desc));
-    }
+    base_bottom = FFMAX(base_bottom, group->base_bounds.y_max);
 
     ASS_DRect *ann = &group->annotation_bounds;
     double minimum = FFMAX(1.0 / 64, FFMAX(group->auto_gap * 0.5,
@@ -7119,7 +7046,8 @@ static void position_furi_group(RenderContext *state, FuriGroup *group)
     // The same clearance constraint handles either side. Only ruby moves.
     dy = below ? FFMAX(dy, group->base_bounds.y_max + minimum - ann->y_min) :
                  FFMIN(dy, group->base_bounds.y_min - minimum - ann->y_max);
-    double dx = (base_left + base_right - furi_left - furi_right) / 2 +
+    double dx = (base_ink.x_min + base_ink.x_max -
+                 reading_ink.x_min - reading_ink.x_max) / 2 +
                 x2scr_offset(state, group->offset_x);
     shift_furi_group(group, double_to_d6(dx), double_to_d6(dy));
     group->below = below;
@@ -7256,9 +7184,14 @@ static void resolve_furi_group_collisions(RenderContext *state)
     if (count < 2 || !furi_reserves_space(text))
         return;
     FuriPlacement *p = calloc(count, sizeof(*p));
-    if (!p)
+    int32_t *spacing = calloc(count, sizeof(*spacing));
+    if (!p || !spacing) {
+        free(p);
+        free(spacing);
         return;
+    }
     for (int attempt = 0; attempt < count; attempt++) {
+        memset(spacing, 0, count * sizeof(*spacing));
         for (int i = 0; i < count; i++)
             position_furi_group(state, &text->furi_groups[i]);
         int n = collect_furi_placements(text, p);
@@ -7272,8 +7205,16 @@ static void resolve_furi_group_collisions(RenderContext *state)
                              p[i].left;
             if (overlap <= 0)
                 continue;
-            int32_t spacing = double_to_d6(overlap) + 1;
-            if (add_furi_spacing_before_group(state, group, p[i].line, spacing))
+            int owner = group->base_group;
+            spacing[owner] = FFMAX(spacing[owner], double_to_d6(overlap) + 1);
+        }
+        // The two sides share a base range. Reserve their maximum required
+        // spacing, rather than counting the same collision twice.
+        for (int i = 0; i < count; i++) {
+            FuriGroup *group = &text->furi_groups[i];
+            int line = text->glyphs[group->base_start].line;
+            if (spacing[i] && add_furi_spacing_before_group(state, group,
+                                                            line, spacing[i]))
                 resolved = true;
         }
         if (!resolved)
@@ -7281,6 +7222,7 @@ static void resolve_furi_group_collisions(RenderContext *state)
         reorder_text(state);
     }
     free(p);
+    free(spacing);
 }
 
 static void update_glyph_jitter_offsets(RenderContext *state)

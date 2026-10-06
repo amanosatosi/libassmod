@@ -1,5 +1,6 @@
 #include <limits.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,8 +69,18 @@ static bool load_test_font(void)
     return true;
 }
 
+static void test_message(int level, const char *format, va_list args, void *data)
+{
+    (void) data;
+    if (level <= 2) {
+        vfprintf(stderr, format, args);
+        fputc('\n', stderr);
+    }
+}
+
 static void add_test_font(ASS_Library *lib)
 {
+    ass_set_message_cb(lib, test_message, NULL);
     ass_add_font(lib, "font1.ttf", (const char *) test_font_data,
                  test_font_size);
 }
@@ -728,10 +739,22 @@ static int expect_ruby_geometry(const char *control, const char *ruby,
                                reading->y0 - base->y1;
         ok = !base->empty && !reading->empty && gap >= 1;
     }
-    if (!ok)
+    if (!ok) {
         fprintf(stderr, "::error title=ruby geometry::base stability/side/"
                 "clearance failed (err=%d runs=%d/%d): `%s` vs `%s`\n",
                 err, plain.count, annotated.count, control, ruby);
+        fprintf(stderr, "  expected stable=%d changed=%d\n", stable, changed);
+        for (int i = 0; i < plain.count; i++) {
+            Mask *m = &plain.runs[i];
+            fprintf(stderr, "  control[%d]=[%d,%d)x[%d,%d)\n",
+                    i, m->x0, m->x1, m->y0, m->y1);
+        }
+        for (int i = 0; i < annotated.count; i++) {
+            Mask *m = &annotated.runs[i];
+            fprintf(stderr, "  annotated[%d]=[%d,%d)x[%d,%d)\n",
+                    i, m->x0, m->x1, m->y0, m->y1);
+        }
+    }
     free_ruby_snapshot(&plain);
     free_ruby_snapshot(&annotated);
     return ok ? 0 : 1;
@@ -746,8 +769,14 @@ static int expect_ruby_gap(const char *text, int bases, int annotations)
         Mask *left = &snapshot.runs[i - 1], *right = &snapshot.runs[i];
         ok = !left->empty && !right->empty && right->x0 - left->x1 >= 1;
     }
-    if (!ok)
+    if (!ok) {
         fprintf(stderr, "::error title=ruby minimum gap::failed: `%s`\n", text);
+        for (int i = 0; i < snapshot.count; i++) {
+            Mask *m = &snapshot.runs[i];
+            fprintf(stderr, "  run[%d]=[%d,%d)x[%d,%d)\n",
+                    i, m->x0, m->x1, m->y0, m->y1);
+        }
+    }
     free_ruby_snapshot(&snapshot);
     return ok ? 0 : 1;
 }

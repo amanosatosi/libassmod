@@ -554,8 +554,6 @@ typedef struct {
     int max_glyphs;
     int style;
     int32_t base_width;
-    int32_t layout_width;
-    int32_t base_shift;
     double scale_x;
     double scale_y;
     double hspacing;
