@@ -177,26 +177,35 @@ static void stress(ASS_Library *lib, ASS_Renderer *fast, ASS_Renderer *reference
             CHECK(fast->repeated_event_stats.shapes == 1);
             CHECK(fast->repeated_event_stats.geometry == 1);
             CHECK(fast->repeated_event_stats.reuse_hits == EVENTS - 1);
-            CHECK(fast->repeated_event_stats.bitmap_lookups > 0);
-            CHECK(reference->repeated_event_stats.bitmap_lookups ==
-                  fast->repeated_event_stats.bitmap_lookups * EVENTS);
+            CHECK(fast->repeated_event_stats.glyph_bitmap_requests > 0);
+            CHECK(reference->repeated_event_stats.glyph_bitmap_requests ==
+                  fast->repeated_event_stats.glyph_bitmap_requests * EVENTS);
             CHECK(reference->repeated_event_stats.composite_lookups ==
                   fast->repeated_event_stats.composite_lookups * EVENTS);
+            CHECK(reference->repeated_event_stats.bitmap_constructions ==
+                  fast->repeated_event_stats.bitmap_constructions);
+            CHECK(reference->repeated_event_stats.composite_constructions ==
+                  fast->repeated_event_stats.composite_constructions);
             CHECK(fast->repeated_event_stats.memo_bytes <= 2 * MEGABYTE);
             CHECK(fast->repeated_event_stats.transparent_skips > 0);
             CHECK(fast->repeated_event_stats.images < reference->repeated_event_stats.images);
-            printf("backend=%d frame=%d shapes=%llu/%llu bitmaps=%llu/%llu "
-                   "composites=%llu/%llu images=%llu/%llu memo=%zu seconds=%.6f/%.6f\n",
+            printf("backend=%d frame=%d shapes=%llu/%llu glyph_bitmaps=%llu/%llu "
+                   "composites=%llu/%llu images=%llu/%llu memo=%zu seconds=%.6f/%.6f "
+                   "bitmap_builds=%llu/%llu composite_builds=%llu/%llu\n",
                    backend, frame,
                    (unsigned long long) reference->repeated_event_stats.shapes,
                    (unsigned long long) fast->repeated_event_stats.shapes,
-                   (unsigned long long) reference->repeated_event_stats.bitmap_lookups,
-                   (unsigned long long) fast->repeated_event_stats.bitmap_lookups,
+                   (unsigned long long) reference->repeated_event_stats.glyph_bitmap_requests,
+                   (unsigned long long) fast->repeated_event_stats.glyph_bitmap_requests,
                    (unsigned long long) reference->repeated_event_stats.composite_lookups,
                    (unsigned long long) fast->repeated_event_stats.composite_lookups,
                    (unsigned long long) reference->repeated_event_stats.images,
                    (unsigned long long) fast->repeated_event_stats.images,
-                   fast->repeated_event_stats.memo_bytes, reference_seconds, fast_seconds);
+                   fast->repeated_event_stats.memo_bytes, reference_seconds, fast_seconds,
+                   (unsigned long long) reference->repeated_event_stats.bitmap_constructions,
+                   (unsigned long long) fast->repeated_event_stats.bitmap_constructions,
+                   (unsigned long long) reference->repeated_event_stats.composite_constructions,
+                   (unsigned long long) fast->repeated_event_stats.composite_constructions);
             if (!backend && !frame) {
                 held = fast->images_root;
                 ass_frame_ref(held);
@@ -282,6 +291,11 @@ static void controls(ASS_Library *lib, ASS_Renderer *fast, ASS_Renderer *referen
     CHECK(!fast->repeated_geometry);
     compare_frame(fast, reference, track, 500, false);
     CHECK(fast->repeated_event_stats.reuse_hits == 1);
+    ass_set_cache_limits(fast, 1, 1);
+    CHECK(!fast->repeated_geometry);
+    compare_frame(fast, reference, track, 500, false);
+    CHECK(fast->repeated_event_stats.memo_bytes <= fast->cache.composite_max_size / 16);
+    ass_set_cache_limits(fast, 0, 0);
     ass_free_track(track);
 }
 

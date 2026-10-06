@@ -992,7 +992,8 @@ struct ass_renderer {
     bool debug_disable_event_reuse;
     bool debug_keep_transparent_images;
     struct {
-        uint64_t shapes, geometry, bitmap_lookups, composite_lookups;
+        uint64_t shapes, geometry, glyph_bitmap_requests, composite_lookups;
+        uint64_t bitmap_constructions, composite_constructions;
         uint64_t reuse_hits, images, transparent_skips;
         size_t memo_bytes;
     } repeated_event_stats;

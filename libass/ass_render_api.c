@@ -528,6 +528,7 @@ int ass_fonts_update(ASS_Renderer *render_priv)
 void ass_set_cache_limits(ASS_Renderer *render_priv, int glyph_max,
                           int bitmap_max)
 {
+    ass_clear_repeated_geometry(render_priv);
     render_priv->cache.glyph_max = glyph_max ? glyph_max : GLYPH_CACHE_MAX;
 
     size_t bitmap_cache, composite_cache;

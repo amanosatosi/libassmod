@@ -4724,7 +4724,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                  ASS_DVector *offset, bool first, int flags)
 {
     ASS_Renderer *render_priv = state->renderer;
-    render_priv->repeated_event_stats.bitmap_lookups++;
+    render_priv->repeated_event_stats.glyph_bitmap_requests++;
 
     OutlineHashValue *outline = info->distorted_outline ? info->distorted_outline : info->outline;
     bool distorted = info->distorted_outline && info->distort_enabled;
@@ -5044,6 +5044,7 @@ done:
 size_t ass_bitmap_construct(void *key, void *value, void *priv)
 {
     RenderContext *state = priv;
+    state->renderer->repeated_event_stats.bitmap_constructions++;
     BitmapHashKey *k = key;
     Bitmap *bm = value;
 
@@ -9711,6 +9712,7 @@ int ass_be_padding(int be)
 
 size_t ass_composite_construct(void *key, void *value, void *priv)
 {
+    ((ASS_Renderer *) priv)->repeated_event_stats.composite_constructions++;
     ASS_Renderer *render_priv = priv;
     CompositeHashKey *k = key;
     CompositeHashValue *v = value;
