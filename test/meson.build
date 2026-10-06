@@ -218,6 +218,16 @@ mangetsu_motion_scale_unit = executable(
 # where the test links against libass internals; shared Windows exports only
 # the public libass ABI.
 if get_option('default_library') != 'shared'
+    repeated_event_render_unit = executable('repeated_event_render_unit',
+        files('repeated_event_render_selftest.c'),
+        include_directories: incs, dependencies: deps,
+        link_with: libass_for_tools, install: false)
+    test('repeated-paint-event-render', repeated_event_render_unit,
+        args: [
+            join_paths(meson.current_source_dir(), 'fonts', 'decoration-primary-a.ttf'),
+            join_paths(meson.current_source_dir(), 'fonts', 'decoration-primary-b.ttf'),
+            join_paths(meson.current_source_dir(), 'fonts', 'decoration-fallback.ttf'),
+        ], timeout: 180)
     native_vertical_layout_unit = executable(
         'native_vertical_layout_unit',
         files('native_vertical_layout_selftest.c'),

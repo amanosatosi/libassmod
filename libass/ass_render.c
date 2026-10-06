@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <float.h>
+#include <stddef.h>
 
 #ifdef CONFIG_UNIBREAK
 #include <linebreak.h>
@@ -404,6 +405,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
 
+    ass_clear_repeated_geometry(render_priv);
     ass_cache_done(render_priv->cache.composite_cache);
     ass_cache_done(render_priv->cache.bitmap_cache);
     ass_cache_done(render_priv->cache.outline_cache);
@@ -459,6 +461,7 @@ static ASS_Image *my_draw_bitmap(ASS_Renderer *render_priv,
     if (!img)
         return NULL;
 
+    render_priv->repeated_event_stats.images++;
     img->result.w = bitmap_w;
     img->result.h = bitmap_h;
     img->result.stride = stride;
@@ -692,6 +695,29 @@ static inline void sample_tag_image(const ASS_TagImageEntry *img, int x, int y,
 static bool render_layer_uses_image(const CombinedBitmapInfo *info, int layer)
 {
     return layer >= 0 && layer < 4 && info->image_fill.layer[layer].enabled;
+}
+
+static bool skip_transparent_paint(RenderContext *state,
+                                   const CombinedBitmapInfo *info,
+                                   uint32_t color, int layer)
+{
+    if (state->renderer->debug_keep_transparent_images || _a(color) != 255)
+        return false;
+    /* Alpha gradients replace solid alpha. Leave extended paint paths alone;
+     * legacy placeholders may also carry visible RGBA image/pattern output. */
+    if (info && (layer < 0 || layer >= 4 ||
+        info->gradient.layer[layer].color_enabled ||
+        info->gradient.layer[layer].alpha_enabled ||
+        info->mangetsu_gradient.layer[layer].active ||
+        info->mangetsu_gradient.alpha[layer].active ||
+        info->pattern.has_cycle || info->pattern.propagate_polka ||
+        info->pattern.polka_face[0].has_color ||
+        info->pattern.polka_face[1].has_color ||
+        info->pattern.polka_face[2].has_color ||
+        render_layer_uses_image(info, layer)))
+        return false;
+    state->renderer->repeated_event_stats.transparent_skips++;
+    return true;
 }
 
 static uint32_t secondary_outline_color(const CombinedBitmapInfo *info)
@@ -1136,6 +1162,9 @@ static ASS_Image **render_vertical_karaoke_rect(RenderContext *state,
             part.y0 = FFMAX(part.y0, brk);
         if (part.y1 <= part.y0)
             continue;
+        if (skip_transparent_paint(state, combined, half ? color2 : color,
+                                  half ? layer2 : layer1))
+            continue;
         int w = part.x1 - part.x0, h = part.y1 - part.y0;
         int stride = bm->stride;
         unsigned char *buffer = bm->buffer +
@@ -1194,6 +1223,9 @@ static ASS_Image **render_curved_karaoke_rect(RenderContext *state,
     int w = rect.x1 - rect.x0, h = rect.y1 - rect.y0;
     for (int half = 0; half < 2; half++) {
         if (half ? high < 0 : low >= 0)
+            continue;
+        if (skip_transparent_paint(state, combined, half ? color2 : color,
+                                  half ? layer2 : layer1))
             continue;
         bool masked = half ? low < 0 : high >= 0;
         int stride = bm->stride;
@@ -1376,7 +1408,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             if (r[j].x1 <= r[j].x0 || r[j].y1 <= r[j].y0)
                 continue;
             // split up into left and right for karaoke, if needed
-            if (lbrk > r[j].x0) {
+            if (lbrk > r[j].x0 &&
+                !skip_transparent_paint(state, combined, color, layer1)) {
                 if (lbrk > r[j].x1) lbrk = r[j].x1;
                 int sub_w = lbrk - r[j].x0;
                 int sub_h = r[j].y1 - r[j].y0;
@@ -1414,7 +1447,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
                                      layer1, type));
                 }
             }
-            if (lbrk < r[j].x1) {
+            if (lbrk < r[j].x1 &&
+                !skip_transparent_paint(state, combined, color2, layer2)) {
                 if (lbrk < r[j].x0) lbrk = r[j].x0;
                 int sub_w = r[j].x1 - lbrk;
                 int sub_h = r[j].y1 - r[j].y0;
@@ -1559,7 +1593,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
             type, source, tail, rgba_tail, rgba_sub_x, rgba_sub_y);
     }
 
-    if (brk > b_x0) {           // draw left part
+    if (brk > b_x0 &&
+        !skip_transparent_paint(state, combined, color, layer1)) {
         if (brk > b_x1)
             brk = b_x1;
         int sub_w = brk - b_x0;
@@ -1598,7 +1633,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
                                  layer1, type));
         }
     }
-    if (brk < b_x1) {           // draw right part
+    if (brk < b_x1 &&
+        !skip_transparent_paint(state, combined, color2, layer2)) {
         if (brk < b_x0)
             brk = b_x0;
         int sub_w = b_x1 - brk;
@@ -4688,6 +4724,7 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
                  ASS_DVector *offset, bool first, int flags)
 {
     ASS_Renderer *render_priv = state->renderer;
+    render_priv->repeated_event_stats.bitmap_lookups++;
 
     OutlineHashValue *outline = info->distorted_outline ? info->distorted_outline : info->outline;
     bool distorted = info->distorted_outline && info->distort_enabled;
@@ -9481,6 +9518,7 @@ static void render_decoration_list_to_bitmaps(RenderContext *state,
 static void render_and_combine_glyphs(RenderContext *state)
 {
     ASS_Renderer *render_priv = state->renderer;
+    render_priv->repeated_event_stats.geometry++;
     TextInfo *text_info = &state->text_info;
     unsigned nb_bitmaps = 0;
     CombinedBitmapInfo *combined_info = text_info->combined_bitmaps;
@@ -9567,6 +9605,7 @@ static void render_and_combine_glyphs(RenderContext *state)
         key.filter = info->filter;
         key.bitmap_count = info->bitmap_count;
         key.bitmaps = info->bitmaps;
+        render_priv->repeated_event_stats.composite_lookups++;
         CompositeHashValue *val = ass_cache_get(render_priv->cache.composite_cache, &key, render_priv);
         if (!val)
             continue;
@@ -10887,7 +10926,7 @@ static void chat_hide_range(TextInfo *info, const ChatRange *range)
     }
 }
 
-static void chat_resolve_outer_clip(RenderContext *state)
+static void resolve_event_clip(RenderContext *state)
 {
     ASS_Renderer *priv = state->renderer;
     if (state->explicit || !priv->settings.use_margins) {
@@ -11209,7 +11248,7 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
             chat_hide_range(info, &ranges[i]);
     }
 
-    chat_resolve_outer_clip(state);
+    resolve_event_clip(state);
     state->chat_clip_y0 = (int) ceil(viewport_top);
     state->chat_clip_y1 = (int) floor(viewport_bottom);
     state->chat_visible = visible;
@@ -11345,6 +11384,8 @@ static void release_chat_scene(ASS_ChatScene *scene, bool cached)
         ass_chat_free(scene);
 }
 
+#include "ass_event_reuse.h"
+
 /**
  * \brief Main ass rendering function, glues everything together
  * \param event event to render
@@ -11416,11 +11457,21 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     split_style_runs(state);
     ass_vertical_mark_syllables(state);
 
+    if (repeated_geometry_lookup(state)) {
+        resolve_event_clip(state);
+        repeated_geometry_render(state, event_images, rgba_out);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return true;
+    }
+
     // Find shape runs and shape text
     ass_shaper_set_base_direction(state->shaper,
             ass_resolve_base_direction(state->font_encoding));
     ass_shaper_find_runs(state->shaper, render_priv, text_info->glyphs,
             text_info->length);
+    render_priv->repeated_event_stats.shapes++;
     if (!ass_shaper_shape(state->shaper, text_info)) {
         ass_msg(render_priv->library, MSGL_ERR, "Failed to shape text");
         ass_shaper_cleanup(state->shaper, text_info);
@@ -11771,37 +11822,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     update_glyph_jitter_offsets(state);
 
-    // fix clip coordinates
-    if (state->explicit || !render_priv->settings.use_margins) {
-        ASS_DRect clip = clip_rectangle(state);
-        state->clip_x0 =
-            clip_screen_coord(state, x2scr_pos_scaled(render_priv, clip.x_min));
-        state->clip_x1 =
-            clip_screen_coord(state, x2scr_pos_scaled(render_priv, clip.x_max));
-        state->clip_y0 =
-            clip_screen_coord(state, y2scr_pos(render_priv, clip.y_min));
-        state->clip_y1 =
-            clip_screen_coord(state, y2scr_pos(render_priv, clip.y_max));
-
-        if (state->explicit) {
-            // we still need to clip against screen boundaries
-            int zx = render_priv->settings.left_margin;
-            int zy = render_priv->settings.top_margin;
-            int sx = zx + render_priv->frame_content_width;
-            int sy = zy + render_priv->frame_content_height;
-
-            state->clip_x0 = FFMAX(state->clip_x0, zx);
-            state->clip_y0 = FFMAX(state->clip_y0, zy);
-            state->clip_x1 = FFMIN(state->clip_x1, sx);
-            state->clip_y1 = FFMIN(state->clip_y1, sy);
-        }
-    } else {
-        // no \clip (explicit==0) and use_margins => only clip to screen with margins
-        state->clip_x0 = 0;
-        state->clip_y0 = 0;
-        state->clip_x1 = render_priv->settings.frame_width;
-        state->clip_y1 = render_priv->settings.frame_height;
-    }
+    resolve_event_clip(state);
 
     if (state->evt_type & EVENT_VSCROLL) {
         int y0 = lround(y2scr_pos(render_priv, state->scroll_y0));
@@ -11874,6 +11895,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     bool want_rgba = rgba_out != NULL;
     event_images->needs_rgba = state->needs_rgba;
     event_images->imgs_rgba = NULL;
+    repeated_geometry_store(state, event_images);
     ASS_ImageRGBA **rgba_ptr = want_rgba ? &event_images->imgs_rgba : NULL;
     event_images->imgs = render_text(state, rgba_ptr);
 
@@ -11944,6 +11966,9 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
         return false;
 
     render_priv->track = track;
+    ass_clear_repeated_geometry(render_priv);
+    memset(&render_priv->repeated_event_stats, 0,
+           sizeof(render_priv->repeated_event_stats));
     render_priv->time = now;
     render_priv->frame_needs_rgba = false;
     render_priv->rgba_output_limit_hit = false;

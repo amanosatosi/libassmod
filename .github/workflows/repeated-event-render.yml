@@ -1,0 +1,36 @@
+name: Repeated event rendering
+on:
+  push:
+    branches: [mangetsu]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  repeated-event-render:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [release, sanitized]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config nasm libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev
+      - name: Configure
+        run: |
+          if [ '${{ matrix.mode }}' = sanitized ]; then
+            meson setup build -Dtest=enabled -Ddefault_library=static --buildtype=debug -Db_sanitize=address,undefined
+          else
+            meson setup build -Dtest=enabled -Ddefault_library=static --buildtype=release
+          fi
+      - name: Build
+        run: meson compile -C build
+      - name: Run deterministic rendering checks
+        run: meson test -C build repeated-paint-event-render --verbose --print-errorlogs
+      - name: Save diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repeated-event-render-${{ matrix.mode }}
+          path: build/meson-logs/testlog.txt

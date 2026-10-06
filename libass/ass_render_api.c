@@ -34,6 +34,7 @@ static void ass_reconfigure(ASS_Renderer *priv)
     ASS_Settings *settings = &priv->settings;
 
     priv->render_id++;
+    ass_clear_repeated_geometry(priv);
     ass_cache_empty(priv->cache.composite_cache);
     ass_cache_empty(priv->cache.bitmap_cache);
     ass_cache_empty(priv->cache.outline_cache);

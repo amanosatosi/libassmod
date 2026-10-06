@@ -987,6 +987,15 @@ struct ass_renderer {
 
     ASS_Style user_override_style;
     bool debug_fail_next_owned_image_allocation;
+    /* Private, frame-local diagnostics and reference-path controls. */
+    struct repeated_event_geometry *repeated_geometry;
+    bool debug_disable_event_reuse;
+    bool debug_keep_transparent_images;
+    struct {
+        uint64_t shapes, geometry, bitmap_lookups, composite_lookups;
+        uint64_t reuse_hits, images, transparent_skips;
+        size_t memo_bytes;
+    } repeated_event_stats;
 };
 
 typedef struct render_priv {
@@ -1058,6 +1067,7 @@ const ASS_TagImageEntry *ass_lookup_tag_image(ASS_Renderer *priv,
                                               ASS_StringView path);
 void ass_clear_tag_images_internal(ASS_Renderer *priv);
 void ass_debug_fail_next_owned_image_allocation(ASS_Renderer *priv);
+void ass_clear_repeated_geometry(ASS_Renderer *priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on
 void ass_lazy_track_init(ASS_Library *lib, ASS_Track *track);
