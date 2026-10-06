@@ -922,6 +922,12 @@ static int test_ruby_geometry(void)
     fail |= expect_ruby_gap(
         "{\\pos(192,108)\\bord0\\shad0\\furis30}<W|MMMM>"
         "{\\furis80}<W|MMMM>{\\furis50}<W|MM>", 1, 3);
+    // Unequal overhang can reverse the initial annotation left edges. The
+    // collision solver must retain visual base order in both directions.
+    fail |= expect_ruby_gap(
+        "{\\pos(192,108)\\bord0\\shad0}<W|M><W|MMMMMM>", 1, 2);
+    fail |= expect_ruby_gap(
+        "{\\pos(192,108)\\bord0\\shad0}<W|MMMMMM><W|M>", 1, 2);
     // An odd sidecar count forces reallocation while appending a gyaku run.
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0}WWWWW",

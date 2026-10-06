@@ -7066,7 +7066,7 @@ typedef struct {
     int group;
     int line;
     bool below;
-    double left, right, gap;
+    double left, right, gap, base_center;
     double prefix, target;
     int members, previous;
 } FuriPlacement;
@@ -7078,6 +7078,10 @@ static int compare_furi_placement(const void *a, const void *b)
         return pa->line < pb->line ? -1 : 1;
     if (pa->below != pb->below)
         return pa->below ? 1 : -1;
+    // Overhang can put a later wide reading's left edge before an earlier
+    // narrow one. Preserve visual base order instead of swapping readings.
+    if (pa->base_center != pb->base_center)
+        return pa->base_center < pb->base_center ? -1 : 1;
     if (pa->left != pb->left)
         return pa->left < pb->left ? -1 : 1;
     return pa->group - pb->group;
@@ -7095,6 +7099,7 @@ static int collect_furi_placements(TextInfo *text, FuriPlacement *placements)
             .below = group->below,
             .left = group->annotation_bounds.x_min,
             .right = group->annotation_bounds.x_max,
+            .base_center = (group->base_bounds.x_min + group->base_bounds.x_max) / 2,
             .gap = FFMAX(1.0 / 64, FFMAX(group->auto_gap,
                 (group->annotation_bounds.y_max -
                  group->annotation_bounds.y_min) * 0.08)),

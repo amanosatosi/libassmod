@@ -181,8 +181,8 @@ approach too closely, Mangetsu measures their occupied bounds, including
 overhang, strokes and shadows, separately on each side of each visual line.
 The occupied bounds include the rasterizer's antialias fringe so mathematically
 separate outlines also retain visible separation. It moves annotations by the
-smallest total squared displacement from their
-centered positions that maintains a small size-scaled horizontal gap. Base
+smallest total squared displacement from their centered positions that maintains
+a small size-scaled horizontal gap and preserves visual base-group order. Base
 advances and positions stay unchanged with `\furichangepos0`. With
 `\furichangepos1`, the older base-spacing path is also available.
 `\furistyle2` retains its explicitly requested manga-style X-fit: furigana
