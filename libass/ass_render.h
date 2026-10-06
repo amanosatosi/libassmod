@@ -535,6 +535,19 @@ typedef struct {
 typedef struct {
     int base_start;
     int base_len;
+    int base_group;
+    /* One sidecar per annotation, sharing the same base range. A gyaku
+     * sidecar uses the ordinary shaping/style/bitmap path, on the other side.
+     * Only the owning sidecar maps internal reading karaoke onto the base. */
+    bool owns_base;
+    bool opposite_side;
+    bool place_auto;
+    bool change_pos;
+    bool below;
+    bool geometry_valid;
+    ASS_DRect base_bounds;
+    ASS_DRect annotation_bounds;
+    double placement_gap;
     GlyphInfo *glyphs;
     FriBidiChar *event_text;
     int length;
@@ -777,6 +790,8 @@ struct render_context {
     double furi_offset_y;
     bool furi_auto_placement;
     bool furi_position_explicit;
+    bool furi_place_auto;
+    bool furi_change_pos;
     double border_x;            // outline width
     double border_y;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];

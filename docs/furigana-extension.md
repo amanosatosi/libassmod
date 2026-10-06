@@ -4,15 +4,36 @@ This fork supports an experimental native furigana syntax in normal event text:
 
 ```ass
 <base|furi>
+<base|furi|gyaku-furi>
+<base||gyaku-furi>
 ```
 
 Furigana parsing is enabled by default. A text sequence is treated as furigana
-only if it is an angle-bracket group containing an unescaped pipe. Angle-bracket
-text without a pipe, such as `<cool>` or `<dramatic>`, remains literal text.
+only if it is an angle-bracket group containing exactly **one or two valid,
+unescaped field separators** (`|`) outside ASS override blocks. Angle brackets
+alone do not activate furigana. `<test>` and `<{\c&H3535C5&}test>` remain ordinary
+ASS text: the angle brackets are visible, and the color override executes
+normally. Pipes inside `{...}` are not field separators.
 
-Malformed groups are rendered literally. Balanced override blocks are accepted
-inside a group for karaoke timing, but only karaoke tags in the reading side
-are interpreted. Other override tags should still be placed around the group.
+The base must contain text. Field 2 is ordinary furigana; optional field 3 is
+gyaku-furi, using the same font, shaping, size/scales, colors/alpha,
+outline/shadow, transforms and inherited Mangetsu properties, on the **opposite
+side** of the base. Field 2 may be empty when field 3 contains text. An empty
+third field is allowed (`<base|furi|>` is equivalent to `<base|furi>`). At least
+one annotation must contain text.
+
+Inside an angle-bracket candidate, `\|\` produces a literal pipe **before field
+splitting**. `<ABC\|\DEF|reading>` has base `ABC|DEF`, and `<ABC\|\DEF>` has no
+field separators and renders as ordinary `<ABC|DEF>`. This three-character
+escape is scoped to angle-bracket candidates; the existing Mangetsu escapes
+`\<`, `\>`, `\|` and `\\` remain supported.
+
+Malformed groups, including three or more real separators, remain ordinary ASS
+text, with normal override parsing. Balanced override blocks are accepted
+inside valid ruby for karaoke timing, but only karaoke tags in the reading are
+interpreted. Place other overrides around the whole group to inherit them on
+the base and both annotations. A group cannot contain a hard line break; place
+line breaks between groups.
 
 ## Karaoke timing
 
@@ -67,6 +88,11 @@ Here the 60-centisecond segment owns `か`, the matching second base region, and
 `ん`. Normal text without furigana continues to use the existing libass/VSFilter
 karaoke path unchanged.
 
+Both annotations use that same timeline. When both fields contain readings,
+field 2 owns the internal-karaoke mapping onto the base; field 3 renders its
+own timed segments without overwriting that mapping. For `<base||gyaku-furi>`,
+field 3 owns the mapping instead. Outer karaoke remains inherited by both.
+
 ## Tags
 
 ```ass
@@ -79,6 +105,10 @@ karaoke path unchanged.
 \furipos(x,y)
 \furiap1
 \furiap0
+\furiplaceauto0
+\furiplaceauto1
+\furichangepos0
+\furichangepos1
 \furistyle<N>
 ```
 
@@ -92,11 +122,13 @@ axes independently. The defaults are `\furis50`, `\furisx50`, and `\furisy50`.
 `\furifsp<N>` mirrors ASS `\fsp`, but applies only to furigana text. The default
 is 0.
 
-Automatic vertical placement is enabled by default. `\furiap1` enables it and
-`\furiap0` disables it. Automatic placement adds a small gap proportional to
-the base text size (currently 4% of the base font size) between the base run's
-typographic ascent and the visible bottom of its furigana. Disabling it uses
-the previous zero-added-gap placement.
+The existing `\furiap1` / `\furiap0` controls remain backward compatible. They
+control the additional automatic vertical gap, enabled by default (4% of the
+base font size). `\furiap0` removes that additional gap. Both settings retain a
+minimum visual clearance, based on the actual shaped base/annotation bounds
+and their sizes, even when a font's ascender or descender metrics are too tight.
+This older shorthand controls the gap; it is **not an alias** for the new
+two-line outward-placement tag.
 
 `\furipos(<x>,<y>)` selects manual placement and controls the furigana offset
 from centered placement. Positive y moves furigana upward; negative y moves it
@@ -106,15 +138,52 @@ of tag order: `\furiap1\furipos(0,3)` and `\furipos(0,3)\furiap1` produce the
 same manual placement. A parameterless `\furipos` clears the manual offset and
 returns subsequent groups to the active automatic-placement setting.
 
+Small negative Y offsets keep the reading above the base while moving it
+downward, subject to minimum clearance. A sufficiently negative Y offset
+selects the lower side. Gyaku-furi always uses the opposite side, with the same
+clearance system. Manual offsets never bypass the minimum visual clearance.
+
+`\furiplaceauto0` is the default. `\furiplaceauto1` selects outward ordinary
+furigana **only when the event has exactly two laid-out text lines**, including
+lines produced by wrapping: field 2 goes above the visual top line and below
+the visual bottom line. Field 3 always goes on the opposite side. One line and
+three or more lines retain normal placement, including `\furipos`. In the
+two-line case the automatic rule selects the side; manual X/Y offsets still
+apply, constrained to that side by visual clearance. These controls are
+captured per group and reset with `\r` like the other furigana properties.
+
+`\furichangepos0` is the default and keeps base text placement authoritative.
+Adding either annotation does not alter the base advances, line metrics,
+alignment anchor, `\pos` placement, or the block bounds used for ordinary ASS
+event collision placement. Ruby extends outward and its own geometry resolves
+spacing; it can extend outside the video at an edge just like other positioned
+content. For example, these put `漢字` at identical coordinates:
+
+```ass
+{\pos(640,500)}漢字
+{\pos(640,500)\furichangepos0}<漢字|かんじ>
+{\pos(640,500)\furichangepos0}<漢字|かんじ|KANJI>
+```
+
+`\furichangepos1` enables the older reserve-space behavior: upper and lower
+annotation overhang may enlarge line/block bounds, move base lines, and add
+spacing between base groups when annotations collide. It is an opt-in
+compatibility path. It does not change annotation shaping, opposite-side
+placement, minimum clearance or the two-line rule.
+
 `\furistyle<N>` controls horizontal group layout. The default is
 `\furistyle0`. `\furistyle0` and `\furistyle1` preserve the base text's normal
 shaped advance. Furigana is centered over the base by rendered glyph bounds
 and may freely overhang it horizontally; being wider than the base does not by
 itself add main-line spacing. Ordinary non-furigana text does not participate
 in ruby collision avoidance. If separately annotated furigana groups visually
-overlap, Mangetsu measures their positioned ink bounds and inserts only the
-additional space required between their base groups, repeating layout until
-the overlap is resolved. `\furistyle2` retains its manga-style X-fit: furigana
+approach too closely, Mangetsu measures their occupied bounds, including
+overhang, strokes and shadows, separately on each side of each visual line.
+It moves the annotations by the smallest total squared displacement from their
+centered positions that maintains a small size-scaled horizontal gap. Base
+advances and positions stay unchanged with `\furichangepos0`. With
+`\furichangepos1`, the older base-spacing path is also available.
+`\furistyle2` retains its explicitly requested manga-style X-fit: furigana
 wider than its base is horizontally shrunk to the base width, while shorter
 furigana keeps its normal width. The base advance is kept unchanged.
 
@@ -127,18 +196,25 @@ furigana keeps its normal width. The base advance is kept unchanged.
 {\furi1\furistyle0}<水鏡|みずかがみ><心誘う|こころいざなう>
 {\furi1\furistyle1}<水鏡|みずかがみ><心誘う|こころいざなう>
 {\furi1\furistyle2}<水鏡|みずかがみ><心誘う|こころいざなう>
+<漢字|かんじ|KANJI>
+<漢字||KANJI>
+<ABC\|\DEF|reading>
+{\furiplaceauto1}<上段|じょうだん>\N<下段|げだん>
+{\furichangepos1}<漢字|かんじ>
 ```
 
 Furigana is shaped and rendered as sidecar glyphs tied to the base glyph range.
 The base text remains the primary text for horizontal line layout and wrapping.
-Ruby is placed against the base run's typographic ascent rather than the
-visible top of a particular glyph, so short, descender-only, and tall glyphs
-all keep the same ruby height. The automatic gap adds separation above that
-typographic-ascent attachment point; it does not replace the font's own
-ascent-to-visible-glyph whitespace.
-After visual lines are resolved, furigana overhang above or below its base text
-is included in that line's vertical metrics. Multiple furigana groups on the
-same line use the maximum above and below extent, not the sum. Furigana may
-overhang its base text horizontally and is included in rendered event bounds,
-while styles 0 and 1 increase line advance only as needed to prevent separate
-furigana groups from visually overlapping.
+The existing typographic attachment height keeps short, descender-only and
+tall base glyphs aligned where possible. Shaped outline/stroke/shadow bounds
+extend that attachment when nominal metrics would violate visual clearance.
+Base and annotation geometry remain separate. Annotation bounds participate in
+rendering and effects; only groups with `\furichangepos1` contribute their
+overhang to line/block reservation. Multiple groups on a line reserve the
+maximum upper and lower overhang, rather than summing it.
+
+Regression coverage is in `test/furi_selftest.c` (`furi-extension` in Meson),
+with additional `furi-tight-ascent` and `furi-tight-descent` geometry runs using
+original fixture fonts whose ink exceeds their nominal metrics. GitHub Actions
+also runs these under AddressSanitizer/UndefinedBehaviorSanitizer in the
+Mangetsu furigana regression workflow. Builds are performed in CI.

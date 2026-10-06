@@ -3660,6 +3660,8 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->furi_offset_y = 0.0;
     state->furi_auto_placement = true;
     state->furi_position_explicit = false;
+    state->furi_place_auto = false;
+    state->furi_change_pos = false;
     state->be = 0;
     state->blur_x = style->Blur;
     state->blur_y = style->Blur;
@@ -5653,7 +5655,10 @@ static unsigned get_next_char_bounded(RenderContext *state, char **str, char *en
         return ' ';
     }
     if (*p == '\\' && p + 1 < end) {
-        if ((p[1] == 'N') || ((p[1] == 'n') &&
+        if (p + 2 < end && p[1] == '|' && p[2] == '\\') {
+            *str = p + 3;
+            return '|';
+        } else if ((p[1] == 'N') || ((p[1] == 'n') &&
                               (state->wrap_style == 2))) {
             p += 2;
             *str = p;
@@ -5897,34 +5902,6 @@ static bool append_glyph_to_target(RenderContext *state,
     return true;
 }
 
-static bool append_text_segment(RenderContext *state, char *start, char *end,
-                                GlyphInfo **glyphs,
-                                FriBidiChar **event_text,
-                                char **breaks,
-                                int *length,
-                                int *max_glyphs,
-                                bool is_furi,
-                                int furi_group)
-{
-    char *p = start;
-    while (p < end) {
-        unsigned code = get_next_char_bounded(state, &p, end);
-        if (!code)
-            break;
-        if (!append_glyph_to_target(state, glyphs, event_text, breaks,
-                                    length, max_glyphs, code,
-                                    (ASS_StringView) {NULL, 0},
-                                    is_furi, furi_group))
-            return false;
-
-        state->effect_type = EF_NONE;
-        state->effect_timing = 0;
-        state->effect_skip_timing = 0;
-        state->reset_effect = false;
-    }
-    return true;
-}
-
 static bool secondary_outline_equal(const KaraokeOutlinePaint *a,
                                     const KaraokeOutlinePaint *b)
 {
@@ -6120,6 +6097,8 @@ typedef struct {
     char *base_end;
     char *furi_start;
     char *furi_end;
+    char *gyaku_start;
+    char *gyaku_end;
     char *end;
 } FuriCandidate;
 
@@ -6129,31 +6108,6 @@ typedef enum {
     FURI_CANDIDATE_GROUP,
 } FuriCandidateType;
 
-static bool furi_override_has_karaoke(char *start, char *end)
-{
-    char *p = start;
-    while (p < end) {
-        while (ass_override_peek(&p, end) && *p != '\\')
-            p++;
-        if (p >= end)
-            break;
-        p++;
-        ass_override_spaces(&p, end);
-        if (p >= end)
-            break;
-        if (*p == 'K')
-            return true;
-        if (*p != 'k')
-            continue;
-        char next = p + 1 < end ? p[1] : '\0';
-        if (!next || next == '\\' || next == 'f' || next == 'o' ||
-                next == 'O' ||
-                next == 't' || next == '+' || next == '-' || next == '.' ||
-                (next >= '0' && next <= '9') || (unsigned char) next >= 0x80)
-            return true;
-    }
-    return false;
-}
 
 static bool furi_part_has_text(char *start, char *end)
 {
@@ -6175,64 +6129,54 @@ static FuriCandidateType parse_furi_candidate(char *p, FuriCandidate *candidate)
     if (*p != '<')
         return FURI_CANDIDATE_NONE;
 
-    char *pipe = NULL;
-    char *q = p + 1;
+    char *pipes[2] = {NULL, NULL};
+    int separators = 0;
     bool malformed = false;
-    while (*q) {
-        if (*q == '\\' && furi_escapes_char(q[1])) {
+    for (char *q = p + 1; *q; q++) {
+        if (*q == '\\' && q[1] == 'N')
+            malformed = true;
+        // Consume the entire literal-pipe escape before looking for fields.
+        if (*q == '\\' && q[1] == '|' && q[2] == '\\') {
             q += 2;
+            continue;
+        }
+        if (*q == '\\' && (furi_escapes_char(q[1]) ||
+                           q[1] == '{' || q[1] == '}')) {
+            q++;
             continue;
         }
         if (*q == '{') {
             char *close = strchr(q + 1, '}');
-            if (!close) {
-                malformed = true;
-                q++;
-                continue;
-            }
-            if (!furi_override_has_karaoke(q + 1, close))
-                malformed = true;
-            q = close + 1;
+            if (!close)
+                return FURI_CANDIDATE_NONE;
+            // Neither pipes nor angle brackets in an ASS override are syntax.
+            q = close;
             continue;
         }
-        if (*q == '<' || *q == '}')
+        if (*q == '<' || *q == '}' || *q == '\n' || *q == '\r')
             malformed = true;
         if (*q == '|') {
-            if (!pipe)
-                pipe = q;
-            else
-                malformed = true;
+            if (separators < 2)
+                pipes[separators] = q;
+            if (separators < 3)
+                separators++;
         } else if (*q == '>') {
-            candidate->base_start = p + 1;
-            candidate->base_end = pipe ? pipe : q;
-            candidate->furi_start = pipe ? pipe + 1 : q;
-            candidate->furi_end = q;
             candidate->end = q + 1;
-
-            if (!pipe)
+            if (malformed || separators < 1 || separators > 2)
                 return FURI_CANDIDATE_LITERAL;
-            if (candidate->base_start == candidate->base_end ||
-                    candidate->furi_start == candidate->furi_end ||
-                    !furi_part_has_text(candidate->base_start,
-                                        candidate->base_end) ||
-                    !furi_part_has_text(candidate->furi_start,
-                                        candidate->furi_end) ||
-                    malformed)
+            candidate->base_start = p + 1;
+            candidate->base_end = pipes[0];
+            candidate->furi_start = pipes[0] + 1;
+            candidate->furi_end = separators == 2 ? pipes[1] : q;
+            candidate->gyaku_start = separators == 2 ? pipes[1] + 1 : q;
+            candidate->gyaku_end = q;
+            if (!furi_part_has_text(candidate->base_start, candidate->base_end) ||
+                    (!furi_part_has_text(candidate->furi_start, candidate->furi_end) &&
+                     !furi_part_has_text(candidate->gyaku_start, candidate->gyaku_end)))
                 return FURI_CANDIDATE_LITERAL;
             return FURI_CANDIDATE_GROUP;
         }
-        q++;
     }
-
-    if (pipe) {
-        candidate->base_start = p;
-        candidate->base_end = q;
-        candidate->furi_start = q;
-        candidate->furi_end = q;
-        candidate->end = q;
-        return FURI_CANDIDATE_LITERAL;
-    }
-
     return FURI_CANDIDATE_NONE;
 }
 
@@ -6260,6 +6204,10 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
 
     int group_id = text_info->n_furi_groups - 1;
     group->base_start = text_info->length;
+    group->base_group = group_id;
+    group->owns_base = true;
+    group->place_auto = state->furi_place_auto;
+    group->change_pos = state->furi_change_pos;
     group->style = state->furi_style;
     group->scale_x = state->furi_scale_x;
     group->scale_y = state->furi_scale_y;
@@ -6285,11 +6233,33 @@ static bool append_furi_group(RenderContext *state, const FuriCandidate *candida
         info->furi_group = group_id;
     }
 
+    bool normal = furi_part_has_text(candidate->furi_start, candidate->furi_end);
+    bool gyaku = furi_part_has_text(candidate->gyaku_start, candidate->gyaku_end);
+    if (!normal) {
+        group->opposite_side = true;
+        return append_furi_reading(state, candidate->gyaku_start,
+                                    candidate->gyaku_end, group, group_id);
+    }
+
+    // Copy only configuration before filling either sidecar. Reallocation of
+    // the group array must not leave a stale pointer to the owning sidecar.
+    FuriGroup other = *group;
     if (!append_furi_reading(state, candidate->furi_start,
                              candidate->furi_end, group, group_id))
         return false;
-
-    return group->length > 0;
+    if (gyaku) {
+        group = append_new_furi_group(text_info);
+        if (!group)
+            return false;
+        *group = other;
+        group->owns_base = false;
+        group->opposite_side = true;
+        int other_id = text_info->n_furi_groups - 1;
+        if (!append_furi_reading(state, candidate->gyaku_start,
+                                 candidate->gyaku_end, group, other_id))
+            return false;
+    }
+    return true;
 }
 
 static int parse_column_tag_value(char *start, char *end)
@@ -6389,6 +6359,7 @@ static bool parse_event_fragment(RenderContext *state, char *p)
 {
     TextInfo *text_info = &state->text_info;
     char *q;
+    char *ordinary_angle_end = NULL;
 
     // Event parsing.
     while (true) {
@@ -6423,7 +6394,10 @@ static bool parse_event_fragment(RenderContext *state, char *p)
                 apply_column_cell_style(state);
                 p++;
             } else {
-                if (state->furi_enabled && !state->native_vertical && *p == '<') {
+                if (ordinary_angle_end && p >= ordinary_angle_end)
+                    ordinary_angle_end = NULL;
+                if (!ordinary_angle_end && state->furi_enabled &&
+                        !state->native_vertical && *p == '<') {
                     FuriCandidate candidate;
                     FuriCandidateType type = parse_furi_candidate(p, &candidate);
                     if (type == FURI_CANDIDATE_GROUP) {
@@ -6433,18 +6407,17 @@ static bool parse_event_fragment(RenderContext *state, char *p)
                         code = 0;
                         break;
                     } else if (type == FURI_CANDIDATE_LITERAL) {
-                        if (!append_text_segment(state, p, candidate.end,
-                                                 &text_info->glyphs,
-                                                 &text_info->event_text,
-                                                 &text_info->breaks,
-                                                 &text_info->length,
-                                                 &text_info->max_glyphs,
-                                                 false, -1))
-                            goto fail;
-                        p = candidate.end;
-                        code = 0;
-                        break;
+                        // Leave the whole candidate on the ordinary text path,
+                        // including normal override execution. Do not claim a
+                        // nested '<' in this rejected candidate as a new group.
+                        ordinary_angle_end = candidate.end;
                     }
+                }
+                if (ordinary_angle_end && p + 2 < ordinary_angle_end &&
+                        p[0] == '\\' && p[1] == '|' && p[2] == '\\') {
+                    code = '|';
+                    p += 3;
+                    break;
                 }
                 code = ass_get_next_char(state, &p);
                 break;
@@ -6984,35 +6957,7 @@ static bool furi_base_metrics(RenderContext *state, FuriGroup *group,
     return have && *left < *right;
 }
 
-static bool furi_text_metrics(FuriGroup *group, double *left,
-                              double *right, double *bottom)
-{
-    bool have = false;
-    *left = DBL_MAX;
-    *right = -DBL_MAX;
-    *bottom = -DBL_MAX;
 
-    for (int i = 0; i < group->length; i++) {
-        GlyphInfo *root = &group->glyphs[i];
-        if (root->skip)
-            continue;
-
-        double x0 = d6_to_double(root->pos.x);
-        // Center against inter-glyph spacing, not a trailing \furifsp pad.
-        int32_t advance = root->cluster_advance.x - root->hspacing_scaled;
-        double x1 = x0 + d6_to_double(advance);
-        *left = FFMIN(*left, FFMIN(x0, x1));
-        *right = FFMAX(*right, FFMAX(x0, x1));
-
-        for (GlyphInfo *info = root; info; info = info->next) {
-            double y1 = d6_to_double(info->pos.y + info->bbox.y_max);
-            *bottom = FFMAX(*bottom, y1);
-        }
-        have = true;
-    }
-
-    return have && *left < *right;
-}
 
 /*
  * Advances define the space a run occupies, but are not necessarily centred
@@ -7065,73 +7010,227 @@ static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
     return have && *left < *right;
 }
 
-static void position_furi_group(RenderContext *state, FuriGroup *group)
+/* Occupied outline/stroke/shadow bounds in event-local screen units. Keep
+ * these separate from base advances and typographic line metrics. Blur is a
+ * soft filter, not an attachment edge. No bitmap scan is needed. */
+static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
+                                  int length, ASS_DRect *bounds)
 {
-    double base_left, base_right, base_top, furi_left, furi_right, furi_bottom;
-    int line;
-    if (!furi_base_metrics(state, group, &base_left, &base_right,
-                           &base_top, &line))
-        return;
-    if (!furi_text_metrics(group, &furi_left, &furi_right, &furi_bottom) ||
-            !furi_base_visual_x_bounds(state, group, &base_left,
-                                       &base_right) ||
-            !furi_group_visual_x_bounds(group, &furi_left, &furi_right))
-        return;
-
-    double base_width = base_right - base_left;
-    double furi_width = furi_right - furi_left;
-    double target_left = base_left + (base_width - furi_width) / 2.0;
-
-    double dx = target_left - furi_left + x2scr_offset(state, group->offset_x);
-    double gap = 0.0;
-    if (!group->position_explicit && group->auto_placement)
-        gap = group->auto_gap;
-    double dy = base_top - furi_bottom - gap -
-        y2scr_offset(state, group->offset_y);
-    int32_t shift_x = double_to_d6(dx);
-    int32_t shift_y = double_to_d6(dy);
-
-    for (int i = 0; i < group->length; i++) {
-        for (GlyphInfo *info = &group->glyphs[i]; info; info = info->next) {
-            info->pos.x += shift_x;
-            info->pos.y += shift_y;
-            info->line = line;
+    *bounds = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+    for (int i = 0; i < length; i++) {
+        if (glyphs[i].skip)
+            continue;
+        for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
+            if (info->bbox.x_min >= info->bbox.x_max ||
+                    info->bbox.y_min >= info->bbox.y_max)
+                continue;
+            double x = d6_to_double(info->pos.x);
+            double y = d6_to_double(info->pos.y);
+            double bx = glyph_border_max_x(info) * state->border_scale_x /
+                        state->renderer->par_scale_x;
+            double by = glyph_border_max_y(info) * state->border_scale_y;
+            double sx = info->shadow_x * state->border_scale_x /
+                        state->renderer->par_scale_x;
+            double sy = info->shadow_y * state->border_scale_y;
+            bounds->x_min = FFMIN(bounds->x_min,
+                x + d6_to_double(info->bbox.x_min) - bx + FFMIN(0, sx));
+            bounds->x_max = FFMAX(bounds->x_max,
+                x + d6_to_double(info->bbox.x_max) + bx + FFMAX(0, sx));
+            bounds->y_min = FFMIN(bounds->y_min,
+                y + d6_to_double(info->bbox.y_min) - by + FFMIN(0, sy));
+            bounds->y_max = FFMAX(bounds->y_max,
+                y + d6_to_double(info->bbox.y_max) + by + FFMAX(0, sy));
         }
     }
+    return bounds->x_min < bounds->x_max && bounds->y_min < bounds->y_max;
 }
 
-static void position_furi_groups(RenderContext *state)
+static void shift_furi_group(FuriGroup *group, int32_t dx, int32_t dy)
 {
-    TextInfo *text_info = &state->text_info;
-    for (int i = 0; i < text_info->n_furi_groups; i++)
-        position_furi_group(state, &text_info->furi_groups[i]);
+    for (int i = 0; i < group->length; i++)
+        for (GlyphInfo *info = &group->glyphs[i]; info; info = info->next) {
+            info->pos.x += dx;
+            info->pos.y += dy;
+        }
+    group->annotation_bounds.x_min += d6_to_double(dx);
+    group->annotation_bounds.x_max += d6_to_double(dx);
+    group->annotation_bounds.y_min += d6_to_double(dy);
+    group->annotation_bounds.y_max += d6_to_double(dy);
+}
+
+static void position_furi_group(RenderContext *state, FuriGroup *group)
+{
+    TextInfo *text = &state->text_info;
+    double base_left, base_right, base_top, furi_left, furi_right;
+    int line;
+    group->geometry_valid = false;
+    if (!furi_base_metrics(state, group, &base_left, &base_right,
+                           &base_top, &line) ||
+            !furi_base_visual_x_bounds(state, group, &base_left, &base_right) ||
+            !furi_group_visual_x_bounds(group, &furi_left, &furi_right) ||
+            !furi_occupied_bounds(state, text->glyphs + group->base_start,
+                                   group->base_len, &group->base_bounds) ||
+            !furi_occupied_bounds(state, group->glyphs, group->length,
+                                   &group->annotation_bounds))
+        return;
+
+    // Retain the common typographic attachment height, extending it when ink
+    // or strokes exceed an unusual font's ascender/descender metrics.
+    base_top = FFMIN(base_top, group->base_bounds.y_min);
+    double base_bottom = group->base_bounds.y_max;
+    for (int i = 0; i < group->base_len; i++) {
+        GlyphInfo *root = &text->glyphs[group->base_start + i];
+        if (root->skip)
+            continue;
+        for (GlyphInfo *info = root; info; info = info->next)
+            base_bottom = FFMAX(base_bottom,
+                                d6_to_double(info->pos.y + info->desc));
+    }
+
+    ASS_DRect *ann = &group->annotation_bounds;
+    double minimum = FFMAX(1.0 / 64, FFMAX(group->auto_gap * 0.5,
+        (ann->y_max - ann->y_min) * FURI_AUTO_GAP_FACTOR));
+    double gap = !group->position_explicit && group->auto_placement ?
+                 group->auto_gap : 0.0;
+    double offset = y2scr_offset(state, group->offset_y);
+    // furipos remains an upward-positive offset from the upper attachment.
+    // A sufficiently negative offset selects the lower side; smaller negative
+    // offsets keep their legacy direction, with visual clearance enforced.
+    double dy = base_top - ann->y_max - gap - offset;
+    bool below = (ann->y_min + ann->y_max) / 2 + dy >
+                 (group->base_bounds.y_min + group->base_bounds.y_max) / 2;
+    if (group->place_auto && text->n_lines == 2) {
+        below = line == 1;
+        dy = below ? base_bottom - ann->y_min + gap - offset : dy;
+    }
+    double opposite_gap = FFMAX(0.0, below ? ann->y_min + dy - base_bottom :
+                                            base_top - ann->y_max - dy);
+    if (!group->owns_base) {
+        FuriGroup *owner = &text->furi_groups[group->base_group];
+        below = !owner->below;
+        opposite_gap = owner->placement_gap;
+        dy = below ? base_bottom + opposite_gap - ann->y_min :
+                     base_top - opposite_gap - ann->y_max;
+    } else if (group->opposite_side) {
+        below = !below;
+        dy = below ? base_bottom + opposite_gap - ann->y_min :
+                     base_top - opposite_gap - ann->y_max;
+    }
+    // The same clearance constraint handles either side. Only ruby moves.
+    dy = below ? FFMAX(dy, group->base_bounds.y_max + minimum - ann->y_min) :
+                 FFMIN(dy, group->base_bounds.y_min - minimum - ann->y_max);
+    double dx = (base_left + base_right - furi_left - furi_right) / 2 +
+                x2scr_offset(state, group->offset_x);
+    shift_furi_group(group, double_to_d6(dx), double_to_d6(dy));
+    group->below = below;
+    group->placement_gap = FFMAX(0.0, below ? ann->y_min - base_bottom :
+                                             base_top - ann->y_max);
+    group->geometry_valid = true;
+    for (int i = 0; i < group->length; i++)
+        for (GlyphInfo *info = &group->glyphs[i]; info; info = info->next)
+            info->line = line;
 }
 
 typedef struct {
     int group;
     int line;
-    double left;
-    double right;
+    bool below;
+    double left, right, gap;
+    double prefix, target;
+    int members, previous;
 } FuriPlacement;
 
 static int compare_furi_placement(const void *a, const void *b)
 {
-    const FuriPlacement *pa = a;
-    const FuriPlacement *pb = b;
+    const FuriPlacement *pa = a, *pb = b;
     if (pa->line != pb->line)
         return pa->line < pb->line ? -1 : 1;
+    if (pa->below != pb->below)
+        return pa->below ? 1 : -1;
     if (pa->left != pb->left)
         return pa->left < pb->left ? -1 : 1;
     return pa->group - pb->group;
+}
+
+static int collect_furi_placements(TextInfo *text, FuriPlacement *placements)
+{
+    int n = 0;
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        if (!group->geometry_valid)
+            continue;
+        placements[n++] = (FuriPlacement) {
+            .group = i, .line = text->glyphs[group->base_start].line,
+            .below = group->below,
+            .left = group->annotation_bounds.x_min,
+            .right = group->annotation_bounds.x_max,
+            .gap = FFMAX(1.0 / 64, FFMAX(group->auto_gap,
+                (group->annotation_bounds.y_max -
+                 group->annotation_bounds.y_min) * 0.08)),
+        };
+    }
+    qsort(placements, n, sizeof(*placements), compare_furi_placement);
+    return n;
+}
+
+static bool same_furi_band(const FuriPlacement *a, const FuriPlacement *b)
+{
+    return a->line == b->line && a->below == b->below;
+}
+
+/* Project centred annotation positions onto the minimum-gap constraints.
+ * Subtracting cumulative widths/gaps makes this an isotonic regression; the
+ * pooled adjacent violators sweep minimizes squared annotation displacement.
+ * Only sidecars move, in O(n log n) including sorting, without redoing base
+ * layout. Start afresh after final base transforms and line shifts. */
+static void position_furi_groups(RenderContext *state)
+{
+    TextInfo *text = &state->text_info;
+    for (int i = 0; i < text->n_furi_groups; i++)
+        position_furi_group(state, &text->furi_groups[i]);
+    if (text->n_furi_groups < 2)
+        return;
+    FuriPlacement *p = calloc(text->n_furi_groups, sizeof(*p));
+    if (!p)
+        return;
+    int n = collect_furi_placements(text, p);
+    for (int start = 0; start < n;) {
+        int end = start;
+        for (; end < n && same_furi_band(&p[start], &p[end]); end++) {
+            p[end].prefix = end == start ? 0 : p[end - 1].prefix +
+                p[end - 1].right - p[end - 1].left +
+                FFMAX(p[end - 1].gap, p[end].gap) + 1.0 / 32;
+            p[end].target = p[end].left - p[end].prefix;
+            p[end].members = 1;
+            p[end].previous = end == start ? -1 : end - 1;
+            int previous = p[end].previous;
+            while (previous >= start && p[previous].target > p[end].target) {
+                int members = p[previous].members + p[end].members;
+                p[end].target = (p[previous].target * p[previous].members +
+                    p[end].target * p[end].members) / members;
+                p[end].members = members;
+                p[end].previous = p[previous].previous;
+                previous = p[end].previous;
+            }
+        }
+        for (int block = end - 1; block >= start; block = p[block].previous)
+            for (int i = block - p[block].members + 1; i <= block; i++) {
+                double dx = p[block].target + p[i].prefix - p[i].left;
+                shift_furi_group(&text->furi_groups[p[i].group],
+                                  double_to_d6(dx), 0);
+            }
+        start = end;
+    }
+    free(p);
 }
 
 static bool add_furi_spacing_before_group(RenderContext *state,
                                           FuriGroup *group, int line,
                                           int32_t spacing)
 {
-    TextInfo *text_info = &state->text_info;
+    TextInfo *text = &state->text_info;
     for (int i = group->base_start - 1; i >= 0; i--) {
-        GlyphInfo *root = &text_info->glyphs[i];
+        GlyphInfo *root = &text->glyphs[i];
         if (root->skip || root->line != line)
             continue;
         root->cluster_advance.x += spacing;
@@ -7140,71 +7239,48 @@ static bool add_furi_spacing_before_group(RenderContext *state,
     return false;
 }
 
-/*
- * Styles 0 and 1 initially keep each base run's normal shaped advance.  If
- * positioned ruby ink overlaps, add exactly that overlap before the
- * right-hand base group and redo the ordinary line layout.  Iterating keeps
- * chains of groups stable while preserving existing font spacing and line
- * alignment.  \\furistyle2 deliberately opts into compact manga-style layout.
- */
+static bool furi_reserves_space(TextInfo *text)
+{
+    for (int i = 0; i < text->n_furi_groups; i++)
+        if (text->furi_groups[i].change_pos)
+            return true;
+    return false;
+}
+
+/* The old reserve-space path is explicitly opt-in. Both annotation sides
+ * participate; default collision handling keeps base coordinates stable. */
 static void resolve_furi_group_collisions(RenderContext *state)
 {
-    TextInfo *text_info = &state->text_info;
-    int count = text_info->n_furi_groups;
-    if (count < 2)
+    TextInfo *text = &state->text_info;
+    int count = text->n_furi_groups;
+    if (count < 2 || !furi_reserves_space(text))
         return;
-
-    FuriPlacement *placements = calloc(count, sizeof(*placements));
-    if (!placements)
+    FuriPlacement *p = calloc(count, sizeof(*p));
+    if (!p)
         return;
-
-    int attempts = count * count;
-    while (attempts-- > 0) {
-        position_furi_groups(state);
-
-        int n = 0;
-        for (int i = 0; i < count; i++) {
-            FuriGroup *group = &text_info->furi_groups[i];
-            double base_left, base_right, base_top;
-            int line;
-            if (!furi_base_metrics(state, group, &base_left, &base_right,
-                                   &base_top, &line) ||
-                    !furi_group_visual_x_bounds(group, &placements[n].left,
-                                                 &placements[n].right))
-                continue;
-            placements[n].group = i;
-            placements[n].line = line;
-            n++;
-        }
-
-        qsort(placements, n, sizeof(*placements), compare_furi_placement);
+    for (int attempt = 0; attempt < count; attempt++) {
+        for (int i = 0; i < count; i++)
+            position_furi_group(state, &text->furi_groups[i]);
+        int n = collect_furi_placements(text, p);
         bool resolved = false;
         for (int i = 1; i < n; i++) {
-            FuriPlacement *left = &placements[i - 1];
-            FuriPlacement *right = &placements[i];
-            if (left->line != right->line || left->right <= right->left)
+            FuriGroup *group = &text->furi_groups[p[i].group];
+            if (!same_furi_band(&p[i - 1], &p[i]) ||
+                    !group->change_pos || group->style == 2)
                 continue;
-
-            FuriGroup *group = &text_info->furi_groups[right->group];
-            if (group->style == 2)
+            double overlap = p[i - 1].right + FFMAX(p[i - 1].gap, p[i].gap) -
+                             p[i].left;
+            if (overlap <= 0)
                 continue;
-            int32_t spacing = double_to_d6(left->right - right->left);
-            if (spacing <= 0)
-                spacing = 1;
-            if (!add_furi_spacing_before_group(state, group, right->line,
-                                               spacing))
-                continue;
-
-            reorder_text(state);
-            resolved = true;
-            break;
+            int32_t spacing = double_to_d6(overlap) + 1;
+            if (add_furi_spacing_before_group(state, group, p[i].line, spacing))
+                resolved = true;
         }
         if (!resolved)
             break;
+        reorder_text(state);
     }
-
-    position_furi_groups(state);
-    free(placements);
+    free(p);
 }
 
 static void update_glyph_jitter_offsets(RenderContext *state)
@@ -7245,7 +7321,8 @@ static int compare_furi_karaoke_region(const void *a, const void *b)
 static bool prepare_furi_karaoke_regions(TextInfo *text_info,
                                          FuriGroup *group)
 {
-    if (!group->has_internal_karaoke || !text_info->n_karaoke_segments)
+    if (!group->owns_base || !group->has_internal_karaoke ||
+            !text_info->n_karaoke_segments)
         return true;
 
     int count = text_info->n_karaoke_segments;
@@ -7551,7 +7628,7 @@ static bool furi_group_visual_bbox(FuriGroup *group,
 static bool expand_furi_line_metrics(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
-    if (!text_info->n_furi_groups)
+    if (!furi_reserves_space(text_info))
         return true;
 
     double *old_baselines = calloc(text_info->n_lines, sizeof(*old_baselines));
@@ -7572,21 +7649,21 @@ static bool expand_furi_line_metrics(RenderContext *state)
 
     for (int i = 0; i < text_info->n_furi_groups; i++) {
         FuriGroup *group = &text_info->furi_groups[i];
-        int line = 0;
-        double base_left, base_right, base_top;
-        double furi_top, furi_bottom;
-        if (!furi_base_metrics(state, group, &base_left, &base_right,
-                               &base_top, &line))
+        if (!group->change_pos || !group->geometry_valid)
             continue;
+        int line = text_info->glyphs[group->base_start].line;
         if (line < 0 || line >= text_info->n_lines)
             continue;
-        if (!furi_group_visual_bbox(group, &furi_top, &furi_bottom))
+        double top, bottom;
+        if (!furi_group_visual_bbox(group, &top, &bottom))
             continue;
-
-        // Per visual line, reserve the maximum furi overhang relative to
-        // the base text top. Do not accumulate multiple groups on a line.
-        above[line] = FFMAX(above[line], FFMAX(0.0, base_top - furi_top));
-        below[line] = FFMAX(below[line], FFMAX(0.0, furi_bottom - base_top));
+        top = FFMIN(top, group->annotation_bounds.y_min);
+        bottom = FFMAX(bottom, group->annotation_bounds.y_max);
+        double baseline = d6_to_double(text_info->glyphs[group->base_start].pos.y);
+        above[line] = FFMAX(above[line], FFMAX(0.0,
+            baseline - text_info->lines[line].asc - top));
+        below[line] = FFMAX(below[line], FFMAX(0.0,
+            bottom - baseline - text_info->lines[line].desc));
     }
 
     for (int i = 0; i < text_info->n_lines; i++) {
@@ -8309,7 +8386,6 @@ static void calculate_rotation_params(RenderContext *state, ASS_DRect *bbox,
                                        device_x, device_y);
     }
 }
-
 
 static int quantize_blur(double radius, int32_t *shadow_mask)
 {
@@ -11630,8 +11706,10 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         compute_warp_text_bbox(text_info, &warp_text_bbox);
     int warp_alignment = state->warp_text_alignment ?
         numpad2align(state->warp_text_alignment) : state->alignment;
-    ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : &render_bbox;
-    ASS_DRect *bbox_for_position = &render_bbox;
+    bool reserve_furi = furi_reserves_space(text_info);
+    ASS_DRect *placement_bbox = reserve_furi ? &render_bbox : &bbox;
+    ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : placement_bbox;
+    ASS_DRect *bbox_for_position = placement_bbox;
     ASS_DVector object_anchor = {0};
 
     // determine device coordinates for text
@@ -11876,7 +11954,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the
     // frame, so negative values for top and left may occur
-    if (curved_text || text_info->n_furi_groups) {
+    if (curved_text || reserve_furi) {
         event_images->top = device_y + render_bbox.y_min - text_info->border_top;
         event_images->height =
             render_bbox.y_max - render_bbox.y_min +
@@ -11887,9 +11965,9 @@ ass_render_event(RenderContext *state, ASS_Event *event,
             text_info->height + text_info->border_bottom + text_info->border_top;
     }
     event_images->left =
-        (device_x + render_bbox.x_min) * render_priv->par_scale_x - text_info->border_x + 0.5;
+        (device_x + placement_bbox->x_min) * render_priv->par_scale_x - text_info->border_x + 0.5;
     event_images->width =
-        (render_bbox.x_max - render_bbox.x_min) * render_priv->par_scale_x
+        (placement_bbox->x_max - placement_bbox->x_min) * render_priv->par_scale_x
         + 2 * text_info->border_x + 0.5;
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;

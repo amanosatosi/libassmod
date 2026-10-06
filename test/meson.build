@@ -288,6 +288,16 @@ test('furi-extension', furi_unit,
         meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
     timeout: 120,
 )
+foreach fixture : ['ascent', 'descent']
+    test('furi-tight-' + fixture, furi_unit,
+        args: ['--geometry-only'],
+        env: {
+            'FURI_TEST_FONT': join_paths(meson.current_source_dir(), 'fonts',
+                'furi-tight-' + fixture + '.ttf'),
+            'FURI_TEST_FAMILY': 'Furi Tight ' + (fixture == 'ascent' ? 'Ascent' : 'Descent'),
+        },
+        timeout: 120)
+endforeach
 
 pattern_paint_unit = executable(
     'pattern_paint_unit',

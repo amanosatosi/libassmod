@@ -13,3 +13,10 @@ generator uses only the Python standard library and is not needed by CI.
 The different fallback cell height also detects scaling decoration metrics with
 the glyph face's scale. Advances and rectangle ink are normalized to the cell
 height, giving predictable probes for both simple and complex shaping.
+
+The same generator also creates two original ruby clearance fixtures (ISC):
+`furi-tight-ascent.ttf` has ascent/descent 250/750 but ink from 0 to 500;
+`furi-tight-descent.ttf` has ascent/descent 900/100 but ink from -400 to 100.
+Both use UPEM/cell height 1000 and cover space, W and M. The visible rectangle
+therefore exceeds one nominal vertical metric. The furigana geometry tests run
+with each family explicitly selected, covering both annotation sides.

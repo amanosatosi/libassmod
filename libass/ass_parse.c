@@ -3049,7 +3049,8 @@ static void process_karaoke_glyph_list(RenderContext *state,
 static void process_furi_base_karaoke(RenderContext *state,
                                       FuriGroup *group)
 {
-    if (!group->has_internal_karaoke || !group->n_karaoke_regions ||
+    if (!group->owns_base || !group->has_internal_karaoke ||
+            !group->n_karaoke_regions ||
             group->base_len <= 0 || group->base_width <= 0)
         return;
 
@@ -3912,6 +3913,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             } else {
                 state->soft_scale = 1.0;
             }
+        } else if (tag("furiplaceauto")) {
+            state->furi_place_auto = nargs && argtoi32(*args) != 0;
+        } else if (tag("furichangepos")) {
+            state->furi_change_pos = nargs && argtoi32(*args) != 0;
         } else if (complex_tag("furipos")) {
             if (!nargs) {
                 state->furi_offset_x = 0.0;

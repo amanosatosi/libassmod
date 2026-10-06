@@ -30,6 +30,9 @@ typedef struct {
 static unsigned char *test_font_data;
 static int test_font_size;
 
+static int expect_same(const char *a, const char *b);
+static int expect_different(const char *a, const char *b);
+
 static bool load_test_font(void)
 {
     const char *env = getenv("FURI_TEST_FONT");
@@ -90,11 +93,14 @@ static char *make_script(const char *text)
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,";
-    size_t len = strlen(prefix) + strlen(text) + 2;
+    const char *family = getenv("FURI_TEST_FAMILY");
+    if (!family)
+        family = "Arial";
+    size_t len = strlen(prefix) + strlen(family) + strlen(text) + 8;
     char *script = malloc(len);
     if (!script)
         return NULL;
-    snprintf(script, len, "%s%s\n", prefix, text);
+    snprintf(script, len, "%s{\\fn%s}%s\n", prefix, family, text);
     return script;
 }
 
@@ -612,6 +618,280 @@ static int expect_same_base_span(const char *a, const char *b)
     return ok ? 0 : 1;
 }
 
+/* Character images retain base-run order followed by sidecar-run order. Use
+ * separate masks so inward ruby in a multiline case cannot hide a displaced
+ * base glyph in the union of all rendered pixels. These cases use no karaoke,
+ * clipping, border or shadow, and one visible image per shaped run. */
+typedef struct {
+    Mask runs[12];
+    uint32_t colors[12];
+    int count;
+} RubySnapshot;
+
+static void free_ruby_snapshot(RubySnapshot *snapshot)
+{
+    for (int i = 0; i < snapshot->count; i++)
+        free_mask(&snapshot->runs[i]);
+}
+
+static int render_ruby_snapshot(const char *text, RubySnapshot *snapshot)
+{
+    *snapshot = (RubySnapshot) {0};
+    ASS_Library *lib = ass_library_init();
+    ASS_Renderer *renderer = NULL;
+    ASS_Track *track = NULL;
+    char *script = NULL;
+    int ret = 1;
+    if (!lib)
+        goto done;
+    add_test_font(lib);
+    renderer = ass_renderer_init(lib);
+    if (!renderer)
+        goto done;
+    ass_set_storage_size(renderer, FRAME_W, FRAME_H);
+    ass_set_frame_size(renderer, FRAME_W, FRAME_H);
+    ass_set_fonts(renderer, NULL, "Arial",
+                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+    script = make_script(text);
+    if (!script)
+        goto done;
+    track = ass_read_memory(lib, script, strlen(script), NULL);
+    if (!track)
+        goto done;
+    int change = 0;
+    for (ASS_Image *img = ass_render_frame(renderer, track, 0, &change);
+         img; img = img->next) {
+        if (img->type != IMAGE_TYPE_CHARACTER || !img->w || !img->h)
+            continue;
+        if (snapshot->count == 12)
+            goto done;
+        Mask *mask = &snapshot->runs[snapshot->count];
+        snapshot->colors[snapshot->count++] = img->color;
+        mask->alpha = calloc(FRAME_W * FRAME_H, 1);
+        if (!mask->alpha)
+            goto done;
+        mask->x0 = FRAME_W;
+        mask->y0 = FRAME_H;
+        mask->empty = true;
+        for (int y = 0; y < img->h; y++) {
+            int yy = img->dst_y + y;
+            if (yy < 0 || yy >= FRAME_H)
+                continue;
+            for (int x = 0; x < img->w; x++) {
+                int xx = img->dst_x + x;
+                int value = img->bitmap[y * img->stride + x] *
+                            (255 - (img->color & 255)) / 255;
+                if (xx < 0 || xx >= FRAME_W || !value)
+                    continue;
+                mask->alpha[yy * FRAME_W + xx] = value;
+                mask->empty = false;
+                if (xx < mask->x0) mask->x0 = xx;
+                if (yy < mask->y0) mask->y0 = yy;
+                if (xx + 1 > mask->x1) mask->x1 = xx + 1;
+                if (yy + 1 > mask->y1) mask->y1 = yy + 1;
+            }
+        }
+    }
+    ret = 0;
+done:
+    free(script);
+    if (track) ass_free_track(track);
+    if (renderer) ass_renderer_done(renderer);
+    if (lib) ass_library_done(lib);
+    return ret;
+}
+
+static int expect_ruby_geometry(const char *control, const char *ruby,
+                                int bases, int annotations,
+                                const int *base_index, const int *side,
+                                bool stable)
+{
+    RubySnapshot plain = {0}, annotated = {0};
+    int err = render_ruby_snapshot(control, &plain);
+    if (!err)
+        err = render_ruby_snapshot(ruby, &annotated);
+    bool ok = !err && plain.count == bases &&
+              annotated.count == bases + annotations;
+    bool changed = false;
+    for (int i = 0; ok && i < bases; i++) {
+        bool same = same_mask(&plain.runs[i], &annotated.runs[i]);
+        changed |= !same;
+        if (stable && !same)
+            ok = false;
+    }
+    if (!stable)
+        ok = ok && changed;
+    for (int i = 0; ok && i < annotations; i++) {
+        Mask *base = &annotated.runs[base_index[i]];
+        Mask *reading = &annotated.runs[bases + i];
+        int gap = side[i] < 0 ? base->y0 - reading->y1 :
+                               reading->y0 - base->y1;
+        ok = !base->empty && !reading->empty && gap >= 1;
+    }
+    if (!ok)
+        fprintf(stderr, "::error title=ruby geometry::base stability/side/"
+                "clearance failed (err=%d runs=%d/%d): `%s` vs `%s`\n",
+                err, plain.count, annotated.count, control, ruby);
+    free_ruby_snapshot(&plain);
+    free_ruby_snapshot(&annotated);
+    return ok ? 0 : 1;
+}
+
+static int expect_ruby_gap(const char *text, int bases, int annotations)
+{
+    RubySnapshot snapshot = {0};
+    int err = render_ruby_snapshot(text, &snapshot);
+    bool ok = !err && snapshot.count == bases + annotations;
+    for (int i = bases + 1; ok && i < snapshot.count; i++) {
+        Mask *left = &snapshot.runs[i - 1], *right = &snapshot.runs[i];
+        ok = !left->empty && !right->empty && right->x0 - left->x1 >= 1;
+    }
+    if (!ok)
+        fprintf(stderr, "::error title=ruby minimum gap::failed: `%s`\n", text);
+    free_ruby_snapshot(&snapshot);
+    return ok ? 0 : 1;
+}
+
+static int expect_literal_color(void)
+{
+    Mask candidate = {0}, ordinary = {0}, uncolored = {0};
+    int err = render_mask_color("<{\\c&H3535C5&}test>", 0xC5353500u,
+                                &candidate);
+    if (!err)
+        err = render_mask_color("{\\furi0}<{\\c&H3535C5&}test>",
+                                 0xC5353500u, &ordinary);
+    if (!err)
+        err = render_mask_color("<test>", 0xC5353500u, &uncolored);
+    bool ok = !err && !candidate.empty && uncolored.empty &&
+              same_mask(&candidate, &ordinary);
+    if (!ok)
+        fprintf(stderr, "angle-bracket ASS color override did not execute\n");
+    free_mask(&candidate);
+    free_mask(&ordinary);
+    free_mask(&uncolored);
+    return ok ? 0 : 1;
+}
+
+static int expect_reading_style(const char *tags)
+{
+    char normal[256], gyaku[256];
+    snprintf(normal, sizeof(normal), "{\\pos(192,90)\\bord0\\shad0%s}<W|MMM>", tags);
+    snprintf(gyaku, sizeof(gyaku), "{\\pos(192,90)\\bord0\\shad0%s}<W||MMM>", tags);
+    RubySnapshot a = {0}, b = {0};
+    int err = render_ruby_snapshot(normal, &a);
+    if (!err)
+        err = render_ruby_snapshot(gyaku, &b);
+    bool ok = !err && a.count == 2 && b.count == 2;
+    if (ok) {
+        Mask *ma = &a.runs[1], *mb = &b.runs[1];
+        uint64_t ca = 0, cb = 0;
+        for (int i = 0; i < FRAME_W * FRAME_H; i++) {
+            ca += ma->alpha[i];
+            cb += mb->alpha[i];
+        }
+        ok = !ma->empty && !mb->empty && a.colors[1] == b.colors[1] &&
+             abs((ma->x1 - ma->x0) - (mb->x1 - mb->x0)) <= 1 &&
+             abs((ma->y1 - ma->y0) - (mb->y1 - mb->y0)) <= 1 &&
+             ca > 0 && cb > 0 && (ca > cb ? ca - cb : cb - ca) * 20 < ca;
+    }
+    if (!ok)
+        fprintf(stderr, "gyaku reading lost inherited style: `%s`\n", tags);
+    free_ruby_snapshot(&a);
+    free_ruby_snapshot(&b);
+    return ok ? 0 : 1;
+}
+
+static int test_ruby_geometry(void)
+{
+    int fail = 0;
+    const int upper[] = {-1}, lower[] = {1}, both[] = {-1, 1};
+    const int first[] = {0, 0};
+    const int two_base[] = {0, 1}, outward[] = {-1, 1}, inward[] = {1, -1};
+    const int two_upper[] = {-1, -1};
+    const int four_base[] = {0, 0, 1, 1}, four_side[] = {-1, 1, 1, -1};
+    const int three_base[] = {0, 1, 2}, three_upper[] = {-1, -1, -1};
+    // Every ASS alignment must anchor the base identically, including X when
+    // a reading overhangs its base. A full-frame base bitmap comparison checks
+    // coordinates, baseline, shaped advance, and rasterization together.
+    for (int alignment = 1; alignment <= 9; alignment++) {
+        char control[128], ruby[160], dual[160];
+        snprintf(control, sizeof(control),
+                 "{\\an%d\\pos(192,108)\\bord0\\shad0}W", alignment);
+        snprintf(ruby, sizeof(ruby),
+                 "{\\an%d\\pos(192,108)\\bord0\\shad0\\furichangepos0}<W|MMMM>",
+                 alignment);
+        snprintf(dual, sizeof(dual),
+                 "{\\an%d\\pos(192,108)\\bord0\\shad0}<W|MMMM|MMMM>", alignment);
+        fail |= expect_ruby_geometry(control, ruby, 1, 1, first, upper, true);
+        fail |= expect_ruby_geometry(control, dual, 1, 2, first, both, true);
+    }
+    fail |= expect_ruby_geometry(
+        "{\\pos(192,108)\\bord0\\shad0}W",
+        "{\\pos(192,108)\\bord0\\shad0}<W||M>", 1, 1, first, lower, true);
+    fail |= expect_ruby_geometry(
+        "{\\an7\\pos(100,40)\\bord0\\shad0}W",
+        "{\\an7\\pos(100,40)\\bord0\\shad0\\furipos(0,-80)}<W|M|M>",
+        1, 2, first, (int[]) {1, -1}, true);
+    for (int size = 30; size <= 80; size += 25) {
+        char plain[128], ruby[160];
+        snprintf(plain, sizeof(plain), "{\\pos(192,108)\\bord0\\shad0}W");
+        snprintf(ruby, sizeof(ruby),
+                 "{\\pos(192,108)\\bord0\\shad0\\furis%d\\furisx80}<W|MMM|MMM>", size);
+        fail |= expect_ruby_geometry(plain, ruby, 1, 2, first, both, true);
+    }
+    const char *two_plain = "{\\pos(192,108)\\bord0\\shad0\\fs32}W\\NW";
+    fail |= expect_ruby_geometry(two_plain,
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto0}<W|M>\\N<W|M>",
+        2, 2, two_base, two_upper, true);
+    fail |= expect_ruby_geometry(two_plain,
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M>\\N<W|M>",
+        2, 2, two_base, outward, true);
+    fail |= expect_ruby_geometry(two_plain,
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W||M>\\N<W||M>",
+        2, 2, two_base, inward, true);
+    fail |= expect_ruby_geometry(two_plain,
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M|M>\\N<W|M|M>",
+        2, 4, four_base, four_side, true);
+    fail |= expect_ruby_geometry(
+        "{\\pos(192,108)\\bord0\\shad0\\fs32}W\\NW\\NW",
+        "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M>\\N<W|M>\\N<W|M>",
+        3, 3, three_base, three_upper, true);
+    fail |= expect_same("<W|M>", "{\\furiplaceauto1}<W|M>");
+    fail |= expect_same("<W|M>\\N<W|M>\\N<W|M>",
+                        "{\\furiplaceauto1}<W|M>\\N<W|M>\\N<W|M>");
+    fail |= expect_same("<W|M>\\N<W|M>",
+                        "{\\furiplaceauto0}<W|M>\\N<W|M>");
+    fail |= expect_same("{\\furiplaceauto1}<W|M>\\N<W|M>",
+                        "{\\furiplaceauto1\\furiap1}<W|M>\\N<W|M>");
+    // Default collision handling changes only reading positions, even when
+    // all three readings are much wider than their one-glyph bases.
+    fail |= expect_ruby_geometry(
+        "{\\pos(192,108)\\bord0\\shad0}WWW",
+        "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM><W|MMMM>",
+        1, 3, (int[]) {0, 0, 0}, three_upper, true);
+    fail |= expect_ruby_gap(
+        "{\\pos(192,108)\\bord0\\shad0}<W|M><W|M>", 1, 2);
+    fail |= expect_ruby_gap(
+        "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM><W|MMMM>", 1, 3);
+    fail |= expect_ruby_gap(
+        "{\\pos(192,80)\\bord0\\shad0\\furis80}<W||MMMM><W||MMMM>", 1, 2);
+    fail |= expect_ruby_geometry(
+        "{\\an8\\pos(192,70)\\bord0\\shad0}W",
+        "{\\an8\\pos(192,70)\\bord0\\shad0\\furichangepos1}<W|M>",
+        1, 1, first, upper, false);
+    fail |= expect_ruby_geometry(
+        "{\\an8\\pos(192,70)\\bord0\\shad0}W",
+        "{\\an8\\pos(192,70)\\bord0\\shad0\\furichangepos1}<W|M|M>",
+        1, 2, first, both, false);
+    fail |= expect_reading_style("\\furis30");
+    fail |= expect_reading_style("\\furis80\\furisx65\\furisy70\\furifsp2");
+    fail |= expect_reading_style("\\b1\\i1\\c&H3535C5&\\alpha&H40&");
+    fail |= expect_reading_style("\\fscx120\\fscy80\\t(0,1000,\\furis80)");
+    fail |= expect_different("{\\bord0}<W||M>", "{\\bord4}<W||M>");
+    fail |= expect_different("{\\shad0}<W||M>", "{\\shad4}<W||M>");
+    return fail;
+}
+
 static int expect_overlap_spacing_bounded(const char *short_furi,
                                           const char *long_furi,
                                           const char *single_long_furi)
@@ -653,10 +933,7 @@ static int expect_colored_furi_separate(const char *text)
             err = render_mask_color(text, colors[i], &masks[i]);
         ok = ok && !err && furi_top_bounds(&masks[i], &left[i], &right[i]);
     }
-    /* Layout uses exact 26.6 glyph bounds and intentionally adds no safety
-     * gap.  Rasterizing two touching bounds can cover the same device-pixel
-     * column through rounding/antialiasing without a geometric overlap. */
-    ok = ok && right[0] <= left[1] + 1 && right[1] <= left[2] + 1;
+    ok = ok && right[0] + 1 <= left[1] && right[1] + 1 <= left[2];
     if (!ok)
         fprintf(stderr,
                 "::error title=furigana collision chain::expected separated "
@@ -1251,7 +1528,7 @@ static int expect_mixed_text_bidi_reading(void)
     return ok ? 0 : 1;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     int fail = 0;
 
@@ -1259,6 +1536,11 @@ int main(void)
         fprintf(stderr,
                 "could not load bundled compare/test/font1.ttf test font\n");
         return 1;
+    }
+    if (argc == 2 && strcmp(argv[1], "--geometry-only") == 0) {
+        fail = test_ruby_geometry();
+        free(test_font_data);
+        return fail ? 1 : 0;
     }
 
     const char *basic_karaoke =
@@ -1415,6 +1697,27 @@ int main(void)
     fail |= expect_mixed_text_bidi_reading();
 
     fail |= expect_different("<A|B>", "{\\furi0}<A|B>");
+    fail |= expect_same("<test>", "{\\furi0}<test>");
+    fail |= expect_same("<{\\c&H3535C5&}test>",
+                        "{\\furi0}<{\\c&H3535C5&}test>");
+    fail |= expect_literal_color();
+    fail |= expect_same("<{ignored|pipe}test>",
+                        "{\\furi0}<{ignored|pipe}test>");
+    fail |= expect_same("<A|B|C|D>", "{\\furi0}<A|B|C|D>");
+    fail |= expect_same("<A|{\\c&H3535C5&}B|C|D>",
+                        "{\\furi0}<A|{\\c&H3535C5&}B|C|D>");
+    fail |= expect_same("<ABC\\|\\DEF>", "{\\furi0}<ABC|DEF>");
+    fail |= expect_same("<ABC\\|\\DEF|B>", "<ABC\\|DEF|B>");
+    fail |= expect_same("<A\\|\\B|C\\|\\D|E\\|\\F>",
+                        "<A\\|B|C\\|D|E\\|F>");
+    fail |= expect_same("<A\\|\\B|C|D|E>", "{\\furi0}<A|B|C|D|E>");
+    fail |= expect_same("<A|{ignored|pipe}B|C>", "<A|B|C>");
+    fail |= expect_same("<A|B>", "<A|B|>");
+    fail |= expect_different("<A|B|C>", "<A|B>");
+    fail |= expect_different("<A||C>", "{\\furi0}<A||C>");
+    fail |= expect_same("<A||>", "{\\furi0}<A||>");
+    fail |= expect_same("<|B|C>", "{\\furi0}<|B|C>");
+    fail |= expect_same("<A|B|C|<D|E>>", "{\\furi0}<A|B|C|<D|E>>");
     fail |= expect_same("<cool>", "{\\furi0}<cool>");
     fail |= expect_same("<dramatic>", "{\\furi0}<dramatic>");
     fail |= expect_same("<A|>", "{\\furi0}<A|>");
@@ -1493,7 +1796,7 @@ int main(void)
     /* Keep ruby and base in separate vertical bands for width assertions.
      * Latin stand-ins make the geometry independent of system CJK fonts. */
     const char *layout_prefix =
-        "{\\an7\\pos(20,70)\\bord0\\furipos(0,20)}";
+        "{\\an7\\pos(20,70)\\bord0\\furichangepos1\\furipos(0,20)}";
     char one_short[128], one_two[128], one_three[128];
     char surrounded_short[128], surrounded_long[128];
     char adjacent_short[128], adjacent_clear[128];
@@ -1578,12 +1881,12 @@ int main(void)
         "<\xE9\x83\x8E|\xE3\x82\x8D\xE3\x81\x86>");
     fail |= expect_same("A\\NB", "{\\furi0}A\\NB");
     fail |= expect_bottom_anchor_with_taller_block(
-        "{\\an2}TOP\\N<A|BBBB>", "{\\an2}TOP\\NA");
+        "{\\an2\\furichangepos1}TOP\\N<A|BBBB>", "{\\an2}TOP\\NA");
     fail |= expect_top_anchor_with_taller_block(
-        "{\\an8\\furisy100}<A|B>\\NBOTTOM",
-        "{\\an8\\furisy50}<A|B>\\NBOTTOM");
+        "{\\an8\\furichangepos1\\furisy100}<A|B>\\NBOTTOM",
+        "{\\an8\\furichangepos1\\furisy50}<A|B>\\NBOTTOM");
     fail |= expect_center_anchor_with_taller_block(
-        "{\\an5}TOP\\N<A|BBBB>", "{\\an5}TOP\\NA");
+        "{\\an5\\furichangepos1}TOP\\N<A|BBBB>", "{\\an5}TOP\\NA");
     fail |= expect_same_height(
         "<A|BBBB>", "<A|BBBB><A|BBBB>");
     fail |= expect_partition_tops_aligned(
@@ -1591,7 +1894,10 @@ int main(void)
     fail |= expect_partition_tops_aligned(
         "<A|BBBB>    <_|BBBB>    <g|BBBB>", 3);
     fail |= expect_bottom_anchor_with_taller_block(
-        "{\\an2}<A|BBBB>", "{\\an2\\furiap0}<A|BBBB>");
+        "{\\an2\\furichangepos1}<A|BBBB>",
+        "{\\an2\\furichangepos1\\furiap0}<A|BBBB>");
+
+    fail |= test_ruby_geometry();
 
     free(test_font_data);
     return fail ? 1 : 0;

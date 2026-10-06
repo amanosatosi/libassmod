@@ -19,7 +19,7 @@ def checksum(data):
 
 
 def font(filename, family, em, asc, desc, underline, thickness, strike, strike_size,
-         coverage):
+         coverage, ink_bottom=0):
     # Every visible glyph has the same normalized cell advance (half a cell)
     # and ink rectangle (quarter a cell wide, half a cell above the baseline).
     cell = asc + desc
@@ -27,9 +27,9 @@ def font(filename, family, em, asc, desc, underline, thickness, strike, strike_s
     chars = [32] + sorted(coverage)
     cmap = {ch: i + 1 for i, ch in enumerate(chars)}
     glyphs = [b"", b""]  # .notdef and space
-    rect = (pack("hhhhh", 1, 0, 0, width, height) + pack("HH", 3, 0) +
+    rect = (pack("hhhhh", 1, 0, ink_bottom, width, ink_bottom + height) + pack("HH", 3, 0) +
             bytes([1] * 4) + pack("hhhh", 0, 0, width, 0) +
-            pack("hhhh", 0, height, 0, -height))
+            pack("hhhh", ink_bottom, height, 0, -height))
     glyphs += [rect] * len(coverage)
     offsets, glyf = [0], b""
     for glyph in glyphs:
@@ -41,7 +41,7 @@ def font(filename, family, em, asc, desc, underline, thickness, strike, strike_s
         "loca": pack("I" * len(offsets), *offsets),
         "hmtx": pack("Hh", advance, 0) * n,
         "head": pack("IIIIHHQQhhhhHHhhh", 0x10000, 0x10000, 0, 0x5f0f3cf5,
-                     3, em, 0, 0, 0, 0, width, height, 0, 8, 2, 1, 0),
+                     3, em, 0, 0, 0, ink_bottom, width, ink_bottom + height, 0, 8, 2, 1, 0),
         "hhea": (pack("IhhhH", 0x10000, asc, -desc, 0, advance) +
                  pack("h" * 11, 0, advance - width, width, 1, 0, 0, 0, 0, 0, 0, 0) +
                  pack("H", n)),
@@ -94,3 +94,11 @@ font("decoration-primary-a.ttf", "Deco Primary A", 2048, 1800, 248, -900, 100, 6
 font("decoration-primary-b.ttf", "Deco Primary B", 1000, 800, 200, -150, 240, 400, 200, {65, 67})
 font("decoration-fallback.ttf", "Deco Fallback", 1000, 1000, 500, -100, 400, 40, 300, {66, 0x3008, 0x3009})
 font("decoration-complete.ttf", "Deco Complete", 2048, 1800, 248, -900, 100, 600, 128, all_chars)
+
+# Deliberately place the same rectangle ink outside the nominal ascent or
+# descent. These probe ruby clearance against shaped geometry, not metrics.
+furi_chars = {ord(c) for c in "WM"}
+font("furi-tight-ascent.ttf", "Furi Tight Ascent", 1000, 250, 750,
+     -100, 50, 200, 50, furi_chars)
+font("furi-tight-descent.ttf", "Furi Tight Descent", 1000, 900, 100,
+     -100, 50, 200, 50, furi_chars, ink_bottom=-400)

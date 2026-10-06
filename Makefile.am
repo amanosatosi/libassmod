@@ -32,6 +32,8 @@ EXTRA_DIST += docs/native-scroll.md samples/scroll-lines.ass \
               test/scroll_selftest.c test/scroll_render_selftest.c
 
 EXTRA_DIST += test/clip_transform_selftest.c
+EXTRA_DIST += docs/furigana-extension.md test/furi_selftest.c \
+              test/fonts/furi-tight-ascent.ttf test/fonts/furi-tight-descent.ttf
 EXTRA_DIST += docs/decoration-fallback.md test/decoration_fallback_selftest.c \
               test/fonts/README.md test/fonts/generate-decoration-fonts.py \
               test/fonts/decoration-primary-a.ttf test/fonts/decoration-primary-b.ttf \

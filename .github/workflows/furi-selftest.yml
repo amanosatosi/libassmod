@@ -1,0 +1,29 @@
+name: Mangetsu furigana regression
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  furi-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev
+      - name: Configure sanitizers
+        run: meson setup build -Dtest=enabled -Db_sanitize=address,undefined -Db_lundef=false -Ddefault_library=static
+      - name: Build furigana tests
+        run: meson compile -C build furi_unit
+      - name: Run parser and layout regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: meson test -C build --no-rebuild --print-errorlogs 'furi-*'
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: furi-selftest-log
+          path: build/meson-logs/testlog.txt
