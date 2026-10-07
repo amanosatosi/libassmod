@@ -152,12 +152,12 @@ two-line case the automatic rule selects the side; manual X/Y offsets still
 apply, constrained to that side by visual clearance. These controls are
 captured per group and reset with `\r` like the other furigana properties.
 
-`\furichangepos0` is the default and keeps base text placement authoritative.
-Adding either annotation does not alter the base advances, line metrics,
-alignment anchor, `\pos` placement, or the block bounds used for ordinary ASS
-event collision placement. Ruby extends outward and its own geometry resolves
-spacing; it can extend outside the video at an edge just like other positioned
-content. For example, these put `漢字` at identical coordinates:
+`\furichangepos0` is the default. It disables only automatic **vertical**
+line/block repositioning to reserve room for ruby. Adding either annotation
+does not enlarge the base line's vertical metrics or the vertical bounds used
+for alignment and ordinary ASS event collision placement. Ruby extends outward
+and can extend outside the video at an edge just like other positioned content.
+For example, these keep the same base baseline Y:
 
 ```ass
 {\pos(640,500)}漢字
@@ -165,14 +165,17 @@ content. For example, these put `漢字` at identical coordinates:
 {\pos(640,500)\furichangepos0}<漢字|かんじ|KANJI>
 ```
 
-`\furichangepos1` enables the older reserve-space behavior: upper and lower
-annotation overhang may enlarge line/block bounds, move base lines, and add
-spacing between base groups when annotations collide. It is an opt-in
-compatibility path. It does not change annotation shaping, opposite-side
-placement, minimum clearance or the two-line rule.
+`\furichangepos1` enables the older vertical reserve-space behavior: upper and
+lower annotation overhang may enlarge vertical line/block bounds and move base
+lines. Both modes use the **same horizontal accommodation**: wide readings may
+expand base-run advances, move following text in X, increase line width and
+affect horizontal alignment/centering. Switching this flag does not change base
+or ruby X coordinates, horizontal spacing or final line width. It does not
+change annotation shaping, opposite-side placement, minimum clearance or the
+two-line rule.
 
 `\furistyle<N>` controls horizontal group layout. The default is
-`\furistyle0`. `\furistyle0` and `\furistyle1` preserve the base text's normal
+`\furistyle0`. `\furistyle0` and `\furistyle1` start from the base text's normal
 shaped advance. Furigana is centered over the base by rendered glyph bounds
 and may freely overhang it horizontally; being wider than the base does not by
 itself add main-line spacing. Ordinary non-furigana text does not participate
@@ -180,11 +183,11 @@ in ruby collision avoidance. If separately annotated furigana groups visually
 approach too closely, Mangetsu measures their occupied bounds, including
 overhang, strokes and shadows, separately on each side of each visual line.
 The occupied bounds include the rasterizer's antialias fringe so mathematically
-separate outlines also retain visible separation. It moves annotations by the
-smallest total squared displacement from their centered positions that maintains
-a small size-scaled horizontal gap and preserves visual base-group order. Base
-advances and positions stay unchanged with `\furichangepos0`. With
-`\furichangepos1`, the older base-spacing path is also available.
+separate outlines also retain visible separation. The existing base-spacing
+path inserts horizontal room between affected base regions to maintain a small
+size-scaled gap, preserving visual base-group order and keeping readings
+centered over their bases. It runs with both `\furichangepos0` and
+`\furichangepos1`; this flag controls only vertical reservation.
 `\furistyle2` retains its explicitly requested manga-style X-fit: furigana
 wider than its base is horizontally shrunk to the base width, while shorter
 furigana keeps its normal width. The base advance is kept unchanged.
@@ -211,9 +214,10 @@ The existing typographic attachment height keeps short, descender-only and
 tall base glyphs aligned where possible. Shaped outline/stroke/shadow bounds
 extend that attachment when nominal metrics would violate visual clearance.
 Base and annotation geometry remain separate. Annotation bounds participate in
-rendering and effects; only groups with `\furichangepos1` contribute their
-overhang to line/block reservation. Multiple groups on a line reserve the
-maximum upper and lower overhang, rather than summing it.
+rendering, effects and horizontal alignment in both modes; only groups with
+`\furichangepos1` contribute their vertical overhang to line/block reservation.
+Multiple groups on a line reserve the maximum upper and lower overhang, rather
+than summing it.
 
 Regression coverage is in `test/furi_selftest.c` (`furi-extension` in Meson),
 with additional `furi-tight-ascent` and `furi-tight-descent` geometry runs using

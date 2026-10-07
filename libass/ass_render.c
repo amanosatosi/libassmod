@@ -7067,8 +7067,6 @@ typedef struct {
     int line;
     bool below;
     double left, right, gap, base_center;
-    double prefix, target;
-    int members, previous;
 } FuriPlacement;
 
 static int compare_furi_placement(const void *a, const void *b)
@@ -7114,50 +7112,12 @@ static bool same_furi_band(const FuriPlacement *a, const FuriPlacement *b)
     return a->line == b->line && a->below == b->below;
 }
 
-/* Project centred annotation positions onto the minimum-gap constraints.
- * Subtracting cumulative widths/gaps makes this an isotonic regression; the
- * pooled adjacent violators sweep minimizes squared annotation displacement.
- * Only sidecars move, in O(n log n) including sorting, without redoing base
- * layout. Start afresh after final base transforms and line shifts. */
+/* Recenter sidecars after base layout, line shifts and final transforms. */
 static void position_furi_groups(RenderContext *state)
 {
     TextInfo *text = &state->text_info;
     for (int i = 0; i < text->n_furi_groups; i++)
         position_furi_group(state, &text->furi_groups[i]);
-    if (text->n_furi_groups < 2)
-        return;
-    FuriPlacement *p = calloc(text->n_furi_groups, sizeof(*p));
-    if (!p)
-        return;
-    int n = collect_furi_placements(text, p);
-    for (int start = 0; start < n;) {
-        int end = start;
-        for (; end < n && same_furi_band(&p[start], &p[end]); end++) {
-            p[end].prefix = end == start ? 0 : p[end - 1].prefix +
-                p[end - 1].right - p[end - 1].left +
-                FFMAX(p[end - 1].gap, p[end].gap) + 1.0 / 32;
-            p[end].target = p[end].left - p[end].prefix;
-            p[end].members = 1;
-            p[end].previous = end == start ? -1 : end - 1;
-            int previous = p[end].previous;
-            while (previous >= start && p[previous].target > p[end].target) {
-                int members = p[previous].members + p[end].members;
-                p[end].target = (p[previous].target * p[previous].members +
-                    p[end].target * p[end].members) / members;
-                p[end].members = members;
-                p[end].previous = p[previous].previous;
-                previous = p[end].previous;
-            }
-        }
-        for (int block = end - 1; block >= start; block = p[block].previous)
-            for (int i = block - p[block].members + 1; i <= block; i++) {
-                double dx = p[block].target + p[i].prefix - p[i].left;
-                shift_furi_group(&text->furi_groups[p[i].group],
-                                  double_to_d6(dx), 0);
-            }
-        start = end;
-    }
-    free(p);
 }
 
 static bool add_furi_spacing_before_group(RenderContext *state,
@@ -7175,7 +7135,7 @@ static bool add_furi_spacing_before_group(RenderContext *state,
     return false;
 }
 
-static bool furi_reserves_space(TextInfo *text)
+static bool furi_reserves_vertical_space(TextInfo *text)
 {
     for (int i = 0; i < text->n_furi_groups; i++)
         if (text->furi_groups[i].change_pos)
@@ -7183,13 +7143,13 @@ static bool furi_reserves_space(TextInfo *text)
     return false;
 }
 
-/* The old reserve-space path is explicitly opt-in. Both annotation sides
- * participate; default collision handling keeps base coordinates stable. */
+/* Horizontal accommodation is independent of vertical reservation. Both
+ * annotation sides share the existing base-spacing path in either mode. */
 static void resolve_furi_group_collisions(RenderContext *state)
 {
     TextInfo *text = &state->text_info;
     int count = text->n_furi_groups;
-    if (count < 2 || !furi_reserves_space(text))
+    if (count < 2)
         return;
     FuriPlacement *p = calloc(count, sizeof(*p));
     int32_t *spacing = calloc(count, sizeof(*spacing));
@@ -7206,8 +7166,7 @@ static void resolve_furi_group_collisions(RenderContext *state)
         bool resolved = false;
         for (int i = 1; i < n; i++) {
             FuriGroup *group = &text->furi_groups[p[i].group];
-            if (!same_furi_band(&p[i - 1], &p[i]) ||
-                    !group->change_pos || group->style == 2)
+            if (!same_furi_band(&p[i - 1], &p[i]) || group->style == 2)
                 continue;
             double overlap = p[i - 1].right + FFMAX(p[i - 1].gap, p[i].gap) -
                              p[i].left;
@@ -7578,7 +7537,7 @@ static bool furi_group_visual_bbox(FuriGroup *group,
 static bool expand_furi_line_metrics(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
-    if (!furi_reserves_space(text_info))
+    if (!furi_reserves_vertical_space(text_info))
         return true;
 
     double *old_baselines = calloc(text_info->n_lines, sizeof(*old_baselines));
@@ -11656,8 +11615,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         compute_warp_text_bbox(text_info, &warp_text_bbox);
     int warp_alignment = state->warp_text_alignment ?
         numpad2align(state->warp_text_alignment) : state->alignment;
-    bool reserve_furi = furi_reserves_space(text_info);
-    ASS_DRect *placement_bbox = reserve_furi ? &render_bbox : &bbox;
+    bool reserve_furi = furi_reserves_vertical_space(text_info);
+    // Ruby always contributes to horizontal alignment and occupied width.
+    // furichangepos controls only vertical line/block reservation.
+    ASS_DRect placement_bounds = render_bbox;
+    if (!reserve_furi) {
+        placement_bounds.y_min = bbox.y_min;
+        placement_bounds.y_max = bbox.y_max;
+    }
+    ASS_DRect *placement_bbox = &placement_bounds;
     ASS_DRect *bbox_for_origin = rotate_baseline ? &bbox_origin : placement_bbox;
     ASS_DRect *bbox_for_position = placement_bbox;
     ASS_DVector object_anchor = {0};

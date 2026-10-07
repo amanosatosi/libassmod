@@ -542,7 +542,7 @@ typedef struct {
     bool owns_base;
     bool opposite_side;
     bool place_auto;
-    bool change_pos;
+    bool change_pos;            // reserve vertical room; always accommodate X
     bool below;
     bool geometry_valid;
     ASS_DRect base_bounds;
@@ -789,7 +789,7 @@ struct render_context {
     bool furi_auto_placement;
     bool furi_position_explicit;
     bool furi_place_auto;
-    bool furi_change_pos;
+    bool furi_change_pos;       // allow vertical base-line/block reservation
     double border_x;            // outline width
     double border_y;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];

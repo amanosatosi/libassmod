@@ -17,7 +17,9 @@ height, giving predictable probes for both simple and complex shaping.
 The same generator also creates two original ruby clearance fixtures (ISC):
 `furi-tight-ascent.ttf` has ascent/descent 250/750 but ink from 0 to 500;
 `furi-tight-descent.ttf` has ascent/descent 900/100 but ink from -400 to 100.
-Both use UPEM/cell height 1000 and cover space, W, M, 漢字 and かんじ. The visible
-rectangle
-therefore exceeds one nominal vertical metric. The furigana geometry tests run
-with each family explicitly selected, covering both annotation sides.
+Both use UPEM/cell height 1000 and cover space, W, M, 漢字, かんじ and all
+characters in the 認めていた臆病な過去 horizontal-accommodation regression
+(including its readings). The visible rectangle therefore exceeds one nominal
+vertical metric. The furigana geometry tests run with each family explicitly
+selected, covering both annotation sides and horizontal geometry in both
+`\furichangepos` modes.

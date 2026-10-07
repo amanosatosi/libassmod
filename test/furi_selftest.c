@@ -631,11 +631,12 @@ static int expect_same_base_span(const char *a, const char *b)
 
 /* Character images retain base-run order followed by sidecar-run order. Use
  * separate masks so inward ruby in a multiline case cannot hide a displaced
- * base glyph in the union of all rendered pixels. These cases use no karaoke,
- * clipping, border or shadow, and one visible image per shaped run. */
+ * base glyph in the union of all rendered pixels. These cases use no clipping,
+ * border or shadow. Outer zero-duration karaoke also retains the run order. */
 typedef struct {
-    Mask runs[12];
-    uint32_t colors[12];
+    Mask runs[32];
+    uint32_t colors[32];
+    int image_x[32], image_width[32];
     int count;
 } RubySnapshot;
 
@@ -674,9 +675,11 @@ static int render_ruby_snapshot(const char *text, RubySnapshot *snapshot)
          img; img = img->next) {
         if (img->type != IMAGE_TYPE_CHARACTER || !img->w || !img->h)
             continue;
-        if (snapshot->count == 12)
+        if (snapshot->count == 32)
             goto done;
         Mask *mask = &snapshot->runs[snapshot->count];
+        snapshot->image_x[snapshot->count] = img->dst_x;
+        snapshot->image_width[snapshot->count] = img->w;
         snapshot->colors[snapshot->count++] = img->color;
         mask->alpha = calloc(FRAME_W * FRAME_H, 1);
         if (!mask->alpha)
@@ -725,7 +728,11 @@ static int expect_ruby_geometry(const char *control, const char *ruby,
               annotated.count == bases + annotations;
     bool changed = false;
     for (int i = 0; ok && i < bases; i++) {
-        bool same = same_mask(&plain.runs[i], &annotated.runs[i]);
+        // Ruby accommodation may expand advances and change horizontal
+        // alignment. Only vertical base placement is authoritative in mode 0.
+        bool same = !plain.runs[i].empty && !annotated.runs[i].empty &&
+                    plain.runs[i].y0 == annotated.runs[i].y0 &&
+                    plain.runs[i].y1 == annotated.runs[i].y1;
         changed |= !same;
         if (stable && !same)
             ok = false;
@@ -740,7 +747,7 @@ static int expect_ruby_geometry(const char *control, const char *ruby,
         ok = !base->empty && !reading->empty && gap >= 1;
     }
     if (!ok) {
-        fprintf(stderr, "::error title=ruby geometry::base stability/side/"
+        fprintf(stderr, "::error title=ruby geometry::base Y stability/side/"
                 "clearance failed (err=%d runs=%d/%d): `%s` vs `%s`\n",
                 err, plain.count, annotated.count, control, ruby);
         fprintf(stderr, "  expected stable=%d changed=%d\n", stable, changed);
@@ -757,6 +764,60 @@ static int expect_ruby_geometry(const char *control, const char *ruby,
     }
     free_ruby_snapshot(&plain);
     free_ruby_snapshot(&annotated);
+    return ok ? 0 : 1;
+}
+
+/* Compare every image's X geometry and occupied columns, including the base
+ * run's internal spacing, following text and both ruby sides. Y is allowed to
+ * change only in the reserve mode. The union also checks final visible width. */
+static int expect_horizontal_ruby_modes(const char *text, const char *tags,
+                                        int bases, bool vertical_moves)
+{
+    char disabled[1024], enabled[1024];
+    snprintf(disabled, sizeof(disabled), "{%s\\furichangepos0}%s", tags, text);
+    snprintf(enabled, sizeof(enabled), "{%s\\furichangepos1}%s", tags, text);
+    RubySnapshot a = {0}, b = {0};
+    int err = render_ruby_snapshot(disabled, &a);
+    if (!err)
+        err = render_ruby_snapshot(enabled, &b);
+    bool ok = !err && a.count == b.count && a.count > bases;
+    bool moved = false;
+    int left_a = FRAME_W, left_b = FRAME_W, right_a = 0, right_b = 0;
+    for (int i = 0; ok && i < a.count; i++) {
+        Mask *ma = &a.runs[i], *mb = &b.runs[i];
+        ok = !ma->empty && !mb->empty && a.colors[i] == b.colors[i] &&
+             a.image_x[i] == b.image_x[i] &&
+             a.image_width[i] == b.image_width[i] &&
+             ma->x0 == mb->x0 && ma->x1 == mb->x1;
+        if (i < bases)
+            moved |= ma->y0 != mb->y0 || ma->y1 != mb->y1;
+        if (ma->x0 < left_a) left_a = ma->x0;
+        if (mb->x0 < left_b) left_b = mb->x0;
+        if (ma->x1 > right_a) right_a = ma->x1;
+        if (mb->x1 > right_b) right_b = mb->x1;
+        for (int x = 0; ok && x < FRAME_W; x++) {
+            bool occupied_a = false, occupied_b = false;
+            for (int y = 0; y < FRAME_H; y++) {
+                occupied_a |= ma->alpha[y * FRAME_W + x] != 0;
+                occupied_b |= mb->alpha[y * FRAME_W + x] != 0;
+            }
+            ok = occupied_a == occupied_b;
+        }
+    }
+    ok = ok && right_a - left_a == right_b - left_b &&
+         (!vertical_moves || moved);
+    if (!ok) {
+        fprintf(stderr, "::error title=ruby horizontal modes::X geometry/width "
+                "or vertical reservation failed (err=%d runs=%d/%d Y moved=%d): "
+                "`%s` vs `%s`\n", err, a.count, b.count, moved, disabled, enabled);
+        for (int i = 0; i < a.count && i < b.count; i++)
+            fprintf(stderr, "  run[%d] X=%d/%d width=%d/%d Y=%d/%d\n", i,
+                    a.image_x[i], b.image_x[i],
+                    a.image_width[i], b.image_width[i],
+                    a.runs[i].y0, b.runs[i].y0);
+    }
+    free_ruby_snapshot(&a);
+    free_ruby_snapshot(&b);
     return ok ? 0 : 1;
 }
 
@@ -839,9 +900,9 @@ static int test_ruby_geometry(void)
     const int two_upper[] = {-1, -1};
     const int four_base[] = {0, 0, 1, 1}, four_side[] = {-1, 1, 1, -1};
     const int three_base[] = {0, 1, 2}, three_upper[] = {-1, -1, -1};
-    // Every ASS alignment must anchor the base identically, including X when
-    // a reading overhangs its base. A full-frame base bitmap comparison checks
-    // coordinates, baseline, shaped advance, and rasterization together.
+    // Every ASS alignment keeps the base's Y placement in mode 0. Horizontal
+    // accommodation and alignment are identical between modes, even with
+    // overhanging readings on both sides.
     for (int alignment = 1; alignment <= 9; alignment++) {
         char control[128], ruby[160], dual[160];
         snprintf(control, sizeof(control),
@@ -853,6 +914,12 @@ static int test_ruby_geometry(void)
                  "{\\an%d\\pos(192,108)\\bord0\\shad0}<W|MMMM|MMMM>", alignment);
         fail |= expect_ruby_geometry(control, ruby, 1, 1, first, upper, true);
         fail |= expect_ruby_geometry(control, dual, 1, 2, first, both, true);
+        char tags[128];
+        snprintf(tags, sizeof(tags),
+                 "\\an%d\\pos(192,108)\\bord0\\shad0\\fs32\\q2", alignment);
+        fail |= expect_horizontal_ruby_modes("<W|MMMM><W|MMMM>", tags, 1, false);
+        fail |= expect_horizontal_ruby_modes("<W|MMMM|MMM><W|MMMM|MMM>", tags, 1,
+                                             alignment <= 3 || alignment >= 7);
     }
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0}W",
@@ -907,8 +974,8 @@ static int test_ruby_geometry(void)
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\q1}WWWWWWWWWWWWWWWWWWWWW W",
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\q1\\furiplaceauto1}WWWWWWWWWWWWWWWWWWWWW <W|M>",
         2, 1, (int[]) {1}, lower, true);
-    // Default collision handling changes only reading positions, even when
-    // all three readings are much wider than their one-glyph bases.
+    // Horizontal accommodation may expand the base runs while their vertical
+    // placement remains stable, even with three wide readings.
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0}WWW",
         "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM><W|MMMM>",
@@ -917,6 +984,9 @@ static int test_ruby_geometry(void)
         "{\\pos(192,108)\\bord0\\shad0}<W|M><W|M>", 1, 2);
     fail |= expect_ruby_gap(
         "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM><W|MMMM>", 1, 3);
+    fail |= expect_same(
+        "{\\pos(192,108)\\bord0\\shad0}<W|MMMM><W|MMMM>",
+        "{\\pos(192,108)\\bord0\\shad0\\furichangepos0}<W|MMMM><W|MMMM>");
     fail |= expect_ruby_gap(
         "{\\pos(192,80)\\bord0\\shad0\\furis80}<W||MMMM><W||MMMM>", 1, 2);
     fail |= expect_ruby_gap(
@@ -928,6 +998,14 @@ static int test_ruby_geometry(void)
         "{\\pos(192,108)\\bord0\\shad0}<W|M><W|MMMMMM>", 1, 2);
     fail |= expect_ruby_gap(
         "{\\pos(192,108)\\bord0\\shad0}<W|MMMMMM><W|M>", 1, 2);
+    fail |= expect_horizontal_ruby_modes(
+        "<W|MMMM>{\\furis80}<W|MMMM>{\\furis30}<W|MM>",
+        "\\an8\\pos(192,70)\\bord0\\shad0\\q2", 1, true);
+    fail |= expect_horizontal_ruby_modes("<W||MMMM><W||MMMM>",
+        "\\an2\\pos(192,150)\\bord0\\shad0\\q2", 1, true);
+    fail |= expect_horizontal_ruby_modes(
+        "<W|MMMM|MMM><W|MMMM|MMM>\\N<W|MMMM|MMM><W|MMMM|MMM>",
+        "\\an8\\pos(192,70)\\bord0\\shad0\\fs32\\furiplaceauto1", 2, true);
     // An odd sidecar count forces reallocation while appending a gyaku run.
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0}WWWWW",
@@ -951,6 +1029,18 @@ static int test_ruby_geometry(void)
     // The original rectangle fixtures also cover these codepoints, so the
     // explicit UTF-8 probes do not depend on installed Japanese fonts.
     if (getenv("FURI_TEST_FAMILY")) {
+        // Exact reported outer-karaoke regression:
+        // {\k0}<認|みと>{\k0}めていた{\k0}<臆|おく>{\k0}<病|びょう>{\k0}な{\k0}<過|か>{\k0}<去|こ>
+        const char *reported =
+            "{\\k0}<\xE8\xAA\x8D|\xE3\x81\xBF\xE3\x81\xA8>"
+            "{\\k0}\xE3\x82\x81\xE3\x81\xA6\xE3\x81\x84\xE3\x81\x9F"
+            "{\\k0}<\xE8\x87\x86|\xE3\x81\x8A\xE3\x81\x8F>"
+            "{\\k0}<\xE7\x97\x85|\xE3\x81\xB3\xE3\x82\x87\xE3\x81\x86>"
+            "{\\k0}\xE3\x81\xAA"
+            "{\\k0}<\xE9\x81\x8E|\xE3\x81\x8B>"
+            "{\\k0}<\xE5\x8E\xBB|\xE3\x81\x93>";
+        fail |= expect_horizontal_ruby_modes(reported,
+            "\\an8\\pos(192,70)\\bord0\\shad0\\fs32\\q2", 7, true);
         const char *base = "\xE6\xBC\xA2\xE5\xAD\x97";
         const char *reading = "\xE3\x81\x8B\xE3\x82\x93\xE3\x81\x98";
         char control[160], ruby[256];
