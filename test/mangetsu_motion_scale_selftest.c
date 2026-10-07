@@ -465,6 +465,52 @@ int main(void)
         }
     }
 
+    /*
+     * Kara Effector 3.6 legacy: Jump Simple. The move-only drawing reserves
+     * width/ascent before \p0\r; it should match a same-size, fully transparent
+     * closed drawing. Keep the original large scale/timings, but shrink the
+     * source drawing from 100 to 10 so the trailing text stays on screen.
+     */
+    {
+        const char *tags =
+            "{\\an7\\q2\\bord0\\shad0\\1a&HFF&"
+            "\\fscx994.97\\fscy826.3"
+            "\\t(0,83.4,\\fscx994.97\\fscy796.3)"
+            "\\t(83.4,260,\\fscx994.97\\fscy826.3)"
+            "\\p1\\pos(14,12)}";
+        char move_only[512], transparent_rect[512];
+        int n_move = snprintf(move_only, sizeof(move_only),
+            "%sm 0 0 m 10 10 {\\p0\\r}つ", tags);
+        int n_rect = snprintf(transparent_rect, sizeof(transparent_rect),
+            "%sm 0 0 l 10 0 l 10 10 l 0 10 {\\p0\\r}つ", tags);
+        if (n_move < 0 || n_move >= (int) sizeof(move_only) ||
+                n_rect < 0 || n_rect >= (int) sizeof(transparent_rect)) {
+            fprintf(stderr, "Kara Effector test fixture exceeded buffer\n");
+            ok = false;
+        } else {
+            const long long times[] = {0, 83, 160, 260};
+            for (int i = 0; i < 4; i++) {
+                RenderSample move, rect;
+                bool valid_move = render_sample(lib, renderer, move_only,
+                                               times[i], &move);
+                bool valid_rect = render_sample(lib, renderer, transparent_rect,
+                                               times[i], &rect);
+                if (!valid_move || !valid_rect ||
+                        !same_sample(&move, &rect)) {
+                    fprintf(stderr, "move-only ASS drawing lost its layout "
+                            "at %lld ms\n", times[i]);
+                    ok = false;
+                    continue;
+                }
+                if (center_x(&move) < 80) {
+                    fprintf(stderr, "Kara Effector invisible drawing "
+                            "did not move following text at %lld ms\n", times[i]);
+                    ok = false;
+                }
+            }
+        }
+    }
+
     ass_renderer_done(renderer);
     ass_library_done(lib);
     return ok ? 0 : 1;

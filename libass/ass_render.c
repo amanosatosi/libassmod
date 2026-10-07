@@ -4372,7 +4372,13 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
             const char *text = outline_key->u.drawing.text.str;  // always zero-terminated
             if (!ass_drawing_parse(&v->outline[0], &bbox, text, render_priv->library))
                 return 1;
-            if (!v->outline[0].n_points || !v->outline[0].n_segments ||
+            /*
+             * Move-only ASS drawings have no contours but still determine
+             * layout width and ascent. Legacy KFX uses them to position text
+             * after \p0\r. Curved text checks for a drawable path separately.
+             * Keep malformed outlines and out-of-range bounds rejected.
+             */
+            if (!!v->outline[0].n_points != !!v->outline[0].n_segments ||
                     bbox.x_min > bbox.x_max || bbox.y_min > bbox.y_max ||
                     (int64_t) bbox.x_max - bbox.x_min > INT_MAX ||
                     (int64_t) bbox.y_max - bbox.y_min > INT_MAX) {
@@ -4733,6 +4739,9 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     info->has_distort_bitmap = false;
 
     if (!outline || info->symbol == '\n' || info->symbol == 0 || info->skip)
+        return;
+    /* A move-only drawing reserves layout metrics, not paint pixels. */
+    if (info->drawing_text.str && !outline->outline[0].n_segments)
         return;
 
     double m1[3][3], m2[3][3], m[3][3], z_basis[3];
