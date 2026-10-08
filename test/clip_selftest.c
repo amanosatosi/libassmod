@@ -9,6 +9,8 @@ typedef struct ClipCase {
     const char *name;
     const char *text;
     bool expect_image;
+    /* 0: existing parse/render smoke test, 1: visible, -1: hidden */
+    int preview_visibility;
 } ClipCase;
 
 static void msg_cb(int level, const char *fmt, va_list va, void *data)
@@ -59,6 +61,45 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer, const ClipCase
     if (tc->expect_image && (!img1 || !img2))
         ok = false;
 
+    if (tc->preview_visibility) {
+        bool visible_legacy = false;
+        for (ASS_Image *cur = img2; cur; cur = cur->next) {
+            if (!cur->bitmap)
+                continue;
+            for (int y = 0; y < cur->h && !visible_legacy; y++)
+                for (int x = 0; x < cur->w; x++)
+                    if (cur->bitmap[(size_t) y * cur->stride + x]) {
+                        visible_legacy = true;
+                        break;
+                    }
+        }
+
+        int change_rgba = 0;
+        ASS_ImageRGBA *rgba = ass_render_frame_rgba(renderer, track, 0,
+                                                   &change_rgba);
+        bool visible_rgba = false;
+        for (ASS_ImageRGBA *cur = rgba; cur; cur = cur->next) {
+            if (!cur->rgba)
+                continue;
+            for (int y = 0; y < cur->h && !visible_rgba; y++)
+                for (int x = 0; x < cur->w; x++)
+                    if (cur->rgba[(size_t) y * cur->stride + 4 * x + 3]) {
+                        visible_rgba = true;
+                        break;
+                    }
+        }
+        ass_free_images_rgba(rgba);
+
+        bool expected_visible = tc->preview_visibility > 0;
+        if (visible_legacy != expected_visible ||
+                visible_rgba != expected_visible) {
+            fprintf(stderr,
+                    "%s preview: expected visible=%d, legacy=%d, rgba=%d\n",
+                    tc->name, expected_visible, visible_legacy, visible_rgba);
+            ok = false;
+        }
+    }
+
     ass_free_track(track);
     return ok;
 }
@@ -85,6 +126,52 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     static const ClipCase cases[] = {
+        /*
+         * Aegisub polygon clip creation: a move-only path or a line between
+         * two points cannot enclose any area. Normal clips must suppress
+         * rendering until a third non-collinear point is added; inverse
+         * clips must leave the subtitle intact while the path is empty.
+         */
+        {
+            "vector-preview-one-point",
+            "{\\pos(320,180)\\clip(m 100 100)}clip",
+            true, -1,
+        },
+        {
+            "vector-preview-two-points",
+            "{\\pos(320,180)\\clip(m 100 100 l 600 500)}clip",
+            true, -1,
+        },
+        {
+            "vector-preview-two-moves",
+            "{\\pos(320,180)\\clip(m 100 100 m 600 500)}clip",
+            true, -1,
+        },
+        {
+            "vector-preview-three-points",
+            "{\\pos(320,180)\\clip(m 0 0 l 900 0 0 900)}clip",
+            true, 1,
+        },
+        {
+            "vector-preview-scaled-two-points",
+            "{\\pos(320,180)\\clip(1,m 100 100 l 600 500)}clip",
+            true, -1,
+        },
+        {
+            "inverse-preview-one-point",
+            "{\\pos(320,180)\\iclip(m 100 100)}clip",
+            true, 1,
+        },
+        {
+            "inverse-preview-two-points",
+            "{\\pos(320,180)\\iclip(m 100 100 l 600 500)}clip",
+            true, 1,
+        },
+        {
+            "inverse-preview-two-moves",
+            "{\\pos(320,180)\\iclip(m 100 100 m 600 500)}clip",
+            true, 1,
+        },
         {
             "rect-valid-integers",
             "{\\pos(320,180)\\clip(0,0,640,360)}clip",

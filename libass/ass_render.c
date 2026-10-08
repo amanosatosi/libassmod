@@ -2621,6 +2621,14 @@ static Bitmap *vector_clip_bitmap(RenderContext *state, ASS_Vector *pos)
     if (!key.outline || !key.outline->valid)
         return NULL;
 
+    /*
+     * Aegisub emits partial vector clips while the first two vertices are
+     * being placed. A path with fewer than three outline points cannot
+     * bound a filled area. Do not rasterize it as a usable clip mask.
+     */
+    if (key.outline->outline[0].n_points < 3)
+        return NULL;
+
     double m[3][3] = {{0}};
     int32_t scale_base = lshiftwrapi(1, state->clip_drawing_scale - 1);
     double w = scale_base > 0 ? (1.0 / scale_base) : 0;
@@ -2674,8 +2682,14 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
     ASS_Renderer *render_priv = state->renderer;
     ASS_Vector pos;
     Bitmap *clip_bm = vector_clip_bitmap(state, &pos);
-    if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
+    if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h) {
+        /* Empty normal vector clips hide the subtitle; inverse clips
+         * exclude nothing. Keep both rendering backends consistent. */
+        if (!state->clip_drawing_mode)
+            for (ASS_Image *cur = head; cur; cur = cur->next)
+                cur->w = cur->h = 0;
         return;
+    }
 
     // Iterate through bitmaps and blend/clip them
     for (ASS_Image *cur = head; cur; cur = cur->next) {
@@ -2787,8 +2801,12 @@ static void blend_vector_clip_rgba(RenderContext *state, ASS_ImageRGBA *head)
     ASS_Renderer *render_priv = state->renderer;
     ASS_Vector pos;
     Bitmap *clip_bm = vector_clip_bitmap(state, &pos);
-    if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h)
+    if (!clip_bm || !clip_bm->buffer || !clip_bm->w || !clip_bm->h) {
+        if (!state->clip_drawing_mode)
+            for (ASS_ImageRGBA *cur = head; cur; cur = cur->next)
+                cur->w = cur->h = 0;
         return;
+    }
 
     for (ASS_ImageRGBA *cur = head; cur; cur = cur->next) {
         int aw, ah, as;
