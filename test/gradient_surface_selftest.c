@@ -122,6 +122,46 @@ static bool flat_green(Frame *frame, int type)
     return painted > 10;
 }
 
+static bool varied_color(Frame *frame, int type)
+{
+    int low = 255, high = 0, count = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+        uint8_t *p = pixel(frame, type, x, y);
+        if (p[3] < 40) continue;
+        int red = p[0] * 255 / p[3];
+        if (red < low) low = red;
+        if (red > high) high = red;
+        count++;
+    }
+    return count > 50 && high - low > 60;
+}
+
+/* Inline reading overrides intentionally recognize karaoke only. Isolate
+ * inherited ruby paint by its actual separated vertical band, not by trying
+ * to change a reading's alpha with an unsupported inline visual override. */
+static bool retain_reading_band(Frame *frame, bool gyaku)
+{
+    int first = -1, last = -1, gap_start = -1, gap_end = -1;
+    bool gap = false;
+    for (int y = 0; y < H; y++) {
+        bool occupied = false;
+        for (int x = 0; x < W; x++) occupied |= pixel(frame, IMAGE_TYPE_CHARACTER, x, y)[3] != 0;
+        if (occupied) {
+            if (first < 0) first = y;
+            if (gap && gap_end < 0) gap_end = y;
+            last = y;
+        } else if (first >= 0 && gap_start < 0) {
+            gap_start = y;
+            gap = true;
+        }
+    }
+    if (first < 0 || gap_end < 0 || gap_end > last) return false;
+    for (int y = 0; y < H; y++)
+        if (gyaku ? y < gap_end : y >= gap_start)
+            memset(pixel(frame, IMAGE_TYPE_CHARACTER, 0, y), 0, W * 4);
+    return true;
+}
+
 static bool check(bool ok, const char *message)
 { if (!ok) fprintf(stderr, "%s\n", message); return ok; }
 
@@ -132,7 +172,7 @@ static bool boxes(ASS_Library *lib, ASS_Renderer *renderer)
         "", "\\boxr18", "\\boxpx40\\boxpy12\\fscx140\\fscy70", "\\scale130",
         "\\frz35", "\\frx35\\fry-20\\frz10", "\\fax0.3\\fay0.1",
         "\\org(240,160)\\frz25", "\\distort(1.4,-0.2,1.6,1.1,-0.2,1)",
-        "\\distort(0.1,0.1,1.3,0,1.4,1.2,-0.1,1)",
+        "\\distort(1.3,0,1.4,1.2,-0.1,1,0.1,0.1)",
         "\\clip(300,100,640,300)", "\\iclip(300,100,340,250)",
         "\\clip(m 0 0 l 640 0 640 360)", "\\iclip(m 0 0 l 640 0 640 360)",
         "\\pos(5,180)", "\\move(250,160,390,200,0,1000)",
@@ -141,13 +181,17 @@ static bool boxes(ASS_Library *lib, ASS_Renderer *renderer)
     };
     for (size_t i = 0; i < sizeof(geometry) / sizeof(geometry[0]); i++) {
         char gradient[1024], solid[1024];
-        snprintf(gradient, sizeof(gradient), "{" BOX "%s\\4grd" RGB "}MMMM", geometry[i]);
-        snprintf(solid, sizeof(solid), "{" BOX "%s\\4c&H0000FF&}MMMM", geometry[i]);
+        const char *anchor = i == 14 ? "\\pos(5,180)" :
+            i == 15 ? "\\move(250,160,390,200,0,1000)" : "";
+        snprintf(gradient, sizeof(gradient), "{%s" BOX "%s\\4grd" RGB "}MMMM", anchor, geometry[i]);
+        snprintf(solid, sizeof(solid), "{%s" BOX "%s\\4c&H0000FF&}MMMM", anchor, geometry[i]);
         Frame a = {0}, b = {0};
         bool rendered = render(lib, renderer, gradient, 500, &a) &&
                         render(lib, renderer, solid, 500, &b);
         bool good = rendered && same_mask(&a, &b, IMAGE_TYPE_SHADOW) &&
-                    red_blue(&a, IMAGE_TYPE_SHADOW);
+                    /* A clip can deliberately remove either endpoint. */
+                    (i >= 10 && i <= 14 ? varied_color(&a, IMAGE_TYPE_SHADOW) :
+                                         red_blue(&a, IMAGE_TYPE_SHADOW));
         if (!good) fprintf(stderr, "BS4 transformed gradient/mask case %zu: %s\n", i, geometry[i]);
         ok &= good;
         release(&a); release(&b);
@@ -180,6 +224,38 @@ static bool boxes(ASS_Library *lib, ASS_Renderer *renderer)
     ok &= render(lib, renderer, "{" BOX "\\1a&H00&\\4grd" RGB "}MMMM", 0, &expected);
     ok &= check(same_target(&vector, &expected, IMAGE_TYPE_SHADOW), "BS4 paint did not use first visible content");
     release(&color); release(&alpha); release(&override); release(&vector); release(&expected);
+    return ok;
+}
+
+static bool clipped_coordinates(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    Frame full = {0}, clipped = {0};
+    bool ok = render(lib, renderer, "{" BOX "\\boxr15\\4grd" RGB
+                     "\\bbs8\\bbgrd" RGB "}MMMM", 0, &full);
+    for (int inverse = 0; inverse < 2; inverse++) {
+        char text[1024];
+        snprintf(text, sizeof(text), "{" BOX "\\boxr15\\4grd" RGB
+                 "\\bbs8\\bbgrd" RGB "\\%sclip(300,0,340,360)}MMMM", inverse ? "i" : "");
+        ok &= render(lib, renderer, text, 0, &clipped);
+        int common = 0;
+        bool identical = true, empty = true;
+        for (int type = IMAGE_TYPE_OUTLINE; type <= IMAGE_TYPE_SHADOW; type++)
+            for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+                bool inside = x >= 300 && x < 340;
+                uint8_t *p = pixel(&clipped, type, x, y);
+                uint8_t *q = pixel(&full, type, x, y);
+                if (inside == (bool) inverse) {
+                    empty &= p[3] == 0;
+                } else {
+                    identical &= !memcmp(p, q, 4);
+                    common += p[3] > 100;
+                }
+            }
+        ok &= check(empty && identical && common > 100,
+                    "rectangular clip leaked paint or renormalized a box/ring gradient");
+        release(&clipped);
+    }
+    release(&full);
     return ok;
 }
 
@@ -254,12 +330,15 @@ static bool ordinary(ASS_Library *lib, ASS_Renderer *renderer)
     }
     Frame a = {0};
     Frame inner = {0}, padded = {0};
-    ok &= render(lib, renderer, "{\\1a&HFF&\\1bs3\\1bgrd" RGB "}MMMM", 0, &inner);
-    ok &= render(lib, renderer, "{\\1a&HFF&\\1bs3\\1bgrd" RGB "\\10bs40\\10ba&HFF&}MMMM", 0, &padded);
+    /* Compare native composite rings in both cases. Ordinary ASS's single
+     * outline has different subtraction semantics and is not this fixture. */
+    ok &= render(lib, renderer, "{\\1a&HFF&\\1bs3\\1bblur0.1\\1bgrd" RGB "}MMMM", 0, &inner);
+    ok &= render(lib, renderer, "{\\1a&HFF&\\1bs3\\1bblur0.1\\1bgrd" RGB "\\10bs40\\10ba&HFF&}MMMM", 0, &padded);
     ok &= check(same_target(&inner, &padded, IMAGE_TYPE_OUTLINE),
                 "invisible outer glyph border changed inner gradient coordinates");
     release(&inner); release(&padded);
-    ok &= render(lib, renderer, "{\\1a&HFF&\\shad12\\4grd" RGB "}MMMM", 0, &a);
+    /* ASS suppresses a fill-only shadow when its primary fill is invisible. */
+    ok &= render(lib, renderer, "{\\shad12\\4grd" RGB "}MMMM", 0, &a);
     ok &= check(red_blue(&a, IMAGE_TYPE_SHADOW), "ordinary shadow lost fourth-channel gradient");
     release(&a);
     const char *layouts[] = {
@@ -293,16 +372,18 @@ static bool ordinary(ASS_Library *lib, ASS_Renderer *renderer)
         ok &= render(lib, renderer, text, 0, &a);
         ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER), "furigana paint transport failed");
         release(&a);
-        /* Hide the base. The gradient must reach the reading itself. */
+        /* Inspect the reading alone without changing its inherited paint. */
         snprintf(text, sizeof(text), "{\\an5\\pos(320,180)\\furichangepos%d\\furistyle%d"
-                 "\\1a&HFF&\\1grd" RGB "}<MMMM|{\\1a&H00&}MMMMMMMM>", mode, style);
+                 "\\1grd" RGB "}<MMMM|MMMMMMMM>", mode, style);
         ok &= render(lib, renderer, text, 0, &a);
-        ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER), "normal reading did not inherit gradient");
+        ok &= check(retain_reading_band(&a, false) && red_blue(&a, IMAGE_TYPE_CHARACTER),
+                    "normal reading did not inherit gradient");
         release(&a);
         snprintf(text, sizeof(text), "{\\an5\\pos(320,180)\\furichangepos%d\\furistyle%d"
-                 "\\1a&HFF&\\1grd" RGB "}<MMMM||{\\1a&H00&}MMMMMMMM>", mode, style);
+                 "\\1grd" RGB "}<MMMM||MMMMMMMM>", mode, style);
         ok &= render(lib, renderer, text, 0, &a);
-        ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER), "gyaku reading did not inherit gradient");
+        ok &= check(retain_reading_band(&a, true) && red_blue(&a, IMAGE_TYPE_CHARACTER),
+                    "gyaku reading did not inherit gradient");
         release(&a);
     }
     const char *karaoke[] = {"k", "kf", "K", "ko", "kO"};
@@ -345,6 +426,20 @@ static bool timing(ASS_Library *lib, ASS_Renderer *renderer)
                 same_target(&start, &again, IMAGE_TYPE_OUTLINE), "animated box/ring paint is stale across reverse seek");
     release(&start); release(&middle); release(&end); release(&again);
     ass_free_track(track);
+    track = track_for(lib, "{\\move(250,160,390,200,0,1000)" BOX "\\4grd" RGB "}MMMM");
+    if (!track) return false;
+    ok &= render_track(renderer, track, 0, &start);
+    ok &= render_track(renderer, track, 1000, &end);
+    int attached = 0, detached = 0;
+    for (int y = 0; y < H - 40; y++) for (int x = 0; x < W - 140; x++) {
+        uint8_t *p = pixel(&start, IMAGE_TYPE_SHADOW, x, y);
+        if (p[3] < 40) continue;
+        uint8_t *q = pixel(&end, IMAGE_TYPE_SHADOW, x + 140, y + 40);
+        attached++;
+        detached += memcmp(p, q, 4) != 0;
+    }
+    ok &= check(attached > 200 && detached == 0, "attached BS4 gradient did not move with its box");
+    release(&start); release(&end); ass_free_track(track);
     track = track_for(lib, "{\\an7\\pos(100,80)\\scrollt0\\scroll(ue,500,1)"
         "\\pgrd(0,0,640,360,90,&H0000FF&,&HFF0000&)}MMMMMMMM\\NMMMMMMMM\\NMMMMMMMM");
     if (!track) return false;
@@ -397,6 +492,7 @@ int main(void)
     ass_set_frame_size(renderer, W, H);
     ass_set_fonts(renderer, NULL, "Noto Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     bool ok = boxes(lib, renderer);
+    ok &= clipped_coordinates(lib, renderer);
     ok &= rings(lib, renderer);
     ok &= ordinary(lib, renderer);
     ok &= timing(lib, renderer);
