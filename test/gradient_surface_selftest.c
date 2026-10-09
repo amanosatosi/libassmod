@@ -484,6 +484,67 @@ static bool automatic(ASS_Library *lib, ASS_Renderer *renderer)
     return ok;
 }
 
+static bool precedence(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    bool ok = true;
+    Frame a = {0}, b = {0};
+    const char *transition = "{" BOX "\\bbs10\\bbgrd" RGB "\\bbga" ALPHA
+        "\\t(0,1000,\\bbc&H00FF00&\\bba&H40&)}MMMM";
+    ok &= render(lib, renderer, transition, 500, &a);
+    ok &= render(lib, renderer, transition, 1000, &b);
+    ok &= check(varied_color(&a, IMAGE_TYPE_OUTLINE) && flat_green(&b, IMAGE_TYPE_OUTLINE) &&
+                !same_mask(&a, &b, IMAGE_TYPE_OUTLINE), "box ring gradient-to-solid animation lost interpolation");
+    release(&a); release(&b);
+
+    /* Different logical sources must remain different during karaoke. */
+    const char *phase = "{\\kt50\\k100\\1c&H00FF00&\\2grd" RGB "}MMMM";
+    ok &= render(lib, renderer, phase, 250, &a);
+    ok &= render(lib, renderer, phase, 1600, &b);
+    ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER) && flat_green(&b, IMAGE_TYPE_CHARACTER),
+                "secondary gradient leaked into primary karaoke fill");
+    release(&a); release(&b);
+    ok &= render(lib, renderer,
+        "{\\1a&HFF&\\2a&HFF&\\5a&H00&\\u1\\5grd" RGB "\\kt50\\kf100}MMMM", 250, &a);
+    ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER), "fifth-channel decoration gradient disappeared during waiting karaoke");
+    release(&a);
+
+    const char *reverse = "{\\an5\\pos(320,180)\\frz180\\1c&H00FF00&\\2c&H0000FF&"
+        "\\1a&H40&\\2a&H90&\\kf100%s}MMMM";
+    char plain[1024], vector[1024];
+    snprintf(plain, sizeof(plain), reverse, "");
+    snprintf(vector, sizeof(vector), reverse,
+        "\\1vc(&H00FF00&,&H00FF00&,&H00FF00&,&H00FF00&)"
+        "\\2vc(&H0000FF&,&H0000FF&,&H0000FF&,&H0000FF&)");
+    ok &= render(lib, renderer, plain, 350, &a) && render(lib, renderer, vector, 350, &b);
+    ok &= check(same_target(&a, &b, IMAGE_TYPE_CHARACTER), "reversed karaoke swapped only flat colors, not gradient sources/alpha");
+    release(&a); release(&b);
+
+    const char *curve = "{\\an5\\pos(320,180)\\frz180\\ct(m -230 0 b -90 -70 90 -70 230 0)"
+        "\\1grd" RGB "\\2grd" RGB "\\kf100}MMMMMMMM";
+    ok &= render(lib, renderer, curve, 500, &a);
+    ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER), "curved rotated karaoke lost gradient paint");
+    release(&a);
+    ok &= render(lib, renderer, "{\\1grd" RGB "\\col1}MMMM|日本\\NMMMM|မြန်မာ", 0, &a);
+    ok &= check(red_blue(&a, IMAGE_TYPE_CHARACTER), "semantic columns lost inherited gradient");
+    release(&a);
+    ok &= render(lib, renderer,
+        "{\\1grd" RGB "\\2grd" RGB "}<MMMM|{\\kf100}MMMMMMMM>", 500, &a);
+    ok &= check(retain_reading_band(&a, false) && red_blue(&a, IMAGE_TYPE_CHARACTER),
+                "progressive furigana reading lost gradient");
+    release(&a);
+
+    const uint8_t green[] = {0, 255, 0, 255};
+    ok &= ass_set_tag_image_rgba(renderer, "audit.png", ASS_TAG_IMAGE_FORMAT_PNG, 1, 1, 4, green) == 0;
+    ok &= render(lib, renderer, "{" BOX "\\4grd" RGB "\\4img(audit.png)}MMMM", 0, &a);
+    ok &= check(flat_green(&a, IMAGE_TYPE_SHADOW), "image fill did not replace BS4 gradient paint");
+    release(&a);
+    ok &= render(lib, renderer, "{" BOX "\\4img(audit.png)\\4grd" RGB "}MMMM", 0, &a);
+    ok &= check(red_blue(&a, IMAGE_TYPE_SHADOW), "BS4 gradient did not replace image fill");
+    release(&a);
+    ass_clear_tag_images(renderer);
+    return ok;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -497,6 +558,7 @@ int main(void)
     ok &= ordinary(lib, renderer);
     ok &= timing(lib, renderer);
     ok &= automatic(lib, renderer);
+    ok &= precedence(lib, renderer);
     ass_renderer_done(renderer); ass_library_done(lib);
     return ok ? 0 : 1;
 }

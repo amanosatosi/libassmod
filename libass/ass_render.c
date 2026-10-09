@@ -2999,7 +2999,9 @@ static ASS_Image *render_text(RenderContext *state, ASS_ImageRGBA **out_rgba)
             tail =
                 render_glyph(state, info, info->bm, info->x, info->y, info->c[0],
                              info->c[1], info->effect_timing, tail,
-                             IMAGE_TYPE_CHARACTER, info->image, 0, 1,
+                             IMAGE_TYPE_CHARACTER, info->image,
+                             info->karaoke_reverse ? 1 : 0,
+                             info->karaoke_reverse ? 0 : 1,
                              out_rgba ? &rgba_tail : NULL);
         } else
             tail =
@@ -3987,6 +3989,8 @@ static void capture_column_base_style(RenderContext *state)
 static void apply_column_base_style(RenderContext *state)
 {
     const ColumnStyleState *style = &state->column_base_style;
+    state->box_paint_dirty |= state->shadow_x != style->shadow_x ||
+                              state->shadow_y != style->shadow_y;
     state->family = style->family;
     state->font_size = style->font_size;
     state->bold = style->bold;
@@ -4019,6 +4023,9 @@ static void apply_column_default_style(RenderContext *state,
                                        const ColumnStyleState *style)
 {
     unsigned fields = style->mask;
+    state->box_paint_dirty |=
+        ((fields & COLUMN_STYLE_SHADOW_X) && state->shadow_x != style->shadow_x) ||
+        ((fields & COLUMN_STYLE_SHADOW_Y) && state->shadow_y != style->shadow_y);
     bool update_font = false;
     bool sync_border = false;
 
@@ -9539,6 +9546,13 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
 
                 memcpy(&current_info->c, &info->c, sizeof(info->c));
                 memcpy(&current_info->base_c, &info->c, sizeof(info->c));
+                /* Legacy timing swaps flat colors for a reversed screen-X
+                 * wipe. RGBA paint tables retain logical primary/secondary
+                 * identities; keep their fallback colors/alpha canonical. */
+                if (info->karaoke_reverse && info->effect_type == EF_KARAOKE_KF) {
+                    current_info->base_c[0] = info->c[1];
+                    current_info->base_c[1] = info->c[0];
+                }
                 current_info->gradient = info->gradient;
                 current_info->mangetsu_gradient = info->mangetsu_gradient;
                 current_info->pattern = info->pattern;
@@ -9740,9 +9754,9 @@ static bool append_decoration_bitmap_info(RenderContext *state,
         deco.mangetsu_gradient.alpha[4];
     ass_mangetsu_gradient_state_reset(&deco.mangetsu_gradient);
     if (decoration_gradient.active)
-        deco.mangetsu_gradient.layer[0] = decoration_gradient;
+        deco.mangetsu_gradient.layer[0] = deco.mangetsu_gradient.layer[1] = decoration_gradient;
     if (decoration_alpha_gradient.active)
-        deco.mangetsu_gradient.alpha[0] = decoration_alpha_gradient;
+        deco.mangetsu_gradient.alpha[0] = deco.mangetsu_gradient.alpha[1] = decoration_alpha_gradient;
     deco.outline = NULL;
     deco.distorted_outline = NULL;
     deco.has_distort_bitmap = false;

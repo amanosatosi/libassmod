@@ -2534,9 +2534,28 @@ static void set_box_border_layer_size(RenderContext *state, int layer,
     border->enabled = size > 0;
 }
 
-static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
-                                 int layer, struct arg arg, double pwr)
+static void replace_box_gradient_solid(MangetsuGradientLayer *gradient,
+                                       uint32_t value, double pwr,
+                                       bool nested, bool alpha)
 {
+    if (pwr <= 0)
+        return;
+    if (nested && pwr < 1 && gradient->active) {
+        for (int i = 0; i < gradient->n_stops; i++) {
+            if (alpha)
+                change_alpha(&gradient->stops[i].color, value, pwr);
+            else
+                change_color(&gradient->stops[i].color, value, pwr);
+        }
+    } else {
+        ass_mangetsu_gradient_layer_reset(gradient);
+    }
+}
+
+static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
+                                 int layer, struct arg arg, double pwr, bool nested)
+{
+    state->box_paint_dirty = true;
     BorderLayerState *border = &state->box_border_layers[layer];
 
     switch (tag) {
@@ -2565,8 +2584,7 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
             border->color = (border->color & 0xFFFFFF00u) | alpha;
             border->has_color = true;
             ass_gradient_values_disable_color(&border->gradient, border->color, pwr);
-            if (pwr > 0)
-                ass_mangetsu_gradient_layer_reset(&state->box_border_color[layer]);
+            replace_box_gradient_solid(&state->box_border_color[layer], val, pwr, nested, false);
         }
         break;
     }
@@ -2584,8 +2602,7 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
             change_alpha(&border->color, val, pwr);
             border->has_alpha = true;
             ass_gradient_values_disable_alpha(&border->gradient, _a(border->color), pwr);
-            if (pwr > 0)
-                ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[layer]);
+            replace_box_gradient_solid(&state->box_border_alpha[layer], val, pwr, nested, true);
         }
         break;
     }
@@ -2606,6 +2623,7 @@ static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
                                    struct arg inline_arg, char *name_end,
                                    char *tag_end, double pwr, bool nested)
 {
+    state->box_paint_dirty = true;
     BorderLayerState *border = &state->box_border_layers[layer];
     bool alpha = tag == BORDER_TAG_BOX_VALPHA ||
                  tag == BORDER_TAG_BOX_ALPHA_GRADIENT;
@@ -2704,7 +2722,7 @@ static void apply_numbered_border_tag(RenderContext *state,
     case BORDER_TAG_BOX_SIZE:
     case BORDER_TAG_BOX_COLOR:
     case BORDER_TAG_BOX_ALPHA:
-        apply_box_border_tag(state, tag, layer, arg, pwr);
+        apply_box_border_tag(state, tag, layer, arg, pwr, nested);
         break;
     case BORDER_TAG_BLUR:
     case BORDER_TAG_BE: {
@@ -3455,7 +3473,6 @@ void ass_apply_chat_side_style(RenderContext *state, int side)
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested)
 {
-    state->box_paint_dirty = true;
     ASS_Renderer *render_priv = state->renderer;
     for (char *q; p < end; p = q) {
         while (*p != '\\' && p != end)
@@ -3848,6 +3865,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             sync_layer1_border(state);
             column_default(COLUMN_STYLE_BORDER_Y);
         } else if (tag("xshad")) {
+            state->box_paint_dirty = true;
             double val;
             if (nargs) {
                 val = numeric_argtod(*args, state->shadow_x, NUM_SIGNED);
@@ -3857,6 +3875,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->shadow_x = val;
             column_default(COLUMN_STYLE_SHADOW_X);
         } else if (tag("yshad")) {
+            state->box_paint_dirty = true;
             double val;
             if (nargs) {
                 val = numeric_argtod(*args, state->shadow_y, NUM_SIGNED);
@@ -5032,26 +5051,29 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                    name_end, q, pwr, nested);
         } else if (tag("bbs")) {
             struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
-            apply_box_border_tag(state, BORDER_TAG_BOX_SIZE, 0, arg, pwr);
+            apply_box_border_tag(state, BORDER_TAG_BOX_SIZE, 0, arg, pwr, nested);
         } else if (tag("bbc")) {
             struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
-            apply_box_border_tag(state, BORDER_TAG_BOX_COLOR, 0, arg, pwr);
+            apply_box_border_tag(state, BORDER_TAG_BOX_COLOR, 0, arg, pwr, nested);
         } else if (tag("bba")) {
             struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
-            apply_box_border_tag(state, BORDER_TAG_BOX_ALPHA, 0, arg, pwr);
+            apply_box_border_tag(state, BORDER_TAG_BOX_ALPHA, 0, arg, pwr, nested);
         } else if (tag("boxpx")) {
+            state->box_paint_dirty = true;
             if (nargs) {
                 double val;
                 if (numeric_arg_strict(*args, state->box_extra_x, NUM_NONNEGATIVE, &val))
                     state->box_extra_x = FFMAX(val, 0);
             }
         } else if (tag("boxpy")) {
+            state->box_paint_dirty = true;
             if (nargs) {
                 double val;
                 if (numeric_arg_strict(*args, state->box_extra_y, NUM_NONNEGATIVE, &val))
                     state->box_extra_y = FFMAX(val, 0);
             }
         } else if (tag("boxp")) {
+            state->box_paint_dirty = true;
             if (nargs) {
                 NumericOperand operand;
                 if (!parse_numeric_operand(*args, NUM_NONNEGATIVE, true, &operand))
@@ -5064,6 +5086,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 }
             }
         } else if (tag("boxr")) {
+            state->box_paint_dirty = true;
             double val = 0;
             if (nargs && !numeric_arg_strict(*args, state->box_corner_radius,
                                              NUM_NONNEGATIVE, &val))
@@ -5150,6 +5173,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 val = argtod(*args);
             apply_karaoke_duration_tag(state, EF_KARAOKE, val);
         } else if (tag("shad")) {
+            state->box_paint_dirty = true;
             double val, val_y, xval, yval;
             if (nargs) {
                 numeric_argtod_pair(*args, state->shadow_x, state->shadow_y,

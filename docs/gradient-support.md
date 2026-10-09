@@ -47,6 +47,10 @@ paint. Furigana uses inherited per-glyph paint; horizontal alignment and
 `\furichangepos0/1/2` clearance do not add another paint pipeline. Karaoke
 splits coverage rather than gradient state; `\kO` hides every paint layer
 until activation. Waiting-outline paint applies only to the first outline.
+Reversed progressive wipes select logical primary/secondary paint sources
+together with their fallback alpha; explicit fifth-channel decoration paint
+continues through both waiting and active phases. Box-ring solid overrides
+inside `\t` interpolate the existing gradient stops toward the solid value.
 
 Existing layout restrictions still apply: native vertical furigana placement
 is unavailable; curved events with furigana, semantic columns, or scrolling
@@ -63,3 +67,32 @@ pattern, karaoke, layout, ownership, and decoration regression suites provide
 additional coverage. `.github/workflows/gradient-audit.yml` builds and runs
 the entire Meson regression suite with ASan/UBSan and a shared-library build.
 CI results, rather than parser acceptance alone, establish validation.
+
+## Audit findings
+
+The BS4 temporary bitmap path previously carried only a solid color and blend
+mode, dropping fourth-channel gradient metadata. Box-border paint also lacked
+an independent gradient namespace and was omitted when RGBA requirements were
+recomputed from text alone. Captured box paint now accompanies geometry into
+the existing sampler, including its fade and blend state.
+
+Attached outline and shadow gradients previously used base-text bounds, while
+different native rings could share padded composite allocations. Target bounds
+now come from the shadow bitmap or the occupied ring mask. This changes
+Mangetsu attached domains; four-corner VSFilterMod coordinates remain unchanged.
+The positioned-gradient rectangle previously subtracted scrolling displacement,
+moving a documented fixed-frame field. Its script-frame mapping now stays fixed.
+
+Malformed vector arguments previously passed through permissive color parsing
+and could replace valid paint. Validation now happens before state changes.
+Reversed progressive fills previously swapped only legacy colors, leaving RGBA
+gradient sources and fallback alpha in the wrong phase. Decoration fifth-layer
+gradients were transferred only to the active primary phase. Both now retain
+their intended logical paint source through the common karaoke paths.
+
+Regression fixtures preserve existing restrictions: inline reading overrides
+select karaoke rather than arbitrary visual style; ASS suppresses fill-only
+shadows behind fully invisible fill; eight-value distortion places P0 last;
+and ordinary single outlines have different mask-subtraction semantics from
+native composite rings. Tests isolate reading bands and compare like geometry
+rather than changing those established behaviors.
