@@ -293,9 +293,18 @@ foreach config : [0, 1]
         endforeach
     endforeach
 endforeach
+# Validate committed runtime fixtures during configuration; no CI download or
+# font generation is required. Keep paths compatible with Meson 0.64.
+furi_fixture_files = files('fonts/NotoSansMyanmar-Regular.ttf',
+    'fonts/furi-tight-ascent.ttf', 'fonts/furi-tight-descent.ttf',
+    '../compare/test/font1.ttf')
+furi_myanmar_font = join_paths(meson.current_source_dir(), 'fonts', 'NotoSansMyanmar-Regular.ttf')
+furi_default_font = join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')
 test('furi-extension', furi_unit,
-    env: {'FURI_TEST_FONT': join_paths(
-        meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
+    env: {
+        'FURI_TEST_FONT': furi_default_font,
+        'FURI_MYANMAR_FONT': furi_myanmar_font,
+    },
     timeout: 120,
 )
 foreach fixture : ['ascent', 'descent']
@@ -304,10 +313,17 @@ foreach fixture : ['ascent', 'descent']
         env: {
             'FURI_TEST_FONT': join_paths(meson.current_source_dir(), 'fonts',
                 'furi-tight-' + fixture + '.ttf'),
+            'FURI_MYANMAR_FONT': furi_myanmar_font,
             'FURI_TEST_FAMILY': 'Furi Tight ' + (fixture == 'ascent' ? 'Ascent' : 'Descent'),
         },
         timeout: 120)
 endforeach
+test('furi-myanmar-shaping', furi_unit,
+    args: ['--myanmar-only'],
+    env: {
+        'FURI_TEST_FONT': furi_default_font,
+        'FURI_MYANMAR_FONT': furi_myanmar_font,
+    }, timeout: 120)
 
 pattern_paint_unit = executable(
     'pattern_paint_unit',

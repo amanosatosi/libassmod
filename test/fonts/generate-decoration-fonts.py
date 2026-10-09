@@ -7,6 +7,7 @@ committed TTFs contain no outlines or data copied from any third-party font.
 """
 from pathlib import Path
 import struct
+import unicodedata
 
 
 def pack(fmt, *values):
@@ -30,7 +31,20 @@ def font(filename, family, em, asc, desc, underline, thickness, strike, strike_s
     rect = (pack("hhhhh", 1, 0, ink_bottom, width, ink_bottom + height) + pack("HH", 3, 0) +
             bytes([1] * 4) + pack("hhhh", 0, 0, width, 0) +
             pack("hhhh", ink_bottom, height, 0, -height))
-    glyphs += [rect] * len(coverage)
+    # Myanmar marks deliberately have zero advance and smaller, visible ink.
+    # Place above/below marks around the same extreme-metric baseline. These
+    # are geometry probes, not a substitute for the real shaping fixture.
+    mark_chars = {ch for ch in coverage if unicodedata.category(chr(ch)) == "Mn"}
+    mark_width, mark_height = cell // 8, cell // 5
+    for ch in sorted(coverage):
+        if ch not in mark_chars:
+            glyphs.append(rect)
+            continue
+        bottom = ink_bottom - mark_height if ch in {0x102f, 0x1030, 0x1037} else ink_bottom + height
+        glyphs.append(pack("hhhhh", 1, -mark_width, bottom, 0, bottom + mark_height) +
+                      pack("HH", 3, 0) + bytes([1] * 4) +
+                      pack("hhhh", -mark_width, 0, mark_width, 0) +
+                      pack("hhhh", bottom, mark_height, 0, -mark_height))
     offsets, glyf = [0], b""
     for glyph in glyphs:
         glyf += glyph + bytes(-len(glyph) % 4)
@@ -39,11 +53,18 @@ def font(filename, family, em, asc, desc, underline, thickness, strike, strike_s
     tables = {
         "glyf": glyf,
         "loca": pack("I" * len(offsets), *offsets),
-        "hmtx": pack("Hh", advance, 0) * n,
+        "hmtx": pack("Hh", advance, 0) * 2 + b"".join(
+            pack("Hh", 0, -mark_width) if ch in mark_chars else pack("Hh", advance, 0)
+            for ch in sorted(coverage)),
         "head": pack("IIIIHHQQhhhhHHhhh", 0x10000, 0x10000, 0, 0x5f0f3cf5,
-                     3, em, 0, 0, 0, ink_bottom, width, ink_bottom + height, 0, 8, 2, 1, 0),
+                     3, em, 0, 0, -mark_width if mark_chars else 0,
+                     ink_bottom - mark_height if mark_chars else ink_bottom, width,
+                     ink_bottom + height + mark_height if mark_chars else ink_bottom + height,
+                     0, 8, 2, 1, 0),
         "hhea": (pack("IhhhH", 0x10000, asc, -desc, 0, advance) +
-                 pack("h" * 11, 0, advance - width, width, 1, 0, 0, 0, 0, 0, 0, 0) +
+                 pack("h" * 11, -mark_width if mark_chars else 0,
+                      0 if mark_chars else advance - width, width,
+                      1, 0, 0, 0, 0, 0, 0, 0) +
                  pack("H", n)),
         "maxp": pack("IH" + "H" * 13, 0x10000, n,
                      4, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0),
@@ -97,7 +118,7 @@ font("decoration-complete.ttf", "Deco Complete", 2048, 1800, 248, -900, 100, 600
 
 # Deliberately place the same rectangle ink outside the nominal ascent or
 # descent. These probe ruby clearance against shaped geometry, not metrics.
-furi_chars = {ord(c) for c in "WM漢字かんじ認みとめていた臆おく病びょうな過去こ"}
+furi_chars = {ord(c) for c in "WM漢字かんじ認みとめていた臆おく病びょうな過去こဆာတို့စူဇူကီ"}
 font("furi-tight-ascent.ttf", "Furi Tight Ascent", 1000, 250, 750,
      -100, 50, 200, 50, furi_chars)
 font("furi-tight-descent.ttf", "Furi Tight Descent", 1000, 900, 100,

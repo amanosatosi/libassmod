@@ -7,6 +7,10 @@
 #include <string.h>
 
 #include "ass.h"
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include <hb.h>
+#include <hb-ot.h>
 
 #define FRAME_W 384
 #define FRAME_H 216
@@ -30,6 +34,10 @@ typedef struct {
 
 static unsigned char *test_font_data;
 static int test_font_size;
+static unsigned char *myanmar_font_data;
+static int myanmar_font_size;
+static bool strict_fixture_render;
+static unsigned missing_glyphs;
 
 static int expect_same(const char *a, const char *b);
 static int expect_different(const char *a, const char *b);
@@ -69,9 +77,112 @@ static bool load_test_font(void)
     return true;
 }
 
+static bool load_myanmar_font(void)
+{
+    const char *path = getenv("FURI_MYANMAR_FONT");
+    if (!path) {
+        fprintf(stderr, "required FURI_MYANMAR_FONT fixture path is unset\n");
+        return false;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return false;
+    bool ok = fseek(file, 0, SEEK_END) == 0;
+    long size = ok ? ftell(file) : -1;
+    ok = size > 0 && size <= INT_MAX && fseek(file, 0, SEEK_SET) == 0;
+    myanmar_font_data = ok ? malloc(size) : NULL;
+    ok = myanmar_font_data && fread(myanmar_font_data, 1, size, file) == (size_t) size;
+    fclose(file);
+    if (!ok) {
+        free(myanmar_font_data);
+        myanmar_font_data = NULL;
+    } else {
+        myanmar_font_size = size;
+    }
+    return ok;
+}
+
+/* Check the exact selected fixture's cmap and ink, before spacing assertions.
+ * Missing marks are failures even when other glyphs make a reading visible. */
+static int check_myanmar_coverage(const unsigned char *data, int size,
+                                  const char *label, bool real_shaping)
+{
+    static const FT_ULong required[] = {
+        0x1000, 0x1005, 0x1006, 0x1007, 0x1010, 0x102c,
+        0x102d, 0x102e, 0x102f, 0x1030, 0x1037
+    };
+    FT_Library ft = NULL;
+    FT_Face face = NULL;
+    int fail = 0;
+    if (FT_Init_FreeType(&ft) || FT_New_Memory_Face(ft, data, size, 0, &face)) {
+        fprintf(stderr, "::error title=furigana fixture::cannot open %s\n", label);
+        fail = 1;
+        goto done;
+    }
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+        FT_UInt glyph = FT_Get_Char_Index(face, required[i]);
+        if (!glyph) {
+            fprintf(stderr, "::error title=furigana glyph unavailable::%s lacks U+%04lX\n",
+                    label, required[i]);
+            fail = 1;
+        } else if (FT_Load_Glyph(face, glyph, FT_LOAD_NO_SCALE | FT_LOAD_NO_BITMAP) ||
+                   !face->glyph->metrics.width || !face->glyph->metrics.height) {
+            fprintf(stderr, "::error title=furigana glyph empty::%s U+%04lX has no ink\n",
+                    label, required[i]);
+            fail = 1;
+        }
+    }
+    if (real_shaping && !fail) {
+        hb_blob_t *blob = hb_blob_create((const char *) data, size, HB_MEMORY_MODE_READONLY, NULL, NULL);
+        hb_face_t *hb_face = hb_face_create(blob, 0);
+        hb_font_t *font = hb_font_create(hb_face);
+        hb_ot_font_set_funcs(font);
+        hb_font_set_scale(font, face->units_per_EM, face->units_per_EM);
+        const char *readings[] = {"ဆာတို့", "စူဇူကီ"};
+        for (size_t i = 0; i < sizeof(readings) / sizeof(readings[0]); i++) {
+            hb_buffer_t *buffer = hb_buffer_create();
+            hb_buffer_add_utf8(buffer, readings[i], -1, 0, -1);
+            hb_buffer_guess_segment_properties(buffer);
+            hb_buffer_set_language(buffer, hb_language_from_string("my", -1));
+            hb_shape(font, buffer, NULL, 0);
+            unsigned count;
+            hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buffer, &count);
+            hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buffer, NULL);
+            bool cluster = false, mark = false, above = false, below = false;
+            for (unsigned j = 0; j < count; j++) {
+                hb_glyph_extents_t ext;
+                if (!info[j].codepoint || !hb_font_get_glyph_extents(font, info[j].codepoint, &ext)) {
+                    fail = 1;
+                    continue;
+                }
+                cluster |= j && info[j].cluster == info[j - 1].cluster;
+                mark |= pos[j].x_advance == 0 && ext.width && ext.height;
+                above |= pos[j].y_offset + ext.y_bearing > 0;
+                below |= pos[j].y_offset + ext.y_bearing + ext.height < 0;
+            }
+            if (!count || !cluster || !mark || !above || !below) {
+                fprintf(stderr, "::error title=Myanmar shaping fixture::%s reading=%s glyphs=%u "
+                        "cluster=%d mark=%d above=%d below=%d\n",
+                        label, readings[i], count, cluster, mark, above, below);
+                fail = 1;
+            }
+            hb_buffer_destroy(buffer);
+        }
+        hb_font_destroy(font);
+        hb_face_destroy(hb_face);
+        hb_blob_destroy(blob);
+    }
+done:
+    if (face) FT_Done_Face(face);
+    if (ft) FT_Done_FreeType(ft);
+    return fail;
+}
+
 static void test_message(int level, const char *format, va_list args, void *data)
 {
     (void) data;
+    if (strict_fixture_render && strstr(format, "failed to find any fallback with glyph"))
+        missing_glyphs++;
     if (level <= 2) {
         vfprintf(stderr, format, args);
         fputc('\n', stderr);
@@ -83,6 +194,8 @@ static void add_test_font(ASS_Library *lib)
     ass_set_message_cb(lib, test_message, NULL);
     ass_add_font(lib, "font1.ttf", (const char *) test_font_data,
                  test_font_size);
+    ass_add_font(lib, "NotoSansMyanmar-Regular.ttf", (const char *) myanmar_font_data,
+                 myanmar_font_size);
 }
 
 static char *make_script(const char *text)
@@ -106,7 +219,7 @@ static char *make_script(const char *text)
         "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,";
     const char *family = getenv("FURI_TEST_FAMILY");
     if (!family)
-        family = "Arial";
+        family = strict_fixture_render ? "Pixel Operator Mono" : "Arial";
     size_t len = strlen(prefix) + strlen(family) + strlen(text) + 8;
     char *script = malloc(len);
     if (!script)
@@ -663,8 +776,9 @@ static int render_ruby_snapshot_types(const char *text, RubySnapshot *snapshot,
         goto done;
     ass_set_storage_size(renderer, FRAME_W, FRAME_H);
     ass_set_frame_size(renderer, FRAME_W, FRAME_H);
-    ass_set_fonts(renderer, NULL, "Arial",
-                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+    ass_set_fonts(renderer, NULL, strict_fixture_render ? "Noto Sans Myanmar" : "Arial",
+                  strict_fixture_render ? ASS_FONTPROVIDER_NONE : ASS_FONTPROVIDER_AUTODETECT,
+                  NULL, 1);
     script = make_script(text);
     if (!script)
         goto done;
@@ -1033,6 +1147,8 @@ static int expect_strict_ruby_layout(const char *plain_body, const char *body,
                                     bool positioned, bool moves,
                                     unsigned strict_boundaries, bool share)
 {
+    strict_fixture_render = true;
+    missing_glyphs = 0;
     char plain_text[2048], compact_text[2048], strict_text[2048], pos[64] = "";
     int y = alignment >= 7 ? 65 : alignment <= 3 ? 160 : 108;
     if (positioned)
@@ -1055,50 +1171,92 @@ static int expect_strict_ruby_layout(const char *plain_body, const char *body,
     if (!err) err = render_ruby_snapshot_types(strict_text, &bands2, true);
     RubyExtent base[3][3] = {{{0}}}, band[2][3] = {{{0}}};
     RubyExtent reading[2][3] = {{{0}}};
-    bool ok = !err && plain.count > 0 && compact.count > plain.count &&
-              compact.count == strict.count;
+    const char *reason = err ? "render initialization/allocation failed" :
+        missing_glyphs ? "required glyphs unavailable (see fontselect diagnostics)" : NULL;
+    bool ok = !reason && plain.count > 0;
     RubySnapshot *snapshots[] = {&plain, &compact, &strict};
-    for (int mode = 0; ok && mode < 3; mode++)
-        for (int i = 0; ok && i < plain.count; i++) {
+    for (int mode = 0; mode < 3; mode++)
+        for (int i = 0; i < plain.count; i++) {
             RubySnapshot *s = snapshots[mode];
+            if (i >= s->count) {
+                ok = false;
+                if (!reason) reason = "base image grouping differs from control";
+                break;
+            }
             int line = ruby_color_line(s->colors[i]);
-            ok = line >= 0 && line < lines && !s->runs[i].empty &&
-                 s->colors[i] == plain.colors[i];
-            if (ok) include_ruby_extent(&base[mode][line], &s->runs[i]);
+            if (line < 0 || line >= lines || s->colors[i] != plain.colors[i]) {
+                ok = false;
+                if (!reason) reason = "base image grouping/color differs from control";
+            } else if (s->runs[i].empty) {
+                ok = false;
+                if (!reason) reason = "rendered base image has no occupied pixels";
+            } else {
+                include_ruby_extent(&base[mode][line], &s->runs[i]);
+            }
         }
-    for (int mode = 0; ok && mode < 2; mode++) {
+    for (int mode = 0; mode < 2; mode++) {
         RubySnapshot *characters = mode ? &strict : &compact;
-        for (int i = plain.count; ok && i < characters->count; i++) {
+        for (int i = plain.count; i < characters->count; i++) {
             int line = ruby_color_line(characters->colors[i]);
-            ok = line >= 0 && line < lines && !characters->runs[i].empty;
-            if (ok) include_ruby_extent(&reading[mode][line], &characters->runs[i]);
+            if (line < 0 || line >= lines || characters->runs[i].empty) {
+                ok = false;
+                if (!reason) reason = characters->runs[i].empty ?
+                    "rendered annotation image has no occupied pixels" : "annotation line color missing";
+            } else {
+                include_ruby_extent(&reading[mode][line], &characters->runs[i]);
+            }
         }
         RubySnapshot *s = mode ? &bands2 : &bands0;
-        for (int i = 0; ok && i < s->count; i++) {
+        for (int i = 0; i < s->count; i++) {
             int line = ruby_color_line(s->colors[i]);
-            ok = line >= 0 && line < lines && !s->runs[i].empty;
-            if (ok) include_ruby_extent(&band[mode][line], &s->runs[i]);
+            if (line < 0 || line >= lines || s->runs[i].empty) {
+                ok = false;
+                if (!reason) reason = "full-band image empty or line color missing";
+            } else {
+                include_ruby_extent(&band[mode][line], &s->runs[i]);
+            }
         }
     }
     int dy[3] = {0};
-    for (int line = 0; ok && line < lines; line++) {
-        ok = base[0][line].have && base[1][line].have && base[2][line].have &&
-             band[0][line].have && band[1][line].have;
+    for (int line = 0; line < lines; line++) {
+        if (!base[0][line].have || !base[1][line].have || !base[2][line].have ||
+            !band[0][line].have || !band[1][line].have) {
+            ok = false;
+            if (!reason) reason = "expected base/full-band geometry missing";
+        }
+        if (!reading[0][line].have || !reading[1][line].have) {
+            ok = false;
+            if (!reason) reason = "expected annotation group missing from rendered geometry";
+        }
         dy[line] = base[2][line].y0 - base[1][line].y0;
     }
-    // Every character run keeps its X placement and translates with its base
-    // line, including annotation-to-base offsets after final repositioning.
-    for (int i = 0; ok && i < compact.count; i++) {
-        int line = ruby_color_line(compact.colors[i]);
-        Mask *a = &compact.runs[i], *b = &strict.runs[i];
-        ok = line >= 0 && line < lines && !a->empty && !b->empty &&
-             compact.colors[i] == strict.colors[i] &&
-             compact.image_x[i] == strict.image_x[i] &&
-             compact.image_width[i] == strict.image_width[i] &&
-             abs(a->x0 - b->x0) <= 1 && abs(a->x1 - b->x1) <= 1 &&
-             abs(b->y0 - a->y0 - dy[line]) <= 1 &&
-             abs(b->y1 - a->y1 - dy[line]) <= 1;
+    // Compare complete occupied base/reading bands, permitting any number
+    // of character images. Font fallback/shaping may split a reading run.
+    for (int line = 0; ok && line < lines; line++) {
+        RubyExtent a[] = {base[1][line], reading[0][line]};
+        RubyExtent b[] = {base[2][line], reading[1][line]};
+        for (int part = 0; ok && part < 2; part++) {
+            ok = abs(a[part].x0 - b[part].x0) <= 1 && abs(a[part].x1 - b[part].x1) <= 1 &&
+                 abs(b[part].y0 - a[part].y0 - dy[line]) <= 1 &&
+                 abs(b[part].y1 - a[part].y1 - dy[line]) <= 1;
+            if (!ok) reason = "horizontal geometry or annotation-to-base attachment changed";
+        }
     }
+    // Retain the stronger per-image attachment check when the renderer uses
+    // the same grouping. Different grouping is permitted, not required.
+    if (compact.count == strict.count)
+        for (int i = 0; ok && i < compact.count; i++) {
+            int line = ruby_color_line(compact.colors[i]);
+            Mask *a = &compact.runs[i], *b = &strict.runs[i];
+            ok = line >= 0 && line < lines && !a->empty && !b->empty &&
+                 compact.colors[i] == strict.colors[i] &&
+                 compact.image_x[i] == strict.image_x[i] &&
+                 compact.image_width[i] == strict.image_width[i] &&
+                 abs(a->x0 - b->x0) <= 1 && abs(a->x1 - b->x1) <= 1 &&
+                 abs(b->y0 - a->y0 - dy[line]) <= 1 &&
+                 abs(b->y1 - a->y1 - dy[line]) <= 1;
+            if (!ok) reason = "image attachment/horizontal geometry changed with identical grouping";
+        }
     if (ok && alignment >= 7)
         ok = base[2][0].y0 == base[0][0].y0 &&
              base[2][0].y1 == base[0][0].y1;
@@ -1108,40 +1266,51 @@ static int expect_strict_ruby_layout(const char *plain_body, const char *body,
     else if (ok)
         ok = abs(base[2][0].y0 + base[2][lines - 1].y1 -
                  base[0][0].y0 - base[0][lines - 1].y1) <= 2;
+    if (!ok && !reason) reason = "mode 2 moved the original base-text anchor";
     bool grew = false, shared = false;
     for (int line = 0; ok && line + 1 < lines; line++) {
         int growth = dy[line + 1] - dy[line];
         int overlap = band[0][line].y1 + 1 - band[0][line + 1].y0;
         if (strict_boundaries & (1u << line)) {
             ok = band[1][line].y1 + 1 <= band[1][line + 1].y0;
+            if (!ok) reason = "mode 2 left reserved vertical bands overlapping";
             // Occupied outline bounds include AA padding. Allow that small
             // footprint and raster rounding, never a fixed oversized gap.
             ok = ok && growth >= -1 && growth <= (overlap > 0 ? overlap : 0) + 8;
+            if (!ok && !reason) reason = "interline spacing grew disproportionately";
         }
         grew |= growth > 1;
         shared |= reading[0][line].have && reading[0][line + 1].have &&
                   reading[0][line].y1 > reading[0][line + 1].y0;
     }
     ok = ok && (moves ? grew : !grew) && (!share || shared);
+    if (!ok && !reason) reason = moves && !grew ? "mode 2 did not increase interline spacing" :
+        share && !shared ? "mode 0 compact annotations did not share a vertical band" :
+        "mode 2 added unnecessary interline spacing";
     if (!moves)
         for (int line = 0; ok && line < lines; line++)
             ok = dy[line] == 0;
     if (!ok) {
-        fprintf(stderr, "::error title=strict ruby bands::an%d pos=%d lines=%d "
+        fprintf(stderr, "::error title=strict ruby bands::%s: an%d pos=%d lines=%d "
                 "err=%d grew=%d shared=%d runs=%d/%d/%d: `%s`\n",
-                alignment, positioned, lines, err, grew, shared,
+                reason ? reason : "unexpected line translation", alignment, positioned, lines, err, grew, shared,
                 plain.count, compact.count, strict.count, strict_text);
         for (int line = 0; line < lines; line++)
-            fprintf(stderr, "  line%d base Y=%d/%d/%d band=[%d,%d)/[%d,%d)\n",
+            fprintf(stderr, "  line%d base Y=%d/%d/%d band=[%d,%d)/[%d,%d) "
+                    "reading=[%d,%d)/[%d,%d) have=%d/%d\n",
                     line, base[0][line].y0, base[1][line].y0, base[2][line].y0,
                     band[0][line].y0, band[0][line].y1,
-                    band[1][line].y0, band[1][line].y1);
+                    band[1][line].y0, band[1][line].y1,
+                    reading[0][line].y0, reading[0][line].y1,
+                    reading[1][line].y0, reading[1][line].y1,
+                    reading[0][line].have, reading[1][line].have);
     }
     free_ruby_snapshot(&plain);
     free_ruby_snapshot(&compact);
     free_ruby_snapshot(&strict);
     free_ruby_snapshot(&bands0);
     free_ruby_snapshot(&bands2);
+    strict_fixture_render = false;
     return ok ? 0 : 1;
 }
 
@@ -1203,11 +1372,30 @@ static int test_strict_ruby_geometry(void)
                         "{\\furichangepos0}<W||M>\\N<W|M>");
     fail |= expect_same("{\\furichangepos99}<W|M>\\N<W|M>",
                         "{\\furichangepos1}<W|M>\\N<W|M>");
-    // Combining marks use real shaped ink; fallback fonts may split a reading
-    // into several image runs. Aggregation above deliberately permits that.
+    // Tight fixtures supply synthetic marks; the default fixture falls back
+    // only to bundled Noto Sans Myanmar. No OS font is used in this snapshot.
     fail |= expect_strict_ruby_layout(plain,
         RUBY_RED "<W||ဆာတို့>        W\\N" RUBY_GREEN "W        <W|စူဇူကီ>",
         "", 8, 2, true, true, 1, true);
+    return fail;
+}
+
+static int test_myanmar_geometry(void)
+{
+    int fail = 0;
+    const char *plain = RUBY_RED "W        W\\N" RUBY_GREEN "W        W";
+    const char *inward = RUBY_RED "<W||ဆာတို့>        W\\N"
+                         RUBY_GREEN "W        <W|စူဇူကီ>";
+    // Same original failing case with genuine shaping, every anchor class,
+    // and both explicit and margin-based positioning.
+    for (int pos = 0; pos <= 1; pos++)
+        for (int an = 2; an <= 8; an += 3)
+            fail |= expect_strict_ruby_layout(plain, inward, "", an,
+                2, pos, true, 1, true);
+    fail |= expect_strict_ruby_layout(plain, inward, "\\bord2\\shad2",
+        8, 2, true, true, 1, true);
+    fail |= expect_strict_ruby_layout(plain, inward, "\\fshp60",
+        8, 2, true, false, 1, false);
     return fail;
 }
 
@@ -2031,9 +2219,31 @@ int main(int argc, char **argv)
                 "could not load bundled compare/test/font1.ttf test font\n");
         return 1;
     }
+    if (!load_myanmar_font()) {
+        fprintf(stderr, "::error title=furigana fixture::cannot load required bundled Myanmar font\n");
+        free(test_font_data);
+        return 1;
+    }
+    fail |= check_myanmar_coverage(myanmar_font_data, myanmar_font_size,
+                                  "Noto Sans Myanmar", true);
+    if (getenv("FURI_TEST_FAMILY"))
+        fail |= check_myanmar_coverage(test_font_data, test_font_size,
+                                      getenv("FURI_TEST_FAMILY"), false);
+    if (fail) {
+        free(test_font_data);
+        free(myanmar_font_data);
+        return 1;
+    }
+    if (argc == 2 && strcmp(argv[1], "--myanmar-only") == 0) {
+        fail = test_myanmar_geometry();
+        free(test_font_data);
+        free(myanmar_font_data);
+        return fail ? 1 : 0;
+    }
     if (argc == 2 && strcmp(argv[1], "--geometry-only") == 0) {
         fail = test_ruby_geometry();
         free(test_font_data);
+        free(myanmar_font_data);
         return fail ? 1 : 0;
     }
 
@@ -2394,5 +2604,6 @@ int main(int argc, char **argv)
     fail |= test_ruby_geometry();
 
     free(test_font_data);
+    free(myanmar_font_data);
     return fail ? 1 : 0;
 }
