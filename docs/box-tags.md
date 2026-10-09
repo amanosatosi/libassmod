@@ -117,6 +117,11 @@ box that uses the first visible content's `\frz20` geometry:
 {\bs4\frz20}AB{\frz-20}CD
 ```
 
+Paint, padding, rounding, and box-border settings are captured with that same
+first visible content. Later overrides do not recolor or resize the existing
+event box. A fully transparent text event uses the established geometry fallback;
+karaoke reveal (`\kO`) does not create a box before content becomes visible.
+
 This is intentional: a BS4 box cannot exactly follow several unrelated
 per-glyph transforms while remaining one event-level shape. In particular,
 the per-glyph randomized boundary effects `\rnd`, `\rndx`, `\rndy`, and
@@ -190,3 +195,48 @@ Examples:
 {\bs4\boxp12\1bbs4\1bbc&HFFFFFF&\2bbs3\2bbc&H000000&}Text
 {\an5\pos(640,360)\bs4\boxp12\bbs4\bbc&HFFFFFF&\2bbs3\2bbc&H000000&\frz30}Layered sign
 ```
+
+## Box Fill and Border Gradients
+
+BS4 fills use the fourth paint channel: `\4vc` / `\4va` for four-corner
+vector color/alpha, and `\4grd` / `\4gra` for attached Mangetsu multistop
+color/alpha. Outside BS4, the same channel still paints ordinary shadows.
+`\4c` replaces only the color source and `\4a` only the alpha source.
+
+Each outward box-border ring has independent gradient sources. For `N = 1..10`:
+
+| Tag | Source |
+| --- | --- |
+| `\Nbbvc(c0,c1,c2,c3)` | Four-corner color (top left, top right, bottom left, bottom right) |
+| `\Nbbva(a0,a1,a2,a3)` | Four-corner ASS inverse alpha |
+| `\Nbbgrd(angle,stops...)` | Attached multistop color |
+| `\Nbbga(angle,stops...)` | Attached multistop inverse alpha |
+
+`\bbvc`, `\bbva`, `\bbgrd`, and `\bbga` are layer-1 aliases. These tags
+are separate from glyph-outline `\Nbvc`, `\Nbva`, `\Nbgrd`, and `\Nbga`.
+Their stop grammar, named colors, percentages, repeated positions, and
+`\t` interpolation use the existing gradient parser and sampler.
+
+```ass
+{\an5\pos(640,360)\bs4\boxp18\boxr12\4grd(0,&H0000FF&,&HFF0000&)\4gra(90,&H00&,&H80&)\bbs6\bbgrd(0,$white,$black)\2bbs8\2bbgrd(90,&H00FF00&,$white)}Gradient sign
+```
+
+The fill gradient uses the transformed box's logical bitmap bounds; each
+ring uses its own projected outer bounds. Raster guard padding and clip slices
+do not define a new gradient field. Padding, rounding, scaling, rotation,
+perspective, shear, distortion, position, and scrolling move the mask and
+attached field together. As with other attached Mangetsu gradients, the angle
+is evaluated in final screen axes over the target bounds; it is not a texture
+warped in box-local coordinates. Clips mask the painted result.
+
+`\Nbbc` replaces that ring's color gradient and `\Nbba` its alpha gradient,
+independently. Empty gradient parentheses or the inline `0` reset disable
+the corresponding source; `\r` and `\rStyleName` reset all box-border paint.
+With no explicit ring gradient, solid color/alpha retain their existing
+fallback to the captured box color/alpha. Rings do not inherit the fill's
+gradient automatically. Invalid arguments leave the last valid source intact.
+
+Gradients require RGBA output (`ass_render_frame_rgba` or automatic rendering).
+Legacy `ASS_Image` masks retain geometry and solid fallback colors; they cannot
+represent per-pixel RGB. Positioned `\pgrd` remains primary-text-only and
+does not paint boxes or their rings.

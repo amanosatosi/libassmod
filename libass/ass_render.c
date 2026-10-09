@@ -3625,7 +3625,10 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->box_extra_x = 0;
     state->box_extra_y = 0;
     state->box_corner_radius = 0;
+    state->box_paint_dirty = true;
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
+        ass_mangetsu_gradient_layer_reset(&state->box_border_color[i]);
+        ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[i]);
         state->box_border_layers[i] = (BorderLayerState) {
             .enabled = false,
             .has_color = false,
@@ -4254,6 +4257,13 @@ static void free_distortion_resources(RenderContext *state)
 
 static void free_render_context(RenderContext *state)
 {
+    while (state->box_paints) {
+        BS4Paint *paint = state->box_paints;
+        state->box_paints = paint->next;
+        free(paint);
+    }
+    state->current_box_paint = NULL;
+    state->box_paint_dirty = true;
     free(state->line_alignments);
     state->line_alignments = NULL;
     state->n_line_alignments = state->max_line_alignments = 0;
@@ -5807,6 +5817,27 @@ static bool append_glyph_to_target(RenderContext *state,
     info->secondary_outline = state->secondary_outline;
     info->image_fill = state->image_fill;
     info->blend_mode = state->blend_mode;
+    if (state->bs4_box_mode) {
+        if (state->box_paint_dirty || !state->current_box_paint) {
+            BS4Paint *paint = malloc(sizeof(*paint));
+            if (!paint)
+                return false;
+            *paint = (BS4Paint) {
+                .next = state->box_paints,
+                .extra_x = state->box_extra_x,
+                .extra_y = state->box_extra_y,
+                .radius = state->box_corner_radius,
+                .shadow_x = state->shadow_x,
+                .shadow_y = state->shadow_y,
+            };
+            memcpy(paint->borders, state->box_border_layers, sizeof(paint->borders));
+            memcpy(paint->color, state->box_border_color, sizeof(paint->color));
+            memcpy(paint->alpha, state->box_border_alpha, sizeof(paint->alpha));
+            state->box_paints = state->current_box_paint = paint;
+            state->box_paint_dirty = false;
+        }
+        info->box_paint = state->current_box_paint;
+    }
     info->line = 0;
 
     if (main_text && state->column_event && state->column_active) {
@@ -8831,13 +8862,11 @@ static void compute_mangetsu_gradient_rect_for_layer(
         if (!layer)
             continue;
         if (layer->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
-            double scroll = info->scroll_id ?
-                state->scroll_contexts[info->scroll_id - 1].displacement : 0.0;
             ass_mangetsu_gradient_prepare_positioned(
                 layer, x2scr_pos_scaled(render_priv, layer->script_x1),
-                y2scr_pos(render_priv, layer->script_y1) - scroll,
+                y2scr_pos(render_priv, layer->script_y1),
                 x2scr_pos_scaled(render_priv, layer->script_x2),
-                y2scr_pos(render_priv, layer->script_y2) - scroll);
+                y2scr_pos(render_priv, layer->script_y2));
         } else {
             layer->rect = (GradientRect) {0};
         }
@@ -8852,6 +8881,22 @@ static void compute_mangetsu_gradient_rect_for_layer(
                 MANGETSU_GRADIENT_ATTACHED)
             continue;
 
+        bool reused = false;
+        for (unsigned j = 0; j < i; j++) {
+            CombinedBitmapInfo *previous = &text_info->combined_bitmaps[j];
+            const MangetsuGradientLayer *paint = mangetsu_gradient_const_layer_at(
+                &previous->mangetsu_gradient, target, layer_index);
+            if (paint->active && paint->coordinate_mode == MANGETSU_GRADIENT_ATTACHED &&
+                    paint->segment_id == layer->segment_id &&
+                    previous->scroll_id == info->scroll_id) {
+                layer->rect = paint->rect;
+                reused = true;
+                break;
+            }
+        }
+        if (reused)
+            continue;
+
         GradientRect rect = {0};
         for (unsigned j = 0; j < text_info->n_bitmaps; j++) {
             CombinedBitmapInfo *other = &text_info->combined_bitmaps[j];
@@ -8863,7 +8908,17 @@ static void compute_mangetsu_gradient_rect_for_layer(
                     other_layer->segment_id != layer->segment_id ||
                     other->scroll_id != info->scroll_id)
                 continue;
-            update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
+            /* Vector gradients retain VSFilterMod's bitmap coordinates.
+             * Attached Mangetsu paint uses the surface it actually paints. */
+            bool border = target == MANGETSU_GRADIENT_TARGET_BORDER ||
+                          target == MANGETSU_GRADIENT_TARGET_BORDER_ALPHA;
+            if (border && other->border_paint_bounds[layer_index].valid) {
+                GradientRect bounds = other->border_paint_bounds[layer_index];
+                update_mangetsu_rect(&rect, bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+            } else {
+                const Bitmap *bm = layer_index == 3 && !border ? other->bm_s : other->bm;
+                update_mangetsu_rect_from_bitmap(&rect, other, bm ? bm : other->bm);
+            }
         }
         layer->rect = rect;
     }
@@ -8871,6 +8926,35 @@ static void compute_mangetsu_gradient_rect_for_layer(
 
 static void compute_mangetsu_gradient_rects(RenderContext *state)
 {
+    /* Composite rings share allocation bounds. Measure their actual occupied
+     * masks once, only for layers using attached paint, then share the result
+     * between color and alpha and between runs in the same paint segment. */
+    for (unsigned i = 0; i < state->text_info.n_bitmaps; i++) {
+        CombinedBitmapInfo *info = &state->text_info.combined_bitmaps[i];
+        for (int layer = 0; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            GradientRect *rect = &info->border_paint_bounds[layer];
+            *rect = (GradientRect) {0};
+            if (!info->mangetsu_gradient.border[layer].active &&
+                    !info->mangetsu_gradient.border_alpha[layer].active)
+                continue;
+            const Bitmap *bm = combined_border_bitmap(info, layer);
+            if (!bm)
+                continue;
+            int left = bm->w, top = bm->h, right = 0, bottom = 0;
+            for (int y = 0; y < bm->h; y++) {
+                const uint8_t *row = bm->buffer + (size_t) y * bm->stride;
+                for (int x = 0; x < bm->w; x++) {
+                    if (!row[x])
+                        continue;
+                    left = FFMIN(left, x); top = FFMIN(top, y);
+                    right = FFMAX(right, x + 1); bottom = FFMAX(bottom, y + 1);
+                }
+            }
+            update_mangetsu_rect(rect, info->x + bm->left + left,
+                info->y + bm->top + top, info->x + bm->left + right,
+                info->y + bm->top + bottom);
+        }
+    }
     for (int layer = 0; layer < MANGETSU_GRADIENT_LAYERS; layer++)
         compute_mangetsu_gradient_rect_for_layer(
             state, MANGETSU_GRADIENT_TARGET_COLOR, layer);
@@ -8906,7 +8990,8 @@ static void compute_mangetsu_gradient_rects(RenderContext *state)
                     MANGETSU_GRADIENT_ATTACHED &&
                     other_layer->segment_id == layer->segment_id &&
                     other->scroll_id == info->scroll_id)
-                update_mangetsu_rect_from_bitmap(&rect, other, other->bm);
+                update_mangetsu_rect_from_bitmap(&rect, other,
+                                                other->bm_o ? other->bm_o : other->bm);
         }
         layer->rect = rect;
     }
@@ -10271,6 +10356,7 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
 typedef struct {
     int inner_x, inner_y;
     int outer_x, outer_y;
+    int paint_layer;
     uint32_t color;
 } BoxBorderRenderLayer;
 
@@ -10283,9 +10369,8 @@ typedef struct {
 /*
  * BorderStyle=4 is one event-level object even though normal rendering keeps
  * geometry on individual glyphs.  Keep a snapshot of one glyph's evaluated
- * geometry for the box, but deliberately retain paint state in RenderContext:
- * box mode, colour, padding and box-border tags have always been event-level
- * final-state values.
+ * geometry and paint for the box. Both come from the same first visible
+ * content; later overrides must not repaint an earlier box.
  */
 typedef struct {
     bool valid;
@@ -10294,8 +10379,50 @@ typedef struct {
     double device_x, device_y;
 } BS4BoxGeometry;
 
+static bool bs4_box_needs_rgba(const BS4BoxGeometry *box)
+{
+    if (!box->valid)
+        return false;
+    const GlyphInfo *glyph = &box->geometry;
+    if (glyph->blend_mode != ASS_BLEND_NORMAL ||
+            (glyph->fade_color.active && glyph->fade_color.amount > 0) ||
+            glyph->gradient.layer[3].color_enabled ||
+            glyph->gradient.layer[3].alpha_enabled ||
+            glyph->mangetsu_gradient.layer[3].active ||
+            glyph->mangetsu_gradient.alpha[3].active ||
+            glyph->image_fill.layer[3].enabled)
+        return true;
+    if (glyph->box_paint) {
+        const BS4Paint *paint = glyph->box_paint;
+        for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++)
+            if (border_layer_has_size(&paint->borders[i]) &&
+                    (paint->borders[i].gradient.color_enabled ||
+                     paint->borders[i].gradient.alpha_enabled ||
+                     paint->color[i].active || paint->alpha[i].active))
+                return true;
+    }
+    return false;
+}
+
 static bool bs4_glyph_color_visible(const GlyphInfo *info, int layer)
 {
+    if (info->fade == 0xFF)
+        return false;
+    const MangetsuGradientLayer *alpha = layer == 2 ?
+        &info->mangetsu_gradient.border_alpha[0] : &info->mangetsu_gradient.alpha[layer];
+    if (alpha->active) {
+        for (int i = 0; i < alpha->n_stops; i++)
+            if ((alpha->stops[i].color & 0xFF) != 0xFF)
+                return true;
+        return false;
+    }
+    const GradientValues *vector = &info->gradient.layer[layer];
+    if (vector->alpha_enabled) {
+        for (int i = 0; i < 4; i++)
+            if (vector->alpha[i] != 0xFF)
+                return true;
+        return false;
+    }
     uint32_t color = info->c[layer];
     ass_apply_fade(&color, info->fade);
     return _a(color) != 0xFF;
@@ -10413,6 +10540,8 @@ static void capture_bs4_box_geometry(RenderContext *state,
         return;
 
     box->geometry = *info;
+    if (!box->geometry.box_paint)
+        box->geometry.box_paint = state->current_box_paint;
     box->valid = true;
 }
 
@@ -10442,6 +10571,8 @@ static BS4BoxGeometry *capture_scroll_boxes(RenderContext *state,
             info = fallback;
         if (info) {
             box->geometry = *info;
+            if (!box->geometry.box_paint)
+                box->geometry.box_paint = state->current_box_paint;
             box->valid = true;
             box->layout_bounds = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
             for (int j = start; j < end; j++) {
@@ -10470,14 +10601,13 @@ static BS4BoxGeometry *capture_scroll_boxes(RenderContext *state,
     return boxes;
 }
 
-static uint32_t box_border_layer_color(RenderContext *state,
+static uint32_t box_border_layer_color(const GlyphInfo *glyph,
                                        const BorderLayerState *layer)
 {
-    uint32_t box = state->c[3];
+    uint32_t box = glyph->c[3];
     uint32_t color = layer->has_color ? (layer->color & 0xFFFFFF00u) :
                      (box & 0xFFFFFF00u);
     color |= layer->has_alpha ? _a(layer->color) : _a(box);
-    ass_apply_fades(&color, state->fade, state->fade_color);
     return color;
 }
 
@@ -10847,7 +10977,46 @@ static ASS_Image **append_bs4_bitmap(RenderContext *state, Bitmap *bitmap,
                         1000000, tail, type, NULL, 0, 0, rgba_tail);
 }
 
+static ASS_Image **append_painted_bs4_bitmap(RenderContext *state, Bitmap *bitmap,
+                                            ASS_Vector pos, const GlyphInfo *glyph,
+                                            int border, unsigned type,
+                                            ASS_Image **tail,
+                                            ASS_ImageRGBA ***rgba_tail)
+{
+    CombinedBitmapInfo paint = {0};
+    paint.blend_mode = glyph->blend_mode;
+    paint.fade = glyph->fade;
+    paint.fade_color = glyph->fade_color;
+    paint.base_c[3] = glyph->c[3];
+    if (border < 0) {
+        paint.image_fill.layer[3] = glyph->image_fill.layer[3];
+        paint.gradient.layer[3] = glyph->gradient.layer[3];
+        paint.mangetsu_gradient.layer[3] = glyph->mangetsu_gradient.layer[3];
+        paint.mangetsu_gradient.alpha[3] = glyph->mangetsu_gradient.alpha[3];
+    } else {
+        const BS4Paint *box = glyph->box_paint;
+        paint.base_c[3] = box_border_layer_color(glyph, &box->borders[border]);
+        paint.gradient.layer[3] = box->borders[border].gradient;
+        paint.mangetsu_gradient.layer[3] = box->color[border];
+        paint.mangetsu_gradient.alpha[3] = box->alpha[border];
+    }
+    /* The projected mask belongs to this box/ring, not to the text bitmap
+     * rectangle or to a clipped slice. Do not include raster guard padding. */
+    GradientRect rect = {0};
+    paint.x = pos.x;
+    paint.y = pos.y;
+    update_mangetsu_rect_from_bitmap(&rect, &paint, bitmap);
+    paint.mangetsu_gradient.layer[3].rect = rect;
+    paint.mangetsu_gradient.alpha[3].rect = rect;
+    uint32_t color = paint.base_c[3];
+    ass_apply_fade(&color, paint.fade);
+    paint.c[3] = color;
+    return render_glyph(state, &paint, bitmap, pos.x, pos.y, color, 0,
+                        1000000, tail, type, NULL, 3, 3, rgba_tail);
+}
+
 static int collect_box_border_render_layers(RenderContext *state,
+                                             const GlyphInfo *glyph,
                                              BoxBorderRenderLayer *layers)
 {
     int count = 0;
@@ -10857,7 +11026,7 @@ static int collect_box_border_render_layers(RenderContext *state,
      * thickness, while its rendered rectangle starts at the cumulative
      * extent of all earlier enabled layers. */
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
-        BorderLayerState *layer = &state->box_border_layers[i];
+        const BorderLayerState *layer = &glyph->box_paint->borders[i];
         if (!border_layer_has_size(layer))
             continue;
 
@@ -10877,7 +11046,8 @@ static int collect_box_border_render_layers(RenderContext *state,
             .inner_y = inner_y,
             .outer_x = outer_x,
             .outer_y = outer_y,
-            .color = box_border_layer_color(state, layer),
+            .paint_layer = i,
+            .color = box_border_layer_color(glyph, layer),
         };
     }
     return count;
@@ -10888,6 +11058,11 @@ static void add_background(RenderContext *state, EventImages *event_images,
                            const BS4BoxGeometry *geometry)
 {
     if (!geometry->valid)
+        return;
+
+    const GlyphInfo *glyph = &geometry->geometry;
+    const BS4Paint *box = glyph->box_paint;
+    if (!box)
         return;
 
     ASS_Renderer *render_priv = state->renderer;
@@ -10903,13 +11078,13 @@ static void add_background(RenderContext *state, EventImages *event_images,
     double par = render_priv->par_scale_x;
     if (!isfinite(par) || par <= 0.0)
         return;
-    double shadow_x = state->shadow_x > 0.0 ?
-        state->shadow_x * state->border_scale_x * scale_x / par : 0.0;
-    double shadow_y = state->shadow_y > 0.0 ?
-        state->shadow_y * state->border_scale_y * scale_y : 0.0;
-    double extra_x = FFMAX(0.0, state->box_extra_x) *
+    double shadow_x = box->shadow_x > 0.0 ?
+        box->shadow_x * state->border_scale_x * scale_x / par : 0.0;
+    double shadow_y = box->shadow_y > 0.0 ?
+        box->shadow_y * state->border_scale_y * scale_y : 0.0;
+    double extra_x = FFMAX(0.0, box->extra_x) *
         state->border_scale_x * scale_x / par;
-    double extra_y = FFMAX(0.0, state->box_extra_y) *
+    double extra_y = FFMAX(0.0, box->extra_y) *
         state->border_scale_y * scale_y;
 
     TextInfo *text_info = &state->text_info;
@@ -10925,7 +11100,7 @@ static void add_background(RenderContext *state, EventImages *event_images,
         !isfinite(fill_right) || !isfinite(fill_bottom) ||
         !(fill_left < fill_right) || !(fill_top < fill_bottom))
         return;
-    double fill_radius = bs4_clamp_box_radius(state->box_corner_radius,
+    double fill_radius = bs4_clamp_box_radius(box->radius,
                                               fill_left, fill_top,
                                               fill_right, fill_bottom);
 
@@ -10936,7 +11111,7 @@ static void add_background(RenderContext *state, EventImages *event_images,
     ASS_ImageRGBA ***rgba_tail = rgba_head ? &box_rgba_tail : NULL;
 
     BoxBorderRenderLayer layers[ASS_BORDER_LAYERS_MAX];
-    int n_layers = collect_box_border_render_layers(state, layers);
+    int n_layers = collect_box_border_render_layers(state, glyph, layers);
     for (int i = n_layers - 1; i >= 0; i--) {
         const BoxBorderRenderLayer *layer = &layers[i];
         double outer_x = layer->outer_x * scale_x / par;
@@ -10996,8 +11171,8 @@ static void add_background(RenderContext *state, EventImages *event_images,
                 .stride = outer->w,
                 .buffer = mask,
             };
-            box_tail = append_bs4_bitmap(state, &ring, outer_pos, layer->color,
-                                         IMAGE_TYPE_OUTLINE, box_tail, rgba_tail);
+            box_tail = append_painted_bs4_bitmap(state, &ring, outer_pos, glyph,
+                         layer->paint_layer, IMAGE_TYPE_OUTLINE, box_tail, rgba_tail);
         }
         ass_aligned_free_tagged(mask, ASS_ALIGNED_ALLOC_BS4_MASK, outer);
     }
@@ -11014,9 +11189,7 @@ static void add_background(RenderContext *state, EventImages *event_images,
                        &fill_shape,
                        fill_matrix) &&
         bs4_get_bitmap(state, fill_matrix, &fill_shape, &fill_pos, &fill)) {
-        uint32_t color = state->c[3];
-        ass_apply_fades(&color, state->fade, state->fade_color);
-        box_tail = append_bs4_bitmap(state, fill, fill_pos, color,
+        box_tail = append_painted_bs4_bitmap(state, fill, fill_pos, glyph, -1,
                                      IMAGE_TYPE_SHADOW, box_tail, rgba_tail);
     }
 
@@ -12190,6 +12363,11 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     compute_mangetsu_gradient_rects(state);
     collect_mangetsu_gradient_debug(state);
     state->needs_rgba = text_needs_rgba(text_info);
+    if (state->bs4_box_mode) {
+        state->needs_rgba |= bs4_box_needs_rgba(&bs4_box_geometry);
+        for (int i = 0; i < n_scroll_boxes; i++)
+            state->needs_rgba |= bs4_box_needs_rgba(&scroll_boxes[i]);
+    }
 
     memset(event_images, 0, sizeof(*event_images));
     // VSFilter does *not* shift lines with a border > margin to be within the

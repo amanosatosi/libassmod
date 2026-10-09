@@ -89,18 +89,25 @@ In `render_bitmap_rgba()`:
 - The sampled RGB is multiplied by the final alpha (`A`) so the result is
   premultiplied RGBA.
 
-## Line-level anchoring
+## Target bounds
 
-Gradients are anchored per line. libass builds a line rectangle that is used
-as the logical reference for sampling:
+Four-corner vector sampling uses each final combined bitmap's logical
+dimensions and keeps the original source coordinates when clipping or karaoke
+splits a tile. These VSFilterMod-compatible coordinates are unchanged.
 
-- Character gradients use the bounding box of character bitmaps.
-- Outline and shadow gradients fall back to the character box if they have no
-  dedicated bitmap on that line.
+Attached Mangetsu gradients use a union of rendered target bounds for runs
+sharing a gradient segment and scrolling participation. Fill uses glyph bounds;
+shadow uses its shadow bitmap; native outline layers use the occupied mask
+bounds of their individual ring, including blur. The latter avoids extending
+an inner ring's gradient over allocation padding shared with larger rings.
+Fifth-channel decoration gradients are transferred to the separate decoration
+bitmap before these bounds are computed.
 
-This logic is in `compute_line_gradient_rects()` in
-`libass/ass_render.c`. The selected rectangle is passed through
-`gradient_rect_for_layer()` when preparing RGBA rendering.
+BS4 has one captured event box (or one per scrolling participation region).
+Its fill and each outward ring use their own transformed logical bounds.
+All attached angles use final screen axes over those bounds. Positioned
+primary gradients instead use the fixed script-frame rectangle documented
+above. See [gradient targets and limits](gradient-support.md).
 
 ## Notes and limits
 

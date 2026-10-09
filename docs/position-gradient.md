@@ -8,6 +8,11 @@ title: Fixed-frame primary gradients
 the normal primary fill. Unlike `\1grd`, they are fields fixed in the subtitle
 frame, not effects attached to text bounds.
 
+Native scrolling does not translate the gradient rectangle. When scrolling
+text covers the same final-frame pixel at two timestamps, that pixel samples
+the same gradient color. Movement, scaling, rotation, and distortion likewise
+move only the subtitle mask through this stationary field.
+
 ```ass
 \pgrd(x1,y1,x2,y2,angle,stops...)
 \1pgrd(x1,y1,x2,y2,angle,stops...)

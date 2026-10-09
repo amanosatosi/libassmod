@@ -1,0 +1,38 @@
+name: Mangetsu gradient surface audit
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan and UBSan
+            args: -Ddefault_library=static -Db_sanitize=address,undefined -Db_lundef=false
+          - name: Shared library
+            args: -Ddefault_library=shared
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies and script fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev fonts-noto-core fonts-noto-cjk
+      - name: Configure
+        run: meson setup build -Dtest=enabled ${{ matrix.args }}
+      - name: Compile regression suite
+        run: meson compile -C build
+      - name: Run all regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: meson test -C build --no-rebuild --print-errorlogs
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradient-audit-${{ strategy.job-index }}
+          path: build/meson-logs/testlog*

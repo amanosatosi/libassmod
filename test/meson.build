@@ -205,6 +205,16 @@ bs4_geometry_unit = executable(
     link_with: libass_for_tools,
 )
 
+gradient_surface_unit = executable(
+    'gradient_surface_unit',
+    files('gradient_surface_selftest.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+test('gradient-surface-pixels', gradient_surface_unit, timeout: 180)
+
 mangetsu_motion_scale_unit = executable(
     'mangetsu_motion_scale_unit',
     files('mangetsu_motion_scale_selftest.c'),

@@ -78,6 +78,15 @@ inverse-alpha values. `\Nbc` disables the color gradient for layer `N`, and
 alpha gradients for every native border layer. Gradients require the RGBA
 rendering path; legacy `ASS_Image` output keeps a flat fallback color.
 
+Attached Mangetsu `\Nbgrd` / `\Nbga` gradients use the occupied bounds of
+the corresponding rendered border ring, including its scaling and blur.
+Composite allocation padding shared with other rings does not enlarge that
+gradient domain. Color and alpha share geometry but retain independent stops
+and angles. VSFilterMod four-corner coordinates keep their existing behavior.
+The waiting-outline `\3sgrd` uses the first outline's bounds and remains
+confined to that layer. Box rings have a separate `\Nbbgrd` / `\Nbbga`
+namespace documented in [box tags](box-tags.md).
+
 Examples:
 
 ```ass

@@ -1247,6 +1247,10 @@ typedef enum {
     BORDER_TAG_BOX_SIZE,
     BORDER_TAG_BOX_COLOR,
     BORDER_TAG_BOX_ALPHA,
+    BORDER_TAG_BOX_VCOLOR,
+    BORDER_TAG_BOX_VALPHA,
+    BORDER_TAG_BOX_GRADIENT,
+    BORDER_TAG_BOX_ALPHA_GRADIENT,
 } NumberedBorderTag;
 
 static int read_decimal_digit(char **p, char *end)
@@ -1295,7 +1299,15 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
 
     NumberedBorderTag tag = BORDER_TAG_IGNORE;
     char *arg_start = q;
-    if (match_border_suffix(q, name_end, "bbs", &arg_start))
+    if (match_border_suffix(q, name_end, "bbgrd", &arg_start))
+        tag = BORDER_TAG_BOX_GRADIENT;
+    else if (match_border_suffix(q, name_end, "bbga", &arg_start))
+        tag = BORDER_TAG_BOX_ALPHA_GRADIENT;
+    else if (match_border_suffix(q, name_end, "bbvc", &arg_start))
+        tag = BORDER_TAG_BOX_VCOLOR;
+    else if (match_border_suffix(q, name_end, "bbva", &arg_start))
+        tag = BORDER_TAG_BOX_VALPHA;
+    else if (match_border_suffix(q, name_end, "bbs", &arg_start))
         tag = BORDER_TAG_BOX_SIZE;
     else if (match_border_suffix(q, name_end, "bbc", &arg_start))
         tag = BORDER_TAG_BOX_COLOR;
@@ -1516,6 +1528,17 @@ static bool parse_mangetsu_gradient_reset_arg(struct arg arg)
 {
     int32_t value;
     return parse_int32_arg_strict(arg, &value) && value == 0;
+}
+
+static bool valid_vector_gradient_args(struct arg *args, int nargs, bool alpha)
+{
+    for (int i = 0; i < FFMIN(nargs, 4); i++) {
+        uint32_t value;
+        if (alpha ? !parse_ass_alpha_arg(args[i], &value) :
+                    !parse_ass_color_arg(args[i], &value))
+            return false;
+    }
+    return true;
 }
 
 static bool split_mangetsu_gradient_raw_args(char *start, char *end,
@@ -2261,6 +2284,8 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
         return true;
 
     if (*name_end == '(') {
+        if (q <= name_end + 1 || q[-1] != ')')
+            return true;
         char *raw_start = name_end + 1;
         char *raw_end = q;
         if (raw_end > raw_start && raw_end[-1] == ')')
@@ -2529,6 +2554,8 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
         if (!arg.start) {
             border->has_color = false;
             border->color = (state->c[3] & 0xFFFFFF00u) | _a(border->color);
+            ass_gradient_values_disable_color(&border->gradient, border->color, pwr);
+            ass_mangetsu_gradient_layer_reset(&state->box_border_color[layer]);
         } else if (parse_ass_color_arg(arg, &val)) {
             uint32_t alpha = border->has_alpha ? _a(border->color) :
                              _a(state->c[3]);
@@ -2537,6 +2564,9 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
             change_color(&border->color, val, pwr);
             border->color = (border->color & 0xFFFFFF00u) | alpha;
             border->has_color = true;
+            ass_gradient_values_disable_color(&border->gradient, border->color, pwr);
+            if (pwr > 0)
+                ass_mangetsu_gradient_layer_reset(&state->box_border_color[layer]);
         }
         break;
     }
@@ -2545,12 +2575,17 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
         if (!arg.start) {
             border->has_alpha = false;
             border->color = (border->color & 0xFFFFFF00u) | _a(state->c[3]);
+            ass_gradient_values_disable_alpha(&border->gradient, _a(border->color), pwr);
+            ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[layer]);
         } else if (parse_ass_alpha_arg_strict(arg, &val)) {
             uint32_t rgb = border->has_color ? (border->color & 0xFFFFFF00u) :
                            (state->c[3] & 0xFFFFFF00u);
             border->color = rgb | _a(border->color);
             change_alpha(&border->color, val, pwr);
             border->has_alpha = true;
+            ass_gradient_values_disable_alpha(&border->gradient, _a(border->color), pwr);
+            if (pwr > 0)
+                ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[layer]);
         }
         break;
     }
@@ -2566,6 +2601,84 @@ static void copy_gradient_color(GradientValues *dst, const GradientValues *src)
         dst->color[i] = src->color[i];
 }
 
+static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
+                                   int layer, struct arg *args, int nargs,
+                                   struct arg inline_arg, char *name_end,
+                                   char *tag_end, double pwr, bool nested)
+{
+    BorderLayerState *border = &state->box_border_layers[layer];
+    bool alpha = tag == BORDER_TAG_BOX_VALPHA ||
+                 tag == BORDER_TAG_BOX_ALPHA_GRADIENT;
+    bool vector = tag == BORDER_TAG_BOX_VCOLOR || tag == BORDER_TAG_BOX_VALPHA;
+    if (*name_end == '(' && (tag_end <= name_end + 1 || tag_end[-1] != ')'))
+        return;
+    MangetsuGradientLayer *dst = alpha ? &state->box_border_alpha[layer] :
+                                        &state->box_border_color[layer];
+    uint32_t solid = alpha ? (border->has_alpha ? _a(border->color) : _a(state->c[3])) :
+                            (border->has_color ? border->color : state->c[3]);
+    if (vector) {
+        if (!nargs) {
+            if (!nested) {
+                ass_mangetsu_gradient_layer_reset(dst);
+                if (alpha)
+                    ass_gradient_values_disable_alpha(&border->gradient, solid, pwr);
+                else
+                    ass_gradient_values_disable_color(&border->gradient, solid, pwr);
+            }
+            return;
+        }
+        if (nargs > 4)
+            return;
+        uint32_t colors[4];
+        uint8_t alphas[4];
+        for (int i = 0; i < nargs; i++) {
+            uint32_t value;
+            if (alpha ? !parse_ass_alpha_arg_strict(args[i], &value) :
+                        !parse_ass_color_arg(args[i], &value))
+                return;
+            colors[i] = value;
+            alphas[i] = value;
+        }
+        if (pwr <= 0)
+            return;
+        ass_mangetsu_gradient_layer_reset(dst);
+        if (alpha)
+            ass_gradient_values_apply_alpha(&border->gradient, alphas, nargs, pwr);
+        else
+            ass_gradient_values_apply_color(&border->gradient, colors, nargs, pwr);
+    } else {
+        struct arg raw = inline_arg;
+        if (*name_end == '(') {
+            if (tag_end <= name_end + 1 || tag_end[-1] != ')')
+                return;
+            raw = (struct arg) {name_end + 1, tag_end};
+            if (raw.end > raw.start && raw.end[-1] == ')')
+                raw.end--;
+        }
+        if (!raw.start || raw.start == raw.end || parse_mangetsu_gradient_reset_arg(raw)) {
+            if (!nested)
+                ass_mangetsu_gradient_layer_reset(dst);
+            return;
+        }
+        MangetsuGradientLayer parsed;
+        if (alpha ? !parse_mangetsu_alpha_gradient_raw_args(raw.start, raw.end, &parsed) :
+                    !parse_mangetsu_gradient_raw_args(raw.start, raw.end, &parsed))
+            return;
+        if (nested) {
+            if (!transform_mangetsu_gradient_layer(state, dst, &parsed, solid, pwr, alpha))
+                return;
+        } else {
+            *dst = parsed;
+            dst->segment_id = ++state->mangetsu_gradient_next_id;
+        }
+        if (alpha)
+            ass_gradient_values_disable_alpha(&border->gradient, solid, 1);
+        else
+            ass_gradient_values_disable_color(&border->gradient, solid, 1);
+    }
+    mark_rgba_needed(state);
+}
+
 static void apply_numbered_border_tag(RenderContext *state,
                                       NumberedBorderTag tag, int layer,
                                       struct arg *args, int nargs,
@@ -2573,10 +2686,21 @@ static void apply_numbered_border_tag(RenderContext *state,
                                       char *name_end, char *tag_end,
                                       double pwr, bool nested)
 {
+    if ((tag == BORDER_TAG_COLOR_GRADIENT || tag == BORDER_TAG_ALPHA_GRADIENT) &&
+            ((*name_end == '(' && (tag_end <= name_end + 1 || tag_end[-1] != ')')) ||
+             !valid_vector_gradient_args(args, nargs, tag == BORDER_TAG_ALPHA_GRADIENT)))
+        return;
     struct arg arg = (inline_arg.start && inline_arg.start < inline_arg.end) ? inline_arg :
         (nargs ? args[0] : (struct arg) { NULL, NULL });
 
     switch (tag) {
+    case BORDER_TAG_BOX_VCOLOR:
+    case BORDER_TAG_BOX_VALPHA:
+    case BORDER_TAG_BOX_GRADIENT:
+    case BORDER_TAG_BOX_ALPHA_GRADIENT:
+        apply_box_gradient_tag(state, tag, layer, args, nargs, inline_arg,
+                               name_end, tag_end, pwr, nested);
+        break;
     case BORDER_TAG_BOX_SIZE:
     case BORDER_TAG_BOX_COLOR:
     case BORDER_TAG_BOX_ALPHA:
@@ -3331,6 +3455,7 @@ void ass_apply_chat_side_style(RenderContext *state, int side)
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested)
 {
+    state->box_paint_dirty = true;
     ASS_Renderer *render_priv = state->renderer;
     for (char *q; p < end; p = q) {
         while (*p != '\\' && p != end)
@@ -3577,6 +3702,17 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             tag_name_matches(p, name_end, "3svc");
         bool secondary_outline_gradient_tag =
             tag_name_matches(p, name_end, "3sgrd");
+        bool vector_color = secondary_outline_vector_tag ||
+            tag_name_matches(p, name_end, "vc") || tag_name_matches(p, name_end, "1vc") ||
+            tag_name_matches(p, name_end, "2vc") || tag_name_matches(p, name_end, "3vc") ||
+            tag_name_matches(p, name_end, "4vc");
+        bool vector_alpha = tag_name_matches(p, name_end, "va") ||
+            tag_name_matches(p, name_end, "1va") || tag_name_matches(p, name_end, "2va") ||
+            tag_name_matches(p, name_end, "3va") || tag_name_matches(p, name_end, "4va");
+        if ((vector_color || vector_alpha) &&
+                ((*name_end == '(' && (q <= name_end + 1 || q[-1] != ')')) ||
+                 !valid_vector_gradient_args(args, nargs, vector_alpha)))
+            continue;
         if (!state->colorcode_parse &&
             parse_text_pattern_tag(state, p, name_end, args, nargs,
                                    *name_end == '(' && q > name_end + 1 &&
@@ -4881,6 +5017,19 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             if (!nested && pwr > 0.0)
                 disable_mangetsu_alpha_gradient_layer(state, 4);
+        } else if (tag_name_matches(p, name_end, "bbvc") ||
+                   tag_name_matches(p, name_end, "bbva") ||
+                   tag_name_matches(p, name_end, "bbgrd") ||
+                   tag_name_matches(p, name_end, "bbga")) {
+            bool color_vector = tag_name_matches(p, name_end, "bbvc");
+            bool alpha_vector = tag_name_matches(p, name_end, "bbva");
+            bool color_stops = tag_name_matches(p, name_end, "bbgrd");
+            NumberedBorderTag box_tag = color_vector ? BORDER_TAG_BOX_VCOLOR :
+                alpha_vector ? BORDER_TAG_BOX_VALPHA :
+                color_stops ? BORDER_TAG_BOX_GRADIENT : BORDER_TAG_BOX_ALPHA_GRADIENT;
+            apply_box_gradient_tag(state, box_tag, 0, args, nargs,
+                                   (struct arg) {p + (color_stops ? 5 : 4), name_end},
+                                   name_end, q, pwr, nested);
         } else if (tag("bbs")) {
             struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
             apply_box_border_tag(state, BORDER_TAG_BOX_SIZE, 0, arg, pwr);

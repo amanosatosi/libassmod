@@ -284,6 +284,16 @@ typedef struct {
     GradientValues gradient;
 } BorderLayerState;
 
+/* Event-box paint is shared by glyphs from the same override state. Keeping
+ * these large stop tables out of GlyphInfo avoids ten more gradients per glyph. */
+typedef struct bs4_paint {
+    struct bs4_paint *next;
+    double extra_x, extra_y, radius, shadow_x, shadow_y;
+    BorderLayerState borders[ASS_BORDER_LAYERS_MAX];
+    MangetsuGradientLayer color[ASS_BORDER_LAYERS_MAX];
+    MangetsuGradientLayer alpha[ASS_BORDER_LAYERS_MAX];
+} BS4Paint;
+
 typedef struct {
     uint32_t fill;             // chat \3c/\3a and \bubc/\buba
     uint32_t border;           // rounded bubble stroke color and alpha
@@ -356,6 +366,7 @@ typedef struct {
     CompositeHashValue *image;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    GradientRect border_paint_bounds[ASS_BORDER_LAYERS_MAX];
     TextPatternPaint pattern;
     ImageFillState image_fill;
     KaraokeOutlinePaint secondary_outline;
@@ -401,6 +412,7 @@ static inline JitterState ass_jitter_default_state(void)
 // describes a glyph
 // GlyphInfo and TextInfo are used for text centering and word-wrapping operations
 typedef struct glyph_info {
+    const BS4Paint *box_paint;
     unsigned symbol;
     int chat_part;
     int scroll_id;
@@ -820,6 +832,10 @@ struct render_context {
     double box_extra_y;
     double box_corner_radius;
     BorderLayerState box_border_layers[ASS_BORDER_LAYERS_MAX];
+    MangetsuGradientLayer box_border_color[ASS_BORDER_LAYERS_MAX];
+    MangetsuGradientLayer box_border_alpha[ASS_BORDER_LAYERS_MAX];
+    BS4Paint *box_paints, *current_box_paint;
+    bool box_paint_dirty;
     uint32_t c[4];              // colors(Primary, Secondary, so on) in RGBA
     ChatBubbleStyle chat_bubble;
     ChatTitleStyle chat_title;
