@@ -1,0 +1,58 @@
+name: RGBA debug lock portability
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lock-portability:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang, tcc]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool meson ninja-build pkg-config \
+            gcc clang tcc libfreetype6-dev libfribidi-dev libharfbuzz-dev \
+            libfontconfig1-dev libpng-dev
+      - name: Autotools configure and link comparison tool
+        run: |
+          ./autogen.sh
+          mkdir autotools-lock
+          cd autotools-lock
+          CFLAGS='-O0 -g -DCONFIG_ALIGNED_ALLOC_DEBUG=1' ../configure \
+            --disable-asm --enable-compare --enable-test
+          make -j 4 compare/compare test/rgba_registry_unit
+          test -x compare/compare
+          if [ "$CC" = tcc ]; then
+            grep -q 'define HAVE_PTHREAD_MUTEX 1' config.h
+            if nm -u libass/.libs/libass_internal.a | grep '__sync_'; then exit 1; fi
+          fi
+      - name: Autotools concurrent registry regression
+        run: autotools-lock/test/rgba_registry_unit
+      - name: Meson configure and link comparison tool
+        run: |
+          meson setup meson-lock -Ddefault_library=static -Dtest=enabled \
+            -Dcompare=enabled -Dasm=disabled -Dcheckasm=disabled \
+            -Daligned-allocation-debug=true -Db_ndebug=false
+          meson compile -C meson-lock compare rgba_registry_unit rgba_ownership_unit
+          if [ "$CC" = tcc ]; then
+            grep -q 'define HAVE_PTHREAD_MUTEX 1' meson-lock/config.h
+            if nm -u meson-lock/libass/libass.a | grep '__sync_'; then exit 1; fi
+          fi
+      - name: Meson concurrency and ownership regressions
+        run: meson test -C meson-lock --no-rebuild --print-errorlogs rgba-registry-concurrency rgba-ownership-lifetime
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rgba-lock-${{ matrix.cc }}
+          path: |
+            autotools-lock/config.log
+            meson-lock/meson-logs/

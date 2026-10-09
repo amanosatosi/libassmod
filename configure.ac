@@ -91,6 +91,85 @@ AC_SEARCH_LIBS([lrint], [m], [
 ])
 pkg_libs="$LIBS"
 
+# Debug registries must also work with compilers without GCC atomic builtins.
+# Link tests are intentional: an implicit declaration can compile but leave
+# unresolved __sync_* symbols (notably with TinyCC).
+DEBUG_LOCK_CFLAGS=
+DEBUG_LOCK_LIBS=
+REGISTRY_THREAD_CFLAGS=
+REGISTRY_THREAD_LIBS=
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+#ifndef _WIN32
+#error not Windows
+#endif
+int main(void) { return 0; }
+]])], [debug_lock_windows=yes], [debug_lock_windows=no])
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+#if !defined(NDEBUG) || CONFIG_ALIGNED_ALLOC_DEBUG
+#error debug tracking enabled
+#endif
+int main(void) { return 0; }
+]])], [debug_lock_needed=no], [debug_lock_needed=yes])
+AS_IF([test "x$debug_lock_windows" = xno && test "x$debug_lock_needed" = xyes], [
+    AC_CACHE_CHECK([for linkable debug-lock atomic builtins], [ass_cv_sync_builtins], [
+        AC_LINK_IFELSE([AC_LANG_PROGRAM([[static int state;]], [[
+            int old = __sync_lock_test_and_set(&state, 1);
+            old += __sync_val_compare_and_swap(&state, 0, 0);
+            __sync_lock_release(&state);
+            return old;
+        ]])], [ass_cv_sync_builtins=yes], [ass_cv_sync_builtins=no])
+    ])
+    AS_IF([test "x$ass_cv_sync_builtins" = xyes], [
+        AC_DEFINE([HAVE_SYNC_BUILTINS], [1], [Linkable atomic debug-lock builtins])
+    ])
+])
+AS_IF([test "x$debug_lock_windows" = xno && {
+    test "x$enable_test" = xyes || {
+        test "x$debug_lock_needed" = xyes && test "x$ass_cv_sync_builtins" != xyes;
+    }; }], [
+        AC_MSG_CHECKING([for POSIX mutex/thread flags])
+        debug_save_CFLAGS="$CFLAGS"
+        debug_save_LIBS="$LIBS"
+        debug_pthread_found=no
+        for debug_thread_flag in -pthread none -lpthread; do
+            CFLAGS="$debug_save_CFLAGS"
+            LIBS="$debug_save_LIBS"
+            AS_CASE([$debug_thread_flag],
+                [none], [],
+                [-lpthread], [LIBS="$LIBS -lpthread"],
+                [CFLAGS="$CFLAGS $debug_thread_flag"; LIBS="$LIBS $debug_thread_flag"])
+            AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <pthread.h>
+                static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+                static void *worker(void *arg) { return arg; }]], [[
+                pthread_t thread;
+                if (pthread_mutex_lock(&mutex)) return 1;
+                if (pthread_mutex_unlock(&mutex)) return 1;
+                if (pthread_create(&thread, 0, worker, 0)) return 1;
+                return pthread_join(thread, 0);
+            ]])], [debug_pthread_found=yes; break])
+        done
+        CFLAGS="$debug_save_CFLAGS"
+        LIBS="$debug_save_LIBS"
+        AS_IF([test "x$debug_pthread_found" = xno], [
+            AC_MSG_ERROR([Debug allocation tracking requires atomic builtins or POSIX mutexes])
+        ])
+        AS_CASE([$debug_thread_flag],
+            [none], [],
+            [-lpthread], [REGISTRY_THREAD_LIBS=-lpthread],
+            [REGISTRY_THREAD_CFLAGS=$debug_thread_flag; REGISTRY_THREAD_LIBS=$debug_thread_flag])
+        AC_MSG_RESULT([$debug_thread_flag])
+        AC_DEFINE([HAVE_PTHREAD_MUTEX], [1], [POSIX mutexes for debug registries])
+        AS_IF([test "x$debug_lock_needed" = xyes && test "x$ass_cv_sync_builtins" != xyes], [
+            DEBUG_LOCK_CFLAGS="$REGISTRY_THREAD_CFLAGS"
+            DEBUG_LOCK_LIBS="$REGISTRY_THREAD_LIBS"
+            pkg_libs="$pkg_libs $DEBUG_LOCK_LIBS"
+        ])
+])
+AC_SUBST([DEBUG_LOCK_CFLAGS])
+AC_SUBST([DEBUG_LOCK_LIBS])
+AC_SUBST([REGISTRY_THREAD_CFLAGS])
+AC_SUBST([REGISTRY_THREAD_LIBS])
+
 ## Check for libraries via pkg-config and add to pkg_requires as needed
 PKG_CHECK_MODULES([FREETYPE], [freetype2 >= 9.17.3], [
     pkg_requires="freetype2 >= 9.17.3"

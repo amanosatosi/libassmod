@@ -2,10 +2,17 @@ if ENABLE_TEST
 noinst_PROGRAMS += test/test
 check_PROGRAMS += test/scroll_unit test/scroll_render_unit
 check_PROGRAMS += test/clip_transform_unit
+check_PROGRAMS += test/rgba_registry_unit
 TESTS += test/scroll_unit$(EXEEXT) test/scroll_render_unit$(EXEEXT) test/clip_transform_unit$(EXEEXT)
+TESTS += test/rgba_registry_unit$(EXEEXT)
 AM_TESTS_ENVIRONMENT = SCROLL_TEST_FONT='$(abs_srcdir)/compare/test/font1.ttf'; export SCROLL_TEST_FONT;
 AM_TESTS_ENVIRONMENT += CLIP_TRANSFORM_TEST_FONT='$(abs_srcdir)/compare/test/font1.ttf'; export CLIP_TRANSFORM_TEST_FONT;
 endif
+
+test_rgba_registry_unit_SOURCES = test/rgba_registry_selftest.c
+test_rgba_registry_unit_CFLAGS = $(AM_CFLAGS) $(REGISTRY_THREAD_CFLAGS)
+test_rgba_registry_unit_LDADD = libass/libass_internal.la $(REGISTRY_THREAD_LIBS)
+test_rgba_registry_unit_LDFLAGS = $(AM_LDFLAGS) -static
 test_clip_transform_unit_SOURCES = test/clip_transform_selftest.c
 test_clip_transform_unit_LDADD = libass/libass_internal.la
 test_clip_transform_unit_LDFLAGS = $(AM_LDFLAGS) -static

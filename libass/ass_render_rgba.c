@@ -24,11 +24,7 @@
 #include <stdlib.h>
 
 #ifndef NDEBUG
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sched.h>
-#endif
+#include "ass_debug_lock.h"
 #endif
 
 #include "ass_render.h"
@@ -60,35 +56,17 @@ static size_t rgba_debug_allocation_count;
 static uint64_t rgba_debug_registry_scans;
 static uint64_t rgba_debug_registry_scan_steps;
 
-#ifdef _WIN32
-static volatile LONG rgba_debug_lock_state;
+static ASS_DebugLock rgba_debug_lock_state = ASS_DEBUG_LOCK_INITIALIZER;
 
 static void rgba_debug_lock(void)
 {
-    while (InterlockedCompareExchange(&rgba_debug_lock_state, 1, 0) != 0)
-        Sleep(0);
+    ass_debug_lock(&rgba_debug_lock_state);
 }
 
 static void rgba_debug_unlock(void)
 {
-    InterlockedExchange(&rgba_debug_lock_state, 0);
+    ass_debug_unlock(&rgba_debug_lock_state);
 }
-#else
-static volatile int rgba_debug_lock_state;
-
-static void rgba_debug_lock(void)
-{
-    while (__sync_lock_test_and_set(&rgba_debug_lock_state, 1)) {
-        while (rgba_debug_lock_state)
-            sched_yield();
-    }
-}
-
-static void rgba_debug_unlock(void)
-{
-    __sync_lock_release(&rgba_debug_lock_state);
-}
-#endif
 
 static const char *rgba_owner_name(ASS_RGBAOwner owner)
 {
@@ -123,6 +101,9 @@ static void rgba_debug_fail(const char *operation, ASS_ImageRGBA *img,
 
 static RgbaDebugAllocation *rgba_debug_find_buffer(uint8_t *buffer)
 {
+    // The list is shared; the returned entry remains live because its buffer
+    // is exclusively owned by the caller. Concurrently freeing the same
+    // image/buffer is not a supported ownership operation.
     rgba_debug_lock();
     rgba_debug_registry_scans++;
     for (RgbaDebugAllocation *cur = rgba_debug_allocations; cur; cur = cur->next) {
@@ -218,6 +199,7 @@ static void rgba_debug_claim_buffer(ASS_ImageRGBAPriv *image,
                                     const char *operation)
 {
     RgbaDebugAllocation *allocation = rgba_debug_find_buffer(buffer);
+    rgba_debug_lock();
     if (!allocation || allocation->image || allocation->size != size)
         rgba_debug_fail(operation, &image->result, allocation);
 
@@ -227,6 +209,7 @@ static void rgba_debug_claim_buffer(ASS_ImageRGBAPriv *image,
     image->allocation_id = allocation->id;
     image->owner = owner;
     image->alive = true;
+    rgba_debug_unlock();
 }
 
 static void rgba_debug_release_unowned_buffer(uint8_t *buffer,
@@ -452,6 +435,7 @@ void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
     ASS_ImageRGBAPriv *priv = rgba_debug_validate_image(
         img, "replace buffer", &old_allocation);
     RgbaDebugAllocation *new_allocation = rgba_debug_find_buffer(buffer);
+    rgba_debug_lock();
     if (!new_allocation || new_allocation->image ||
         new_allocation->size != alloc_size)
         rgba_debug_fail("replace buffer", img, new_allocation);
@@ -459,6 +443,7 @@ void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
     new_allocation->image = priv;
     new_allocation->last_operation = "replace buffer";
     priv->allocation_id = new_allocation->id;
+    rgba_debug_unlock();
     rgba_debug_remove(old_allocation);
 #else
     ASS_ImageRGBAPriv *priv = ass_rgba_image_private(img, "replace buffer");
@@ -499,9 +484,11 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img)
             priv->rgba_output_size = 0;
     }
 #ifndef NDEBUG
+    rgba_debug_lock();
     rgba_priv->owner = ASS_RGBA_OWNER_FREED;
     rgba_priv->alive = false;
     allocation->last_operation = "image destruction";
+    rgba_debug_unlock();
     rgba_debug_remove(allocation);
 #endif
     ass_aligned_free_tagged(
@@ -647,8 +634,10 @@ void ass_rgba_images_set_owner(ASS_ImageRGBA *img, ASS_RGBAOwner owner,
         ASS_ImageRGBAPriv *rgba_priv = rgba_debug_validate_image(
             img, operation, &allocation);
         ASS_ImageRGBA *next = rgba_priv->result.next;
+        rgba_debug_lock();
         rgba_priv->owner = owner;
         allocation->last_operation = operation;
+        rgba_debug_unlock();
 #else
         ASS_ImageRGBA *next = img->next;
         (void) owner;

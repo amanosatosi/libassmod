@@ -11,7 +11,7 @@ AM_CPPFLAGS = -I$(top_srcdir)/libass
 # non-POSIX interfaces even if their respective feature macro is set too.
 # However, POSIX interfaces are usually implicitly enabled
 # with other feature macros, thus omit the POSIX one.
-AM_CFLAGS = -std=gnu99 -D_GNU_SOURCE -D_XPLATFORM_SOURCE
+AM_CFLAGS = -std=gnu99 -D_GNU_SOURCE -D_XPLATFORM_SOURCE $(DEBUG_LOCK_CFLAGS)
 
 EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
              docs/curved-text.md docs/distort-tag.md docs/warp-text-anchor.md \
@@ -32,6 +32,7 @@ EXTRA_DIST += docs/native-scroll.md samples/scroll-lines.ass \
               test/scroll_selftest.c test/scroll_render_selftest.c
 
 EXTRA_DIST += test/clip_transform_selftest.c
+EXTRA_DIST += test/rgba_registry_selftest.c
 EXTRA_DIST += docs/furigana-extension.md test/furi_selftest.c \
               test/fonts/furi-tight-ascent.ttf test/fonts/furi-tight-descent.ttf
 EXTRA_DIST += docs/decoration-fallback.md test/decoration_fallback_selftest.c \

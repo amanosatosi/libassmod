@@ -343,6 +343,44 @@ endif
 conf.set('CONFIG_LARGE_TILES', get_option('large-tiles').to_int())
 conf.set('CONFIG_ALIGNED_ALLOC_DEBUG', get_option('aligned-allocation-debug').to_int())
 
+# Compiler names/macros cannot establish builtin support. Probe linking all
+# operations used by the debug registries; only the fallback adds thread flags.
+debug_ndebug = get_option('b_ndebug') == 'true' or (
+    get_option('b_ndebug') == 'if-release' and get_option('buildtype') == 'release')
+debug_ndebug = debug_ndebug or cc.compiles('''
+    #ifndef NDEBUG
+    #error assertions enabled
+    #endif
+    int main(void) { return 0; }
+''', name: 'NDEBUG supplied in compiler arguments')
+if host_system != 'windows' and (not debug_ndebug or get_option('aligned-allocation-debug'))
+    sync_builtins = cc.links('''
+        static int state;
+        int main(void) {
+            int old = __sync_lock_test_and_set(&state, 1);
+            old += __sync_val_compare_and_swap(&state, 0, 0);
+            __sync_lock_release(&state);
+            return old;
+        }
+    ''', name: 'linkable debug-lock atomic builtins')
+    conf.set('HAVE_SYNC_BUILTINS', sync_builtins.to_int())
+    if not sync_builtins
+        debug_threads = dependency('threads')
+        if not cc.links('''
+            #include <pthread.h>
+            static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+            int main(void) {
+                if (pthread_mutex_lock(&mutex)) return 1;
+                return pthread_mutex_unlock(&mutex);
+            }
+        ''', dependencies: debug_threads, name: 'debug registry POSIX mutexes')
+            error('Debug allocation tracking requires atomic builtins or POSIX mutexes')
+        endif
+        conf.set('HAVE_PTHREAD_MUTEX', 1)
+        deps += debug_threads
+    endif
+endif
+
 conf.set('CONFIG_SOURCEVERSION', '"meson, commit: @VCS_TAG@"')
 
 config_h_in = configure_file(output: 'config.h.in.in', configuration: conf)

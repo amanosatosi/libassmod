@@ -27,11 +27,7 @@
 #include <limits.h>
 
 #if CONFIG_ALIGNED_ALLOC_DEBUG
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sched.h>
-#endif
+#include "ass_debug_lock.h"
 #endif
 
 #include "ass_library.h"
@@ -103,35 +99,17 @@ static size_t aligned_debug_freed_cursor;
 static uint64_t aligned_debug_next_id = 1;
 static uint64_t aligned_debug_next_release_id = 1;
 
-#ifdef _WIN32
-static volatile LONG aligned_debug_lock_state;
+static ASS_DebugLock aligned_debug_lock_state = ASS_DEBUG_LOCK_INITIALIZER;
 
 static void aligned_debug_lock(void)
 {
-    while (InterlockedCompareExchange(&aligned_debug_lock_state, 1, 0) != 0)
-        Sleep(0);
+    ass_debug_lock(&aligned_debug_lock_state);
 }
 
 static void aligned_debug_unlock(void)
 {
-    InterlockedExchange(&aligned_debug_lock_state, 0);
+    ass_debug_unlock(&aligned_debug_lock_state);
 }
-#else
-static volatile int aligned_debug_lock_state;
-
-static void aligned_debug_lock(void)
-{
-    while (__sync_lock_test_and_set(&aligned_debug_lock_state, 1)) {
-        while (aligned_debug_lock_state)
-            sched_yield();
-    }
-}
-
-static void aligned_debug_unlock(void)
-{
-    __sync_lock_release(&aligned_debug_lock_state);
-}
-#endif
 
 static const char *aligned_category_name(ASS_AlignedAllocCategory category)
 {
