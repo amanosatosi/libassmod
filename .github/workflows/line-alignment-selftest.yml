@@ -1,0 +1,29 @@
+name: Mangetsu line alignment regression
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  line-alignment-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies and script fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev fonts-noto-core fonts-noto-cjk
+      - name: Configure sanitizers
+        run: meson setup build -Dtest=enabled -Db_sanitize=address,undefined -Db_lundef=false -Ddefault_library=static
+      - name: Build alignment and ruby regressions
+        run: meson compile -C build tan_unit curved_text_unit native_vertical_layout_unit native_vertical_render_unit furi_unit
+      - name: Run geometry regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: meson test -C build --no-rebuild --print-errorlogs text-anchor-alignment curved-text-render native-vertical-layout native-vertical-render 'furi-*'
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: line-alignment-selftest-log
+          path: build/meson-logs/testlog.txt

@@ -55,8 +55,13 @@ possible. `WrapStyle=2` suppresses automatic wrapping, as in horizontal ASS.
 Existing `\an1`–`\an9`, margins, `\pos`, and `\move` anchor the final block
 bbox in ordinary ASS coordinates, including events without `\pos`. `\ta1`–`9`
 separately align shorter columns vertically and differently sized units
-horizontally inside each column. Without `\ta`, internal alignment inherits
-`\an`. Progressive `\kf`/`\K` karaoke wipes from top to bottom in native
+horizontally inside each column. The first valid `\ta` in each logical line
+delimited by `\N` applies to the entire column, including preceding units;
+later tags and style resets do not replace it. Automatic wrapped columns
+share that logical line's selection. A new explicit column without `\ta`
+inherits the global `\tan`/`\an` alignment. The full numpad value still controls
+both axes inside native columns; it never changes the event's block anchor.
+Progressive `\kf`/`\K` karaoke wipes from top to bottom in native
 vertical mode.
 
 ## Examples

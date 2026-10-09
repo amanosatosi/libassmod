@@ -3581,10 +3581,8 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
 
     style = handle_selective_style_overrides(state, style);
 
-    /* These alignment controls are override-level, unlike the event-wide
-     * positioning tags. A style reset restores their legacy fallbacks. */
-    state->line_alignment = 0;
-    state->vertical_text_alignment = 0;
+    /* Warp/curve alignment resets with style. Logical-line \ta decisions
+     * belong to the line and survive style resets. */
     state->warp_text_alignment = 0;
     state->curved_text_align = 0;
     state->clip_pos = (ASS_DVector) {0};
@@ -3800,7 +3798,8 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->native_vertical = false;
     state->vertical_profile = 0;
     state->vertical_direction = 0;
-    state->vertical_text_alignment = 0;
+    state->logical_line_start = 0;
+    state->line_alignment_alloc_failed = false;
     state->vertical_spacing = 0.0;
     state->vertical_column_spacing = 0.0;
     state->text_info.native_vertical = false;
@@ -4255,6 +4254,9 @@ static void free_distortion_resources(RenderContext *state)
 
 static void free_render_context(RenderContext *state)
 {
+    free(state->line_alignments);
+    state->line_alignments = NULL;
+    state->n_line_alignments = state->max_line_alignments = 0;
     free_scroll_contexts(state);
     free_distortion_resources(state);
     free_furi_groups(&state->text_info);
@@ -6367,6 +6369,16 @@ static bool append_chat_literal(RenderContext *state, const char *text)
     return true;
 }
 
+static void finish_alignment_line(RenderContext *state)
+{
+    if (state->n_line_alignments) {
+        LineAlignment *last = &state->line_alignments[state->n_line_alignments - 1];
+        if (last->start == state->logical_line_start)
+            last->end = state->text_info.length;
+    }
+    state->logical_line_start = state->text_info.length;
+}
+
 static bool append_chat_break(RenderContext *state)
 {
     TextInfo *info = &state->text_info;
@@ -6374,10 +6386,13 @@ static bool append_chat_break(RenderContext *state)
     state->effect_timing = 0;
     state->effect_skip_timing = 0;
     state->reset_effect = false;
-    return append_glyph_to_target(state, &info->glyphs, &info->event_text,
+    bool ok = append_glyph_to_target(state, &info->glyphs, &info->event_text,
                                   &info->breaks, &info->length,
                                   &info->max_glyphs, '\n',
                                   (ASS_StringView) {NULL, 0}, false, -1);
+    if (ok)
+        finish_alignment_line(state);
+    return ok;
 }
 
 // Parse one part of an event, retaining render state between chat messages.
@@ -6394,6 +6409,7 @@ static bool parse_event_fragment(RenderContext *state, char *p)
         // get next char, executing style override
         // this affects render_context
         unsigned code = 0;
+        bool explicit_line_break = false;
         while (*p) {
             if ((*p == '{') && (q = strchr(p, '}'))) {
                 p = ass_parse_override_block(state, p + 1, q);
@@ -6445,6 +6461,7 @@ static bool parse_event_fragment(RenderContext *state, char *p)
                     p += 3;
                     break;
                 }
+                explicit_line_break = p[0] == '\\' && p[1] == 'N';
                 code = ass_get_next_char(state, &p);
                 break;
             }
@@ -6472,13 +6489,16 @@ static bool parse_event_fragment(RenderContext *state, char *p)
             apply_column_cell_style(state);
         }
 
+        if (explicit_line_break)
+            finish_alignment_line(state);
+
         state->effect_type = EF_NONE;
         state->effect_timing = 0;
         state->effect_skip_timing = 0;
         state->reset_effect = false;
     }
 
-    return !state->karaoke_alloc_failed;
+    return !state->karaoke_alloc_failed && !state->line_alignment_alloc_failed;
 
 fail:
     return false;
@@ -8259,6 +8279,47 @@ static void apply_baseline_rotation(RenderContext *state,
     }
 }
 
+void ass_select_line_alignment(RenderContext *state, int alignment)
+{
+    int count = state->n_line_alignments;
+    if (count && state->line_alignments[count - 1].start == state->logical_line_start)
+        return;
+    if (count == state->max_line_alignments) {
+        int capacity = state->max_line_alignments;
+        if (capacity > INT_MAX / 2) {
+            state->line_alignment_alloc_failed = true;
+            return;
+        }
+        capacity = capacity ? capacity * 2 : 4;
+        if (!ASS_REALLOC_ARRAY(state->line_alignments, capacity)) {
+            state->line_alignment_alloc_failed = true;
+            return;
+        }
+        state->max_line_alignments = capacity;
+    }
+    state->line_alignments[state->n_line_alignments++] = (LineAlignment) {
+        .start = state->logical_line_start, .end = INT_MAX,
+        .alignment = alignment,
+    };
+}
+
+int ass_line_alignment(const RenderContext *state, int glyph_index)
+{
+    // Sparse source ranges stay valid through shaping and bidi reordering;
+    // only positions change. Lookup once per visual line/column, never glyph.
+    int lo = 0, hi = state->n_line_alignments;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (state->line_alignments[mid].start <= glyph_index)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo && glyph_index < state->line_alignments[lo - 1].end)
+        return state->line_alignments[lo - 1].alignment;
+    return state->text_alignment;
+}
+
 static void align_lines(RenderContext *state, double max_text_width)
 {
     TextInfo *text_info = &state->text_info;
@@ -8266,15 +8327,8 @@ static void align_lines(RenderContext *state, double max_text_width)
     int i, j;
     double width = 0;
     int last_break = -1;
-    int halign = state->line_alignment ?
-        state->line_alignment : state->text_alignment & 3;
-    int justify = state->justify;
+    int line = 0;
     double max_width = 0;
-
-    if (state->evt_type & EVENT_HSCROLL) {
-        justify = halign;
-        halign = HALIGN_LEFT;
-    }
 
     for (i = 0; i <= text_info->length; ++i) {   // (text_info->length + 1) is the end of the last line
         if ((i == text_info->length) || glyphs[i].linebreak) {
@@ -8286,8 +8340,20 @@ static void align_lines(RenderContext *state, double max_text_width)
             width += d6_to_double(glyphs[i].cluster_advance.x);
         }
     }
+    // Mixed left/right selections align inside the shaped block, not across
+    // the available frame width. The longest line fixes the original block
+    // extent; \an/\tan retain control of its external anchor. Untagged events
+    // retain their existing layout, including justification.
+    if (state->n_line_alignments)
+        max_text_width = max_width;
     for (i = 0; i <= text_info->length; ++i) {   // (text_info->length + 1) is the end of the last line
         if ((i == text_info->length) || glyphs[i].linebreak) {
+            int halign = ass_line_alignment(state, text_info->lines[line].offset) & 3;
+            int justify = state->justify;
+            if (state->evt_type & EVENT_HSCROLL) {
+                justify = halign;
+                halign = HALIGN_LEFT;
+            }
             double shift = 0;
             if (halign == HALIGN_LEFT) {    // left aligned, no action
                 if (justify == ASS_JUSTIFY_RIGHT) {
@@ -8323,6 +8389,7 @@ static void align_lines(RenderContext *state, double max_text_width)
             }
             last_break = i - 1;
             width = 0;
+            line++;
         }
         if (i < text_info->length && !glyphs[i].skip &&
                 glyphs[i].symbol != '\n' && glyphs[i].symbol != 0) {
@@ -8981,8 +9048,6 @@ static bool apply_curved_text(RenderContext *state,
 
     int alignment = effective_curved_alignment(state);
     int halign = alignment & 3;
-    int line_alignment = state->line_alignment ?
-        state->line_alignment : state->text_alignment & 3;
     double path_offset =
         x2scr_offset(state, state->curved_text_x * object_scale);
     double normal_offset =
@@ -9000,6 +9065,8 @@ static bool apply_curved_text(RenderContext *state,
      * keeps pathological coordinates on the normal-rendering fallback path. */
     for (int pass = 0; pass < 2; pass++) {
         for (size_t line = 0; line < n_lines; line++) {
+            int line_alignment = ass_line_alignment(state,
+                text_info->lines[line].offset) & 3;
             line_cursor[line] = halign == HALIGN_CENTER ?
                 (path.length - max_advance) * 0.5 :
                 halign == HALIGN_RIGHT ? path.length - max_advance : 0.0;

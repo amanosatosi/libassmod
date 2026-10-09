@@ -690,17 +690,17 @@ int main(void)
     ok &= render_sample(lib, renderer,
         "{\\an7\\ta2\\ctan5\\pos(480,270)\\fs44"
         "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
-        "testing\\Nsuper testing",
+        "testing\\N{\\ta2}super testing",
         0, &override_event_an7);
     ok &= render_sample(lib, renderer,
         "{\\an5\\ta2\\ctan5\\pos(480,270)\\fs44"
         "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
-        "testing\\Nsuper testing",
+        "testing\\N{\\ta2}super testing",
         0, &override_event_an5);
     ok &= render_sample(lib, renderer,
         "{\\an7\\ta2\\pos(480,270)\\fs44"
         "\\ct(m -300 0 b -180 -150 180 -150 300 0)}"
-        "testing\\Nsuper testing",
+        "testing\\N{\\ta2}super testing",
         0, &inherited_an7);
     ok &= expect(same_sample(&override_event_an7, &override_event_an5) &&
                  !same_sample(&override_event_an7, &inherited_an7),
@@ -769,13 +769,13 @@ int main(void)
 
     Sample ta_left, ta_center, ta_right, ctan_left, ctan_center;
     ok &= render_sample(lib, renderer,
-        "{\\an5\\ta1\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        "{\\an5\\ta1\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\N{\\ta1}short",
         0, &ta_left);
     ok &= render_sample(lib, renderer,
-        "{\\an5\\ta2\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        "{\\an5\\ta2\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\N{\\ta2}short",
         0, &ta_center);
     ok &= render_sample(lib, renderer,
-        "{\\an5\\ta3\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\Nshort",
+        "{\\an5\\ta3\\ctan5\\pos(480,240)\\ct(m -300 0 l 300 0)}LONG FIRST LINE\\N{\\ta3}short",
         0, &ta_right);
     ok &= expect(center_x(&ta_left) + 5 < center_x(&ta_center) &&
                  center_x(&ta_center) + 5 < center_x(&ta_right),

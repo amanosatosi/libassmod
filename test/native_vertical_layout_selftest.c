@@ -262,7 +262,11 @@ int main(void)
     };
     for (int mode = 0; mode < 3; mode++) {
         init(f, uneven_columns, 5, 0, 0);
-        f->state.vertical_text_alignment = vertical_alignments[mode];
+        LineAlignment selected[] = {
+            {0, 4, vertical_alignments[mode]}, {4, 5, vertical_alignments[mode]},
+        };
+        f->state.line_alignments = selected;
+        f->state.n_line_alignments = 2;
         ok &= expect(ass_vertical_layout(&f->state, 300) &&
                      fabs(d6_to_double(f->glyphs[4].pos.y -
                                       f->glyphs[0].pos.y) - 40 * mode) < 0.1,
@@ -274,12 +278,42 @@ int main(void)
         VALIGN_CENTER | HALIGN_CENTER,
         VALIGN_CENTER | HALIGN_RIGHT,
     };
+    // Independent explicit columns share one unchanged block bbox. The short
+    // first column uses top alignment, the second center, and the long last
+    // column bottom. No individual unit may choose a different alignment.
+    static const uint32_t three_columns[] = {
+        0x65e5, '\n', 0x65e5, '\n', 0x65e5, 0x672c, 0x8a9e, 0x65e5,
+    };
+    init(f, three_columns, 8, 1, 2);
+    LineAlignment independent[] = {
+        {0, 2, VALIGN_TOP | HALIGN_LEFT},
+        {2, 4, VALIGN_CENTER | HALIGN_CENTER},
+        {4, 8, VALIGN_SUB | HALIGN_RIGHT},
+    };
+    f->state.line_alignments = independent;
+    f->state.n_line_alignments = 3;
+    ok &= expect(ass_vertical_layout(&f->state, 300) &&
+                 fabs(center_y(&f->glyphs[2]) - center_y(&f->glyphs[0]) - 60) < 0.1 &&
+                 fabs(center_y(&f->glyphs[4]) - center_y(&f->glyphs[0])) < 0.1 &&
+                 fabs(f->state.text_info.vertical_bbox.y_min) < 0.1 &&
+                 fabs(f->state.text_info.vertical_bbox.y_max - 160) < 0.1,
+                 "per-column ta changed the block anchor or leaked across columns");
+    static const uint32_t wrapping_column[] = {0x65e5, 0x672c, 0x8a9e, 0x65e5};
+    init(f, wrapping_column, 4, 1, 2);
+    LineAlignment wrapped = {0, 4, VALIGN_SUB | HALIGN_CENTER};
+    f->state.line_alignments = &wrapped;
+    f->state.n_line_alignments = 1;
+    ok &= expect(ass_vertical_layout(&f->state, 120) &&
+                 fabs(center_y(&f->glyphs[3]) - center_y(&f->glyphs[0]) - 80) < 0.1,
+                 "automatic native column wrap lost its logical-line ta");
     ASS_DRect reference_bbox = {0};
     for (int mode = 0; mode < 3; mode++) {
         init(f, myanmar_optical, 2, 0, 0);
         f->glyphs[0].fill_bbox.x_max = 35 * 64;
         f->glyphs[1].fill_bbox.x_max = 70 * 64;
-        f->state.vertical_text_alignment = horizontal_alignments[mode];
+        LineAlignment selected = {0, 2, horizontal_alignments[mode]};
+        f->state.line_alignments = &selected;
+        f->state.n_line_alignments = 1;
         ok &= expect(ass_vertical_layout(&f->state, 300),
                      "ta horizontal unit alignment layout");
         double first = mode == 0 ? ink_left(&f->glyphs[0]) :

@@ -32,3 +32,11 @@ The text is laid out left-aligned, with the same bottom vertical alignment as
 the `\an3` anchor.
 
 Malformed or out-of-range `\tan` values are ignored.
+
+`\ta1`–`\ta9` select an individual logical line's internal alignment. The first
+valid `\ta` between explicit `\N` boundaries wins for the entire line, including
+text before the tag, and survives `\r`. A line without `\ta` falls back to the
+global `\tan`/`\an` selection. Automatic wrapped visual lines share their
+logical line's choice; wrapping does not open a new first-win slot. `\ta`
+never replaces the event's `\an` anchor or global `\tan` text anchor. See
+[line alignment](curved-text.md#ta1ta9) for examples and curved-text behavior.

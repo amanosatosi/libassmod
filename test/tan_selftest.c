@@ -176,6 +176,187 @@ static bool expect_warp_anchor(ASS_Library *lib, ASS_Renderer *renderer,
     return true;
 }
 
+typedef struct {
+    int x0, y0, x1, y1;
+    bool have;
+} ColorBounds;
+
+static bool render_line_bounds(ASS_Library *lib, ASS_Renderer *renderer,
+                                const char *text, ColorBounds bounds[4])
+{
+    ASS_Track *track = read_case_track(lib, text);
+    if (!track)
+        return false;
+    memset(bounds, 0, 4 * sizeof(*bounds));
+    const uint32_t colors[] = {0xFF000000u, 0x00FF0000u, 0x0000FF00u, 0xFFFFFF00u};
+    int change;
+    for (ASS_Image *img = ass_render_frame(renderer, track, 0, &change);
+         img; img = img->next) {
+        if (img->type != IMAGE_TYPE_CHARACTER)
+            continue;
+        int color = -1;
+        for (int i = 0; i < 4; i++)
+            if (img->color == colors[i]) color = i;
+        if (color < 0)
+            continue;
+        ColorBounds *b = &bounds[color];
+        for (int y = 0; y < img->h; y++)
+            for (int x = 0; x < img->w; x++) {
+                if (!img->bitmap[y * img->stride + x])
+                    continue;
+                int xx = img->dst_x + x, yy = img->dst_y + y;
+                if (!b->have) {
+                    *b = (ColorBounds) {xx, yy, xx + 1, yy + 1, true};
+                } else {
+                    if (xx < b->x0) b->x0 = xx;
+                    if (yy < b->y0) b->y0 = yy;
+                    if (xx + 1 > b->x1) b->x1 = xx + 1;
+                    if (yy + 1 > b->y1) b->y1 = yy + 1;
+                }
+            }
+    }
+    ass_free_track(track);
+    return bounds[0].have && bounds[1].have && bounds[2].have && bounds[3].have;
+}
+
+/* The longest (white) reference line fixes the block extent. Compare colored
+ * occupied pixels, independent of image-run counts. Equal short lines let us
+ * check exact left/center/right edges and unchanged vertical placement; ruby
+ * uses the same color so its attachment is included in those measurements. */
+static bool expect_per_line_geometry(ASS_Library *lib, ASS_Renderer *renderer,
+                                     int anchor, bool positioned,
+                                     const char *tags, const char *short_text,
+                                     const char *const selections[3],
+                                     const int alignments[3])
+{
+    char prefix[256], pos[64] = "", control[2048], actual[2048];
+    int y = anchor == 8 ? 65 : anchor == 2 ? 295 : 180;
+    if (positioned) snprintf(pos, sizeof(pos), "\\pos(320,%d)", y);
+    snprintf(prefix, sizeof(prefix), "{\\an%d%s\\fs30\\bord0\\shad0\\q2%s}",
+             anchor, pos, tags);
+    const char *format = "%s{\\c&H0000FF&}%s%s\\N{\\c&H00FF00&}%s%s\\N"
+                         "{\\c&HFF0000&}%s%s\\N{\\c&HFFFFFF&}WWWWWW";
+    snprintf(control, sizeof(control), format, prefix, "", short_text,
+             "", short_text, "", short_text);
+    snprintf(actual, sizeof(actual), format, prefix, selections[0], short_text,
+             selections[1], short_text, selections[2], short_text);
+    ColorBounds a[4], b[4];
+    bool ok = render_line_bounds(lib, renderer, control, a) &&
+              render_line_bounds(lib, renderer, actual, b);
+    if (ok) {
+        ok = a[3].x0 == b[3].x0 && a[3].x1 == b[3].x1 &&
+             a[3].y0 == b[3].y0 && a[3].y1 == b[3].y1;
+        for (int line = 0; line < 3; line++) {
+            int edge = alignments[line] == 1 ? b[line].x0 - b[3].x0 :
+                       alignments[line] == 3 ? b[line].x1 - b[3].x1 :
+                       b[line].x0 + b[line].x1 - b[3].x0 - b[3].x1;
+            ok &= abs(edge) <= 2 && a[line].y0 == b[line].y0 &&
+                  a[line].y1 == b[line].y1;
+        }
+    }
+    if (!ok)
+        fprintf(stderr, "::error title=per-line ta geometry::an%d pos=%d "
+                "line alignment or original block anchor changed: `%s`\n",
+                anchor, positioned, actual);
+    return ok;
+}
+
+static bool test_per_line_alignment(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    bool ok = true;
+    const char *lcr[] = {"{\\ta7}", "{\\ta5}", "{\\ta9}"};
+    const int lcr_alignment[] = {1, 2, 3};
+    const int anchors[] = {8, 2, 5};
+    for (int i = 0; i < 3; i++)
+        for (int positioned = 0; positioned <= 1; positioned++) {
+            ok &= expect_per_line_geometry(lib, renderer, anchors[i], positioned,
+                "", "WW", lcr, lcr_alignment);
+            ok &= expect_per_line_geometry(lib, renderer, anchors[i], positioned,
+                "\\furichangepos2", "<WW|MM|MM>", lcr, lcr_alignment);
+        }
+    const char *first_missing[] = {"", "{\\ta7}", "{\\ta9}"};
+    ok &= expect_per_line_geometry(lib, renderer, 5, true, "", "WW",
+        first_missing, (int[]) {2, 1, 3});
+    const char *middle_missing[] = {"{\\ta7}", "", "{\\ta9}"};
+    ok &= expect_per_line_geometry(lib, renderer, 8, true, "", "WW",
+        middle_missing, lcr_alignment);
+    const char *tan_fallback[] = {"{\\ta9}", "", "{\\ta5}"};
+    ok &= expect_per_line_geometry(lib, renderer, 5, true, "\\tan7", "WW",
+        tan_fallback, (int[]) {3, 1, 2});
+    // A flat curve makes each line's along-path placement measurable while
+    // retaining the global curved attachment selected by ctan5.
+    ok &= expect_per_line_geometry(lib, renderer, 5, true,
+        "\\ctan5\\ct(m -280 0 l 280 0)", "WW", lcr, lcr_alignment);
+    ColorBounds vertical_plain[4], vertical_selected[4];
+    const char *vertical_control =
+        "{\\an5\\pos(320,180)\\fs30\\bord0\\shad0\\q2\\vert1\\vtype1\\vdir2}"
+        "{\\c&H0000FF&}日\\N{\\c&H00FF00&}日\\N{\\c&HFF0000&}日\\N"
+        "{\\c&HFFFFFF&}日日日日";
+    const char *vertical_tags =
+        "{\\an5\\pos(320,180)\\fs30\\bord0\\shad0\\q2\\vert1\\vtype1\\vdir2}"
+        "{\\c&H0000FF&\\ta7}日{\\ta3}\\N{\\c&H00FF00&}日{\\ta5}\\N"
+        "{\\c&HFF0000&\\ta3}日\\N{\\c&HFFFFFF&}日日日日";
+    bool vertical_ok = render_line_bounds(lib, renderer, vertical_control, vertical_plain) &&
+                       render_line_bounds(lib, renderer, vertical_tags, vertical_selected);
+    if (vertical_ok) {
+        vertical_ok = abs(vertical_selected[0].y0 - vertical_selected[3].y0) <= 1 &&
+            abs(vertical_selected[1].y0 + vertical_selected[1].y1 -
+                vertical_selected[3].y0 - vertical_selected[3].y1) <= 2 &&
+            abs(vertical_selected[2].y1 - vertical_selected[3].y1) <= 1;
+        for (int i = 0; i < 4; i++)
+            vertical_ok &= vertical_selected[i].x0 == vertical_plain[i].x0 &&
+                           vertical_selected[i].x1 == vertical_plain[i].x1;
+        vertical_ok &= vertical_selected[3].y0 == vertical_plain[3].y0 &&
+                       vertical_selected[3].y1 == vertical_plain[3].y1;
+    }
+    if (!vertical_ok)
+        fprintf(stderr, "::error title=per-column ta geometry::column selection "
+                "or original native block anchor changed\n");
+    ok &= vertical_ok;
+
+    const char *prefix = "{\\an8\\pos(320,60)\\fs28\\bord0\\shad0}";
+    const char *cases[][2] = {
+        {"{\\ta7}Hello {\\ta9}world\\N{\\ta3}Goodbye {\\ta1}world",
+         "{\\ta7}Hello world\\N{\\ta3}Goodbye world"},
+        {"First line{\\ta7}\\NSecond line{\\ta9}",
+         "{\\ta7}First line\\N{\\ta9}Second line"},
+        {"{\\ta7}A{\\r\\ta9}BC\\N{\\ta9}DEF",
+         "{\\ta7}A{\\r}BC\\N{\\ta9}DEF"},
+        {"{\\ta0\\ta10\\ta-1\\tafoo\\ta2.5\\ta7}AB\\N{\\ta99\\ta9}CD",
+         "{\\ta7}AB\\N{\\ta9}CD"},
+        {"{\\t(0,1000,\\ta7)\\ta9}AB\\N{\\t(0,1000,\\ta7)}CD{\\ta5}",
+         "{\\ta9}AB\\N{\\ta5}CD"},
+        {"{\\ta7\\N\\ta9}AB\\N{\\ta9}CD",
+         "{\\ta7}AB\\N{\\ta9}CD"},
+        {"{\\ta7}ABC\\N\\N{\\ta9}DEF\\N",
+         "{\\ta7}ABC\\N{\\ta5}\\N{\\ta9}DEF\\N"},
+        {"{\\q1}ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN "
+         "ELEVEN TWELVE THIRTEEN{\\ta9}\\N{\\ta7}END",
+         "{\\q1\\ta9}ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN "
+         "ELEVEN TWELVE THIRTEEN\\N{\\ta7}END"},
+        {"{\\q2\\ta7}LONG LINE\\nshort{\\ta9}\\N{\\ta9}END",
+         "{\\q2\\ta7}LONG LINE\\nshort\\N{\\ta9}END"},
+        {"{\\ta7}日本 Latin ဆာတို့{\\ta9}\\Nစူဇူကီ 日本{\\ta9}\\N{\\ta5}ABC אבג",
+         "{\\ta7}日本 Latin ဆာတို့\\N{\\ta9}စူဇူကီ 日本\\N{\\ta5}ABC אבג"},
+        {"{\\furichangepos2}A<WW|MM|MM>{\\ta7}\\N{\\ta9}<WW|MM|MM>A",
+         "{\\furichangepos2\\ta7}A<WW|MM|MM>\\N{\\ta9}<WW|MM|MM>A"},
+        {"{\\vert1\\vdir2\\ta7}日本{\\ta9}\\N次列{\\ta9}",
+         "{\\vert1\\vdir2\\ta7}日本\\N{\\ta9}次列"},
+        {"{\\ctan5\\ct(m -250 0 b -150 -60 150 -60 250 0)}"
+         "AB{\\ta7}\\NCD{\\ta9}",
+         "{\\ctan5\\ct(m -250 0 b -150 -60 150 -60 250 0)\\ta7}"
+         "AB\\N{\\ta9}CD"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char actual[2048], expected[2048];
+        snprintf(actual, sizeof(actual), "%s%s", prefix, cases[i][0]);
+        snprintf(expected, sizeof(expected), "%s%s", prefix, cases[i][1]);
+        ok &= expect_same(lib, renderer, actual, expected,
+                          "per-line ta first-win/inheritance geometry failed");
+    }
+    return ok;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -198,6 +379,7 @@ int main(void)
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
     bool ok = true;
+    ok &= test_per_line_alignment(lib, renderer);
 
     ok &= expect_same(
         lib, renderer,
@@ -240,12 +422,12 @@ int main(void)
     for (int group = 0; group < 3; group++) {
         char first[160], other[160];
         snprintf(first, sizeof(first),
-            "{\\an7\\ta%d\\pos(320,180)}LONG FIRST LINE\\Nshort",
-            equivalent[group][0]);
+            "{\\an7\\ta%d\\pos(320,180)}LONG FIRST LINE\\N{\\ta%d}short",
+            equivalent[group][0], equivalent[group][0]);
         for (int member = 1; member < 3; member++) {
             snprintf(other, sizeof(other),
-                "{\\an7\\ta%d\\pos(320,180)}LONG FIRST LINE\\Nshort",
-                equivalent[group][member]);
+                "{\\an7\\ta%d\\pos(320,180)}LONG FIRST LINE\\N{\\ta%d}short",
+                equivalent[group][member], equivalent[group][member]);
             ok &= expect_same(lib, renderer, first, other,
                               "equivalent ta numpad values rendered differently");
         }
@@ -256,7 +438,7 @@ int main(void)
     ok &= render_case(lib, renderer,
         "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort", &legacy);
     ok &= render_case(lib, renderer,
-        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort", &centered);
+        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\N{\\ta2}short", &centered);
     /* Image ink can differ by a few pixels when a different line supplies
      * the outermost side bearing; the positioned block anchor must not move. */
     if (same_sig(&legacy, &centered) || abs(legacy.min_x - centered.min_x) > 3 ||
@@ -271,7 +453,7 @@ int main(void)
     ok &= render_case(lib, renderer,
         "{\\an9\\pos(320,180)}LONG FIRST LINE\\Nshort", &right_legacy);
     ok &= render_case(lib, renderer,
-        "{\\an9\\ta1\\pos(320,180)}LONG FIRST LINE\\Nshort", &right_left);
+        "{\\an9\\ta1\\pos(320,180)}LONG FIRST LINE\\N{\\ta1}short", &right_left);
     if (same_sig(&right_legacy, &right_left) ||
             abs(right_legacy.max_x - right_left.max_x) > 3 ||
             right_legacy.min_y != right_left.min_y) {
@@ -285,7 +467,7 @@ int main(void)
     ok &= render_case(lib, renderer,
         "{\\an1\\pos(320,180)}LONG FIRST LINE\\Nshort", &bottom_legacy);
     ok &= render_case(lib, renderer,
-        "{\\an1\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort", &bottom_right);
+        "{\\an1\\ta3\\pos(320,180)}LONG FIRST LINE\\N{\\ta3}short", &bottom_right);
     if (same_sig(&bottom_legacy, &bottom_right) ||
             abs(bottom_legacy.min_x - bottom_right.min_x) > 3 ||
             bottom_legacy.max_y != bottom_right.max_y) {
@@ -306,9 +488,9 @@ int main(void)
         "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
         "invalid ta prevented a later valid override");
     ok &= expect_same(lib, renderer,
-        "{\\an7\\ta2\\r\\pos(320,180)}LONG FIRST LINE\\Nshort",
-        "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort",
-        "style reset did not clear ta");
+        "{\\an7\\ta2\\r\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "{\\an7\\r\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "style reset erased the line's first ta decision");
     ok &= expect_same(lib, renderer,
         "{\\an7\\t(0,1000,\\ta2)\\pos(320,180)}LONG FIRST LINE\\Nshort",
         "{\\an7\\pos(320,180)}LONG FIRST LINE\\Nshort",
@@ -316,7 +498,7 @@ int main(void)
 
     ok &= expect_same(lib, renderer,
         "{\\q2\\an7\\ta2\\pos(320,180)}LONG LINE\\nshort",
-        "{\\q2\\an7\\ta2\\pos(320,180)}LONG LINE\\Nshort",
+        "{\\q2\\an7\\ta2\\pos(320,180)}LONG LINE\\N{\\ta2}short",
         "ta missed a WrapStyle 2 soft line break");
     ok &= expect_same(lib, renderer,
         "{\\an7\\ta2\\pos(320,180)}LONG\\nLINE",

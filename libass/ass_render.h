@@ -746,6 +746,11 @@ typedef struct {
 
 // Renderer state.
 // Values like current font face, color, screen position, clipping and so on are stored here.
+typedef struct {
+    int start, end;             // logical glyph range, delimited only by \N
+    int alignment;              // full ASS alignment for native columns too
+} LineAlignment;
+
 struct render_context {
     ASS_Renderer *renderer;
     TextInfo text_info;
@@ -768,8 +773,10 @@ struct render_context {
 
     int alignment;              // object anchor; if zero, style value will be used
     int text_alignment;         // text horizontal alignment; vertical follows alignment
-    int line_alignment;         // explicit \ta horizontal line alignment; 0 = legacy
-    int vertical_text_alignment; // explicit full \ta for native columns; 0 = inherit
+    LineAlignment *line_alignments; // sparse first-valid \ta selections
+    int n_line_alignments, max_line_alignments;
+    int logical_line_start;
+    bool line_alignment_alloc_failed;
     int warp_text_alignment;    // explicit \wtan visual warped-block anchor; 0 = legacy
     int justify;                // justify instructions
     double frx, fry, frz;
@@ -949,6 +956,10 @@ struct render_context {
 };
 
 typedef struct render_context RenderContext;
+
+// Resolve one logical glyph range to its line/column override or global fallback.
+int ass_line_alignment(const RenderContext *state, int glyph_index);
+void ass_select_line_alignment(RenderContext *state, int alignment);
 
 typedef struct {
     Cache *font_cache;

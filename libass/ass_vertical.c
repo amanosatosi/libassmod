@@ -27,6 +27,7 @@ typedef struct {
 
 typedef struct {
     double left, width, height;
+    int alignment;
 } VerticalColumn;
 
 static int32_t layout_d6(double value)
@@ -338,6 +339,7 @@ bool ass_vertical_layout(RenderContext *state, double max_height)
                 legal > start)
             end = legal;
         double top = 0.0;
+        cols[column].alignment = ass_line_alignment(state, units[start].first);
         for (int j = start; j < end; j++) {
             if (j > start)
                 top += units[j - 1].spacing;
@@ -380,13 +382,11 @@ bool ass_vertical_layout(RenderContext *state, double max_height)
     }
     bbox.y_min = 0.0;
     bbox.y_max = block_height;
-    int alignment = state->vertical_text_alignment ?
-        state->vertical_text_alignment : state->text_alignment;
-    int halign = alignment & 3;
-    int valign = alignment & 12;
     for (int i = 0; i < count; i++) {
         VerticalUnit *unit = &units[i];
         VerticalColumn *col = &cols[unit->column];
+        int halign = col->alignment & 3;
+        int valign = col->alignment & 12;
         double spare_y = block_height - col->height;
         unit->top += valign == VALIGN_CENTER ? spare_y * 0.5 :
                      valign == VALIGN_SUB ? spare_y : 0.0;

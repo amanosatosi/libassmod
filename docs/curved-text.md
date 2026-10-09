@@ -50,21 +50,43 @@ The path is event-wide and survives `\r` style resets.
 
 ### `\ta1`–`\ta9`
 
-`\ta` aligns final visual lines within the ordinary multiline text block.
+`\ta` selects alignment separately for each explicit subtitle line, delimited
+by `\N`, and aligns its final visual lines within the ordinary multiline block.
 Values 1/4/7 mean left, 2/5/8 mean center, and 3/6/9 mean right; the vertical
 digit component is ignored. `\an` still controls the event's `\pos`/margin
 anchor, origin, and vertical placement. For example:
 
 ```ass
-{\an7\ta2\pos(400,200)}LONG FIRST LINE\Nshort
+{\an7\pos(400,200)}LONG FIRST LINE\N{\ta2}short
 ```
 
 The block stays top-left anchored at `(400,200)`, while `short` is centered
-under the longer line. `\ta` applies after hard/soft wrapping, including
-automatic visual lines. Without it, the existing `\an`/`\tan` line-alignment
-behavior is unchanged. The first valid integer 1–9 wins until `\r` or
-`\rStyleName`; a reset restores that legacy fallback. Invalid values are
-ignored, and `\ta` inside `\t` has no effect.
+under the longer line. The **first valid integer 1–9 within each explicit
+line wins**, even when it appears after ordinary text: the selection applies
+to the entire line, including preceding text. Later `\ta` tags on that line
+are ignored. `\r` and `\rStyleName` do not erase the decision or allow another
+tag to replace it. Malformed/out-of-range values do not occupy the first-win
+slot, and `\ta` inside `\t()` has no effect.
+
+Only an actual `\N` in event text starts another alignment selection. Literal
+`\N` inside override blocks is not a line boundary. Automatic soft wrapping
+does not reset the selection: all visual lines from one logical line share
+its chosen `\ta`, each aligned independently by its own width. Lowercase `\n`
+also retains the current selection, including when WrapStyle 2 displays it
+as a line break. A new explicit line without `\ta` falls back to the global
+`\tan`/`\an` alignment; the previous line's selection never leaks into it.
+
+```ass
+{\an8\ta7}First line\N{\ta5}Second line\N{\ta9}Third line
+{\an5\ta7}Hello {\ta9}world\NGoodbye world{\ta9}
+```
+
+The first example selects left/center/right while keeping the event anchored
+at top center. In the second, the first line remains entirely left-aligned;
+the second is entirely right-aligned, including text before its tag. The
+alignment container is the widest laid-out text line, not the entire frame.
+Furigana moves with its associated line; horizontal alignment and strict
+`\furichangepos2` interline clearance remain independent.
 
 ### `\ctan1`–`\ctan9`
 
@@ -103,9 +125,12 @@ is the tangent at the selected attachment point.
 
 The widest shaped visual line defines the shared block width before curving.
 The horizontal digit attaches that block to the path start, center, or end;
-`\ta` (or `\an` when `\ta` is absent) aligns shorter lines inside it.
-For example, `\an7\ta2\ctan5` keeps the event top-left anchored, centers
-short lines in the text block, and centers that block on the curved path.
+each logical line's `\ta` (or global `\tan`/`\an` fallback) aligns its shorter
+visual lines inside it.
+For example, `\an7\ta2\ctan5` keeps the event top-left anchored, centers the
+first logical line's wrapped visual lines in the text block, and centers that
+block on the curved path. Put `\ta2` after each `\N` to center subsequent
+logical lines too.
 
 Explicit `\ctan` changes curved attachment only. `\an` still determines the
 event's normal `\pos`/margin anchor. The first valid `\ctan` integer 1–9 wins
