@@ -382,25 +382,33 @@ static bool ordinary(ASS_Library *lib, ASS_Renderer *renderer)
      * assertion when a font's ascender/descender outlines are asymmetric. */
     ok &= render(lib, renderer, "{\\an5\\pos(320,180)\\1a&HFF&\\1bs3\\1bblur0.1\\1bgrd" RGB "}MMMM", 0, &inner);
     ok &= render(lib, renderer, "{\\an5\\pos(320,180)\\1a&HFF&\\1bs3\\1bblur0.1\\1bgrd" RGB "\\10bs40\\10ba&HFF&}MMMM", 0, &padded);
-    if (!same_target(&inner, &padded, IMAGE_TYPE_OUTLINE)) {
-        int mask = 0, colors = 0, max_alpha = 0, max_color = 0;
+    {
+        int common = 0, max_alpha = 0, max_color = 0;
         for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
             uint8_t *p = pixel(&inner, IMAGE_TYPE_OUTLINE, x, y);
             uint8_t *q = pixel(&padded, IMAGE_TYPE_OUTLINE, x, y);
             int delta = abs(p[3] - q[3]);
-            mask += delta != 0;
             if (delta > max_alpha) max_alpha = delta;
-            if (p[3] >= 128 && q[3] >= 128) for (int c = 0; c < 3; c++) {
-                delta = abs(p[c] * 255 / p[3] - q[c] * 255 / q[3]);
-                colors += delta > 2;
-                if (delta > max_color) max_color = delta;
+            if (p[3] >= 128 && q[3] >= 128) {
+                common++;
+                for (int c = 0; c < 3; c++) {
+                    delta = abs(p[c] * 255 / p[3] - q[c] * 255 / q[3]);
+                    if (delta > max_color) max_color = delta;
+                }
             }
         }
-        fprintf(stderr, "inner ring mismatch: masks=%d max-alpha=%d colors=%d max-color=%d\n",
-                mask, max_alpha, colors, max_color);
+        /* A larger composite allocation can change blur's integer rounding
+         * by one alpha unit (observed on CoreText/macOS). Unpremultiplying
+         * 8-bit color at opacity >=128 adds at most two RGB units. Compare
+         * the actual mask and gradient field within those quantization bounds,
+         * rather than conflating paint coordinates with bit-exact blur output. */
+        bool stable = common > 50 && max_alpha <= 1 && max_color <= 2 &&
+            red_blue(&inner, IMAGE_TYPE_OUTLINE) && red_blue(&padded, IMAGE_TYPE_OUTLINE);
+        if (!stable)
+            fprintf(stderr, "inner ring mismatch: common=%d max-alpha=%d max-color=%d\n",
+                    common, max_alpha, max_color);
+        ok &= check(stable, "invisible outer glyph border changed inner mask or sampled gradient coordinates");
     }
-    ok &= check(same_target(&inner, &padded, IMAGE_TYPE_OUTLINE),
-                "invisible outer glyph border changed inner gradient coordinates");
     release(&inner); release(&padded);
     /* ASS suppresses a fill-only shadow when its primary fill is invisible. */
     ok &= render(lib, renderer, "{\\shad12\\4grd" RGB "}MMMM", 0, &a);

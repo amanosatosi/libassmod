@@ -96,3 +96,11 @@ shadows behind fully invisible fill; eight-value distortion places P0 last;
 and ordinary single outlines have different mask-subtraction semantics from
 native composite rings. Tests isolate reading bands and compare like geometry
 rather than changing those established behaviors.
+
+The inner-ring allocation-independence fixture permits one alpha unit of blur
+rounding and two RGB units after unpremultiplication at opacity at least 128.
+CoreText/macOS produces those quantization differences when a larger outer
+ring changes the composite allocation. The fixture checks every mask pixel,
+the sampled colors in the common covered region, and both gradient endpoints;
+it does not require byte-identical blurred allocations. Other mask/color
+comparisons retain exact equality where the geometry and allocation are equal.
