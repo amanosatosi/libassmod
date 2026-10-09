@@ -2628,6 +2628,8 @@ static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
     bool alpha = tag == BORDER_TAG_BOX_VALPHA ||
                  tag == BORDER_TAG_BOX_ALPHA_GRADIENT;
     bool vector = tag == BORDER_TAG_BOX_VCOLOR || tag == BORDER_TAG_BOX_VALPHA;
+    if (vector && *name_end != '(' && inline_arg.start && inline_arg.start < inline_arg.end)
+        return;
     if (*name_end == '(' && (tag_end <= name_end + 1 || tag_end[-1] != ')'))
         return;
     MangetsuGradientLayer *dst = alpha ? &state->box_border_alpha[layer] :

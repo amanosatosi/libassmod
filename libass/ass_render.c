@@ -10371,7 +10371,6 @@ typedef struct {
     int inner_x, inner_y;
     int outer_x, outer_y;
     int paint_layer;
-    uint32_t color;
 } BoxBorderRenderLayer;
 
 typedef struct {
@@ -11061,7 +11060,6 @@ static int collect_box_border_render_layers(RenderContext *state,
             .outer_x = outer_x,
             .outer_y = outer_y,
             .paint_layer = i,
-            .color = box_border_layer_color(glyph, layer),
         };
     }
     return count;

@@ -259,6 +259,47 @@ static bool clipped_coordinates(ASS_Library *lib, ASS_Renderer *renderer)
     return ok;
 }
 
+static bool vector_corners(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    Frame color = {0}, alpha = {0};
+    const char *corners = "\\4vc(&H0000FF&,&H00FF00&,&HFF0000&,&HFFFFFF&)";
+    char text[1024];
+    snprintf(text, sizeof(text), "{" BOX "%s}MMMM", corners);
+    bool ok = render(lib, renderer, text, 0, &color);
+    snprintf(text, sizeof(text), "{" BOX "%s\\4va(&H00&,&HFF&,&HFF&,&H00&)}MMMM", corners);
+    ok &= render(lib, renderer, text, 0, &alpha);
+    int left = W, top = H, right = 0, bottom = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+        if (pixel(&color, IMAGE_TYPE_SHADOW, x, y)[3] < 240) continue;
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+    }
+    if (left >= right || top >= bottom) {
+        release(&color); release(&alpha);
+        return check(false, "four-corner BS4 mask is missing");
+    }
+    int x0 = left + (right - left) / 8, x1 = right - (right - left) / 8;
+    int y0 = top + (bottom - top) / 8, y1 = bottom - (bottom - top) / 8;
+    uint8_t *tl = pixel(&color, IMAGE_TYPE_SHADOW, x0, y0);
+    uint8_t *tr = pixel(&color, IMAGE_TYPE_SHADOW, x1, y0);
+    uint8_t *bl = pixel(&color, IMAGE_TYPE_SHADOW, x0, y1);
+    uint8_t *br = pixel(&color, IMAGE_TYPE_SHADOW, x1, y1);
+    ok &= check(tl[0] > tl[1] * 2 && tl[0] > tl[2] * 2 &&
+                tr[1] > tr[0] * 2 && tr[1] > tr[2] * 2 &&
+                bl[2] > bl[0] * 2 && bl[2] > bl[1] * 2 &&
+                br[0] > 170 && br[1] > 170 && br[2] > 170,
+                "BS4 four-corner RGB ordering or vertical interpolation is wrong");
+    ok &= check(pixel(&alpha, IMAGE_TYPE_SHADOW, x0, y0)[3] >
+                    pixel(&alpha, IMAGE_TYPE_SHADOW, x1, y0)[3] * 2 &&
+                pixel(&alpha, IMAGE_TYPE_SHADOW, x1, y1)[3] >
+                    pixel(&alpha, IMAGE_TYPE_SHADOW, x0, y1)[3] * 2,
+                "BS4 four-corner alpha was ignored or mixed into color");
+    release(&color); release(&alpha);
+    return ok;
+}
+
 static bool rings(ASS_Library *lib, ASS_Renderer *renderer)
 {
     bool ok = true;
@@ -282,6 +323,11 @@ static bool rings(ASS_Library *lib, ASS_Renderer *renderer)
                  "\\%dbbva(&H00&,&H80&,&H00&,&H80&)}MMMM", layer, layer, layer);
         ok &= render(lib, renderer, text, 0, &a);
         ok &= check(red_blue(&a, IMAGE_TYPE_OUTLINE), "numbered box-border vector gradients missing");
+        release(&a);
+        snprintf(text, sizeof(text), "{" BOX "\\%dbbs10\\%dbbc&H00FF00&\\%dbbgrd" RGB
+                 "\\%dbbgrd0}MMMM", layer, layer, layer, layer);
+        ok &= render(lib, renderer, text, 0, &a);
+        ok &= check(flat_green(&a, IMAGE_TYPE_OUTLINE), "box gradient reset failed to restore its solid fallback");
         release(&a);
     }
     Frame a = {0}, b = {0};
@@ -542,6 +588,32 @@ static bool precedence(ASS_Library *lib, ASS_Renderer *renderer)
     ok &= check(red_blue(&a, IMAGE_TYPE_SHADOW), "BS4 gradient did not replace image fill");
     release(&a);
     ass_clear_tag_images(renderer);
+
+    const char *blend = "{" BOX "\\4a&H80&\\4grd" RGB "\\blend4}MMMM";
+    ok &= render(lib, renderer, blend, 0, &a);
+    ASS_Track *track = track_for(lib, blend);
+    uint8_t *backdrop = malloc((size_t) W * H * 4);
+    if (!track || !backdrop) {
+        if (track) ass_free_track(track);
+        free(backdrop); release(&a);
+        return false;
+    }
+    memset(backdrop, 128, (size_t) W * H * 4);
+    for (int i = 0; i < W * H; i++) backdrop[4 * i + 3] = 255;
+    int change;
+    ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, 0, &change);
+    ok &= ass_composite_images_bgra(images, backdrop, W, H, W * 4) == 0;
+    uint8_t *p = pixel(&a, IMAGE_TYPE_SHADOW, W / 2, H / 2);
+    uint8_t *q = backdrop + ((H / 2) * W + W / 2) * 4;
+    ok &= check(p[3] > 100 && p[3] < 150, "semi-transparent BS4 blend mask missing");
+    if (p[3]) for (int c = 0; c < 3; c++) {
+        int source = p[c] * 255 / p[3];
+        int multiplied = source * 128 / 255;
+        int expected = (multiplied * p[3] + 128 * (255 - p[3])) / 255;
+        ok &= check(abs(q[2 - c] - expected) <= 2, "BS4 gradient lost destination-aware blend metadata or applied alpha twice");
+    }
+    ass_free_images_rgba(images); ass_free_track(track);
+    free(backdrop); release(&a);
     return ok;
 }
 
@@ -553,6 +625,7 @@ int main(void)
     ass_set_frame_size(renderer, W, H);
     ass_set_fonts(renderer, NULL, "Noto Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     bool ok = boxes(lib, renderer);
+    ok &= vector_corners(lib, renderer);
     ok &= clipped_coordinates(lib, renderer);
     ok &= rings(lib, renderer);
     ok &= ordinary(lib, renderer);
