@@ -532,6 +532,12 @@ typedef struct {
     bool rtl;
 } FuriKaraokeRegion;
 
+typedef enum {
+    FURI_POSITION_COMPACT = 0, // X-aware interline clearance, base anchor
+    FURI_POSITION_BLOCK = 1,   // legacy ruby-aware block positioning
+    FURI_POSITION_STRICT = 2,  // complete interline bands, base anchor
+} FuriPositionMode;
+
 typedef struct {
     int base_start;
     int base_len;
@@ -542,7 +548,7 @@ typedef struct {
     bool owns_base;
     bool opposite_side;
     bool place_auto;
-    bool change_pos;            // reserve vertical room; always accommodate X
+    FuriPositionMode change_pos; // vertical reservation; always accommodate X
     bool below;
     bool geometry_valid;
     ASS_DRect base_bounds;
@@ -789,7 +795,7 @@ struct render_context {
     bool furi_auto_placement;
     bool furi_position_explicit;
     bool furi_place_auto;
-    bool furi_change_pos;       // allow vertical base-line/block reservation
+    FuriPositionMode furi_change_pos;
     double border_x;            // outline width
     double border_y;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];

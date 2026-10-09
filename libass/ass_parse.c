@@ -3916,7 +3916,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("furiplaceauto")) {
             state->furi_place_auto = nargs && argtoi32(*args) != 0;
         } else if (tag("furichangepos")) {
-            state->furi_change_pos = nargs && argtoi32(*args) != 0;
+            int mode = nargs ? argtoi32(*args) : 0;
+            state->furi_change_pos = mode == 2 ? FURI_POSITION_STRICT :
+                mode ? FURI_POSITION_BLOCK : FURI_POSITION_COMPACT;
         } else if (complex_tag("furipos")) {
             if (!nargs) {
                 state->furi_offset_x = 0.0;

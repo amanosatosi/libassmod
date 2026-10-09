@@ -109,6 +109,7 @@ field 3 owns the mapping instead. Outer karaoke remains inherited by both.
 \furiplaceauto1
 \furichangepos0
 \furichangepos1
+\furichangepos2
 \furistyle<N>
 ```
 
@@ -152,12 +153,19 @@ two-line case the automatic rule selects the side; manual X/Y offsets still
 apply, constrained to that side by visual clearance. These controls are
 captured per group and reset with `\r` like the other furigana properties.
 
-`\furichangepos0` is the default. It disables only automatic **vertical**
-line/block repositioning to reserve room for ruby. Adding either annotation
-does not enlarge the base line's vertical metrics or the vertical bounds used
-for alignment and ordinary ASS event collision placement. Ruby extends outward
-and can extend outside the video at an edge just like other positioned content.
-For example, these keep the same base baseline Y:
+`\furichangepos` has three vertical layout modes. The default remains 0:
+
+| Mode | Interline spacing | Vertical positioning |
+| --- | --- | --- |
+| `\furichangepos0` | Compact: add clearance for actual X-overlapping annotation collisions. Different lines' readings may share a vertical band when horizontally separated. | Preserve the original ASS base-text anchor. |
+| `\furichangepos1` | Existing furigana-aware line/block reservation. | Include ruby in vertical block positioning, preserving the older behavior. |
+| `\furichangepos2` | Strict interline ruby reservation: separate complete occupied bands of consecutive lines, regardless of X overlap. | Preserve the original ASS base-text anchor, like mode 0. |
+
+Mode 0 preserves the outer base line or base-block center while adding internal
+spacing only where actual annotation collisions require it. Ruby at the outer
+edges does not expand the vertical placement bounds, and can extend outside
+the video just like other positioned content. For example, these keep the same
+single-line base baseline Y:
 
 ```ass
 {\pos(640,500)}漢字
@@ -167,9 +175,50 @@ For example, these keep the same base baseline Y:
 
 `\furichangepos1` enables the older vertical reserve-space behavior: upper and
 lower annotation overhang may enlarge vertical line/block bounds and move base
-lines. Both modes use the **same horizontal accommodation**: wide readings may
+lines. Mode 2 does not change this behavior or replace the compact mode 0.
+
+Mode 2 measures the actual shaped occupied bounds of each line's main text,
+normal furigana and gyaku-furi, including outlines, shadows and the existing
+antialias footprint. It adds only the missing space between consecutive bands,
+with a consistent one-pixel safety clearance. Existing sufficient spacing adds
+nothing; multiple annotations contribute their union, rather than summing the
+same extent repeatedly. Complete lines move with their attached readings.
+The shared typographic reading baselines remain in use, including for combining
+marks. A single-line subtitle has exactly the same base placement as mode 0.
+
+For top alignment (`\an7`–`\an9`), the first base line stays fixed and later
+lines move down. For bottom alignment (`\an1`–`\an3`), the last base line stays
+fixed and preceding lines move up. For center alignment (`\an4`–`\an6`), extra
+spacing is distributed around the original **base-text block center**, without
+recentering on the expanded ruby bounds. These rules apply to both `\pos` and
+ordinary margin positioning, and to explicit line breaks and automatic wrapping.
+
+This is useful when gyaku-furi below one line and normal ruby above the next
+would share vertical space in compact mode, even though their X ranges differ:
+
+```ass
+{\an8\furichangepos2\furis70}<satou|ဆာတို့|佐藤>-<san|စံ> ...\Nဆိုတော့က <suzuki|စူဇူကီ|鈴木>-<kun|ကွန်း> ...
+```
+
+With mode 2, the first line's lower gyaku-furi band ends before the second
+line's upper normal-ruby band begins; the first base line retains its ASS Y
+position. Select mode 0 when compact sharing is desired.
+
+The mode is inherited and captured per group, and `\r` or parameterless
+`\furichangepos` resets it to 0. A mode-2 group enables strict clearance on
+either adjacent boundary of its final visual line; each affected boundary
+uses the complete contents of both lines, including groups using other modes.
+Other boundaries retain compact behavior unless legacy mode-1 reservation is
+active. If an event also contains mode-1
+groups, their legacy vertical reservation and event positioning still apply;
+strict boundaries credit that existing space before adding any missing gap.
+A mode-2 group alone never switches the event to mode-1 block positioning.
+For compatibility, numeric values other than 0 and 2 retain the older nonzero
+mode-1 interpretation.
+
+All three modes use the **same horizontal accommodation**: wide readings may
 expand base-run advances, move following text in X, increase line width and
-affect horizontal alignment/centering. Switching this flag does not change base
+affect horizontal alignment/centering. Switching the mode does not change base
 or ruby X coordinates, horizontal spacing or final line width. It does not
 change annotation shaping, opposite-side placement, minimum clearance or the
 two-line rule.
@@ -186,8 +235,8 @@ The occupied bounds include the rasterizer's antialias fringe so mathematically
 separate outlines also retain visible separation. The existing base-spacing
 path inserts horizontal room between affected base regions to maintain a small
 size-scaled gap, preserving visual base-group order and keeping readings
-centered over their bases. It runs with both `\furichangepos0` and
-`\furichangepos1`; this flag controls only vertical reservation.
+centered over their bases. It runs with all three `\furichangepos` modes;
+this tag controls only vertical reservation.
 `\furistyle2` retains its explicitly requested manga-style X-fit: furigana
 wider than its base is horizontally shrunk to the base width, while shorter
 furigana keeps its normal width. The base advance is kept unchanged.
@@ -206,6 +255,7 @@ furigana keeps its normal width. The base advance is kept unchanged.
 <ABC\|\DEF|reading>
 {\furiplaceauto1}<上段|じょうだん>\N<下段|げだん>
 {\furichangepos1}<漢字|かんじ>
+{\an8\furichangepos2}<上段||UPPER>\N<下段|lower>
 ```
 
 Furigana is shaped and rendered as sidecar glyphs tied to the base glyph range.
@@ -214,8 +264,9 @@ The existing typographic attachment height keeps short, descender-only and
 tall base glyphs aligned where possible. Shaped outline/stroke/shadow bounds
 extend that attachment when nominal metrics would violate visual clearance.
 Base and annotation geometry remain separate. Annotation bounds participate in
-rendering, effects and horizontal alignment in both modes; only groups with
-`\furichangepos1` contribute their vertical overhang to line/block reservation.
+rendering, effects and horizontal alignment in all three modes; only groups
+with `\furichangepos1` contribute their vertical overhang to outer block
+positioning. Mode 2 reserves complete bands only between affected lines.
 Multiple groups on a line reserve the maximum upper and lower overhang, rather
 than summing it.
 

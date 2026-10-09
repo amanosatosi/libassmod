@@ -3679,7 +3679,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->furi_auto_placement = true;
     state->furi_position_explicit = false;
     state->furi_place_auto = false;
-    state->furi_change_pos = false;
+    state->furi_change_pos = FURI_POSITION_COMPACT;
     state->be = 0;
     state->blur_x = style->Blur;
     state->blur_y = style->Blur;
@@ -7219,7 +7219,15 @@ static bool add_furi_spacing_before_group(RenderContext *state,
 static bool furi_reserves_vertical_space(TextInfo *text)
 {
     for (int i = 0; i < text->n_furi_groups; i++)
-        if (text->furi_groups[i].change_pos)
+        if (text->furi_groups[i].change_pos == FURI_POSITION_BLOCK)
+            return true;
+    return false;
+}
+
+static bool furi_has_strict_spacing(TextInfo *text)
+{
+    for (int i = 0; i < text->n_furi_groups; i++)
+        if (text->furi_groups[i].change_pos == FURI_POSITION_STRICT)
             return true;
     return false;
 }
@@ -7649,21 +7657,75 @@ static double furi_line_clearance(RenderContext *state, int upper, int lower)
     return needed;
 }
 
+typedef struct {
+    double top, bottom;
+    bool strict;
+} FuriLineBand;
+
+/* Collect shaped occupied extents once per line, after shared ruby baseline
+ * alignment. A strict group enables both adjacent boundaries; all contents
+ * of their two lines participate, including groups inheriting other modes.
+ * Unions avoid counting multiple readings on the same base twice. */
+static void collect_furi_line_bands(RenderContext *state, FuriLineBand *bands)
+{
+    TextInfo *text = &state->text_info;
+    for (int line = 0; line < text->n_lines; line++) {
+        bands[line].top = DBL_MAX;
+        bands[line].bottom = -DBL_MAX;
+    }
+    for (int i = 0; i < text->length; i++) {
+        GlyphInfo *glyph = &text->glyphs[i];
+        if (glyph->skip || glyph->line < 0 || glyph->line >= text->n_lines)
+            continue;
+        ASS_DRect bounds, ink;
+        if (!furi_occupied_bounds(state, glyph, 1, &bounds, &ink, NULL, NULL))
+            continue;
+        FuriLineBand *band = &bands[glyph->line];
+        band->top = FFMIN(band->top, bounds.y_min);
+        band->bottom = FFMAX(band->bottom, bounds.y_max);
+    }
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        int line = text->glyphs[group->base_start].line;
+        if (!group->geometry_valid || line < 0 || line >= text->n_lines)
+            continue;
+        FuriLineBand *band = &bands[line];
+        band->strict |= group->change_pos == FURI_POSITION_STRICT;
+        band->top = FFMIN(band->top, group->annotation_bounds.y_min);
+        band->bottom = FFMAX(band->bottom, group->annotation_bounds.y_max);
+    }
+}
+
 static bool expand_furi_interline_clearance(RenderContext *state)
 {
     TextInfo *text = &state->text_info;
     int n = text->n_lines;
-    // The explicit \furichangepos1 path retains its existing reservation.
-    if (n < 2 || !text->n_furi_groups ||
-        furi_reserves_vertical_space(text))
+    bool strict = furi_has_strict_spacing(text);
+    bool block = furi_reserves_vertical_space(text);
+    // Events without mode 2 retain the exact legacy mode 1 path.
+    if (n < 2 || !text->n_furi_groups || (block && !strict))
         return true;
 
+    FuriLineBand *bands = strict ? calloc(n, sizeof(*bands)) : NULL;
     double *line_shift = calloc(n, sizeof(*line_shift));
-    if (!line_shift)
+    if (!line_shift || (strict && !bands)) {
+        free(bands);
+        free(line_shift);
         return false;
+    }
+    if (strict)
+        collect_furi_line_bands(state, bands);
     double accumulated = 0.0;
     for (int line = 0; line < n - 1; line++) {
-        double needed = furi_line_clearance(state, line, line + 1);
+        double needed;
+        if (strict && (bands[line].strict || bands[line + 1].strict)) {
+            // No X-overlap test: reserve the full two occupied bands. The
+            // one-pixel safety gap matches compact collision clearance.
+            needed = FFMAX(0.0, bands[line].bottom + 1.0 -
+                                bands[line + 1].top);
+        } else {
+            needed = block ? 0.0 : furi_line_clearance(state, line, line + 1);
+        }
         if (needed > 0) {
             double gap = ceil(needed);
             text->lines[line].desc += gap;
@@ -7675,6 +7737,7 @@ static bool expand_furi_interline_clearance(RenderContext *state)
         update_text_height(state);
         apply_line_shifts(state, line_shift);
     }
+    free(bands);
     free(line_shift);
     return true;
 }
@@ -7726,7 +7789,7 @@ static bool expand_furi_line_metrics(RenderContext *state)
 
     for (int i = 0; i < text_info->n_furi_groups; i++) {
         FuriGroup *group = &text_info->furi_groups[i];
-        if (!group->change_pos || !group->geometry_valid)
+        if (group->change_pos != FURI_POSITION_BLOCK || !group->geometry_valid)
             continue;
         int line = text_info->glyphs[group->base_start].line;
         if (line < 0 || line >= text_info->n_lines)
@@ -11706,9 +11769,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (text_info->n_furi_groups)
         position_furi_groups(state);
 
-    if (!expand_furi_interline_clearance(state)) {
-        ass_msg(render_priv->library, MSGL_ERR,
-                "Failed to resolve furigana interline clearance");
+    if (!expand_furi_line_metrics(state)) {
+        ass_msg(render_priv->library, MSGL_ERR, "Failed to expand furi line metrics");
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
         release_chat_scene(chat, chat_cached);
@@ -11716,8 +11778,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
     }
 
-    if (!expand_furi_line_metrics(state)) {
-        ass_msg(render_priv->library, MSGL_ERR, "Failed to expand furi line metrics");
+    // In mixed events, measure strict bands after the legacy mode 1 shifts
+    // so existing reserved space is credited rather than added twice.
+    if (furi_reserves_vertical_space(text_info) &&
+        furi_has_strict_spacing(text_info))
+        position_furi_groups(state);
+
+    if (!expand_furi_interline_clearance(state)) {
+        ass_msg(render_priv->library, MSGL_ERR,
+                "Failed to resolve furigana interline clearance");
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
         release_chat_scene(chat, chat_cached);

@@ -646,7 +646,8 @@ static void free_ruby_snapshot(RubySnapshot *snapshot)
         free_mask(&snapshot->runs[i]);
 }
 
-static int render_ruby_snapshot(const char *text, RubySnapshot *snapshot)
+static int render_ruby_snapshot_types(const char *text, RubySnapshot *snapshot,
+                                      bool all_types)
 {
     *snapshot = (RubySnapshot) {0};
     ASS_Library *lib = ass_library_init();
@@ -673,7 +674,7 @@ static int render_ruby_snapshot(const char *text, RubySnapshot *snapshot)
     int change = 0;
     for (ASS_Image *img = ass_render_frame(renderer, track, 0, &change);
          img; img = img->next) {
-        if (img->type != IMAGE_TYPE_CHARACTER || !img->w || !img->h)
+        if ((!all_types && img->type != IMAGE_TYPE_CHARACTER) || !img->w || !img->h)
             continue;
         if (snapshot->count == 32)
             goto done;
@@ -713,6 +714,11 @@ done:
     if (renderer) ass_renderer_done(renderer);
     if (lib) ass_library_done(lib);
     return ret;
+}
+
+static int render_ruby_snapshot(const char *text, RubySnapshot *snapshot)
+{
+    return render_ruby_snapshot_types(text, snapshot, false);
 }
 
 /* Three distinct contracts: unchanged base runs; deliberate base movement;
@@ -989,9 +995,226 @@ static int expect_shared_ruby_baseline(void)
     return ok ? 0 : 1;
 }
 
+typedef struct {
+    int x0, y0, x1, y1;
+    bool have;
+} RubyExtent;
+
+static void include_ruby_extent(RubyExtent *extent, const Mask *mask)
+{
+    if (mask->empty)
+        return;
+    if (!extent->have) {
+        *extent = (RubyExtent) {mask->x0, mask->y0, mask->x1, mask->y1, true};
+        return;
+    }
+    if (mask->x0 < extent->x0) extent->x0 = mask->x0;
+    if (mask->y0 < extent->y0) extent->y0 = mask->y0;
+    if (mask->x1 > extent->x1) extent->x1 = mask->x1;
+    if (mask->y1 > extent->y1) extent->y1 = mask->y1;
+}
+
+static int ruby_color_line(uint32_t color)
+{
+    const uint32_t colors[] = {0xFF000000u, 0x00FF0000u, 0x0000FF00u};
+    for (int i = 0; i < 3; i++)
+        if ((color & 0xFFFFFF00u) == colors[i])
+            return i;
+    return -1;
+}
+
+/* Each line has a distinct fill/outline/shadow color. Aggregate occupied
+ * pixels by that color, independent of how many images a base or reading
+ * produces. The plain render supplies the actual number of base image runs;
+ * sidecars follow those runs. Separate masks test anchors, attachment and
+ * full bands (including borders/shadows) without conflating those contracts. */
+static int expect_strict_ruby_layout(const char *plain_body, const char *body,
+                                    const char *tags, int alignment, int lines,
+                                    bool positioned, bool moves,
+                                    unsigned strict_boundaries, bool share)
+{
+    char plain_text[2048], compact_text[2048], strict_text[2048], pos[64] = "";
+    int y = alignment >= 7 ? 65 : alignment <= 3 ? 160 : 108;
+    if (positioned)
+        snprintf(pos, sizeof(pos), "\\pos(192,%d)", y);
+    snprintf(plain_text, sizeof(plain_text),
+             "{\\an%d%s\\fs20\\q2\\bord0\\shad0%s}%s",
+             alignment, pos, tags, plain_body);
+    snprintf(compact_text, sizeof(compact_text),
+             "{\\an%d%s\\fs20\\q2\\bord0\\shad0\\furis80%s\\furichangepos0}%s",
+             alignment, pos, tags, body);
+    snprintf(strict_text, sizeof(strict_text),
+             "{\\an%d%s\\fs20\\q2\\bord0\\shad0\\furis80%s\\furichangepos2}%s",
+             alignment, pos, tags, body);
+    RubySnapshot plain = {0}, compact = {0}, strict = {0};
+    RubySnapshot bands0 = {0}, bands2 = {0};
+    int err = render_ruby_snapshot(plain_text, &plain);
+    if (!err) err = render_ruby_snapshot(compact_text, &compact);
+    if (!err) err = render_ruby_snapshot(strict_text, &strict);
+    if (!err) err = render_ruby_snapshot_types(compact_text, &bands0, true);
+    if (!err) err = render_ruby_snapshot_types(strict_text, &bands2, true);
+    RubyExtent base[3][3] = {{{0}}}, band[2][3] = {{{0}}};
+    RubyExtent reading[2][3] = {{{0}}};
+    bool ok = !err && plain.count > 0 && compact.count > plain.count &&
+              compact.count == strict.count;
+    RubySnapshot *snapshots[] = {&plain, &compact, &strict};
+    for (int mode = 0; ok && mode < 3; mode++)
+        for (int i = 0; ok && i < plain.count; i++) {
+            RubySnapshot *s = snapshots[mode];
+            int line = ruby_color_line(s->colors[i]);
+            ok = line >= 0 && line < lines && !s->runs[i].empty &&
+                 s->colors[i] == plain.colors[i];
+            if (ok) include_ruby_extent(&base[mode][line], &s->runs[i]);
+        }
+    for (int mode = 0; ok && mode < 2; mode++) {
+        RubySnapshot *characters = mode ? &strict : &compact;
+        for (int i = plain.count; ok && i < characters->count; i++) {
+            int line = ruby_color_line(characters->colors[i]);
+            ok = line >= 0 && line < lines && !characters->runs[i].empty;
+            if (ok) include_ruby_extent(&reading[mode][line], &characters->runs[i]);
+        }
+        RubySnapshot *s = mode ? &bands2 : &bands0;
+        for (int i = 0; ok && i < s->count; i++) {
+            int line = ruby_color_line(s->colors[i]);
+            ok = line >= 0 && line < lines && !s->runs[i].empty;
+            if (ok) include_ruby_extent(&band[mode][line], &s->runs[i]);
+        }
+    }
+    int dy[3] = {0};
+    for (int line = 0; ok && line < lines; line++) {
+        ok = base[0][line].have && base[1][line].have && base[2][line].have &&
+             band[0][line].have && band[1][line].have;
+        dy[line] = base[2][line].y0 - base[1][line].y0;
+    }
+    // Every character run keeps its X placement and translates with its base
+    // line, including annotation-to-base offsets after final repositioning.
+    for (int i = 0; ok && i < compact.count; i++) {
+        int line = ruby_color_line(compact.colors[i]);
+        Mask *a = &compact.runs[i], *b = &strict.runs[i];
+        ok = line >= 0 && line < lines && !a->empty && !b->empty &&
+             compact.colors[i] == strict.colors[i] &&
+             compact.image_x[i] == strict.image_x[i] &&
+             compact.image_width[i] == strict.image_width[i] &&
+             abs(a->x0 - b->x0) <= 1 && abs(a->x1 - b->x1) <= 1 &&
+             abs(b->y0 - a->y0 - dy[line]) <= 1 &&
+             abs(b->y1 - a->y1 - dy[line]) <= 1;
+    }
+    if (ok && alignment >= 7)
+        ok = base[2][0].y0 == base[0][0].y0 &&
+             base[2][0].y1 == base[0][0].y1;
+    else if (ok && alignment <= 3)
+        ok = base[2][lines - 1].y0 == base[0][lines - 1].y0 &&
+             base[2][lines - 1].y1 == base[0][lines - 1].y1;
+    else if (ok)
+        ok = abs(base[2][0].y0 + base[2][lines - 1].y1 -
+                 base[0][0].y0 - base[0][lines - 1].y1) <= 2;
+    bool grew = false, shared = false;
+    for (int line = 0; ok && line + 1 < lines; line++) {
+        int growth = dy[line + 1] - dy[line];
+        int overlap = band[0][line].y1 + 1 - band[0][line + 1].y0;
+        if (strict_boundaries & (1u << line)) {
+            ok = band[1][line].y1 + 1 <= band[1][line + 1].y0;
+            // Occupied outline bounds include AA padding. Allow that small
+            // footprint and raster rounding, never a fixed oversized gap.
+            ok = ok && growth >= -1 && growth <= (overlap > 0 ? overlap : 0) + 8;
+        }
+        grew |= growth > 1;
+        shared |= reading[0][line].have && reading[0][line + 1].have &&
+                  reading[0][line].y1 > reading[0][line + 1].y0;
+    }
+    ok = ok && (moves ? grew : !grew) && (!share || shared);
+    if (!moves)
+        for (int line = 0; ok && line < lines; line++)
+            ok = dy[line] == 0;
+    if (!ok) {
+        fprintf(stderr, "::error title=strict ruby bands::an%d pos=%d lines=%d "
+                "err=%d grew=%d shared=%d runs=%d/%d/%d: `%s`\n",
+                alignment, positioned, lines, err, grew, shared,
+                plain.count, compact.count, strict.count, strict_text);
+        for (int line = 0; line < lines; line++)
+            fprintf(stderr, "  line%d base Y=%d/%d/%d band=[%d,%d)/[%d,%d)\n",
+                    line, base[0][line].y0, base[1][line].y0, base[2][line].y0,
+                    band[0][line].y0, band[0][line].y1,
+                    band[1][line].y0, band[1][line].y1);
+    }
+    free_ruby_snapshot(&plain);
+    free_ruby_snapshot(&compact);
+    free_ruby_snapshot(&strict);
+    free_ruby_snapshot(&bands0);
+    free_ruby_snapshot(&bands2);
+    return ok ? 0 : 1;
+}
+
+#define RUBY_RED "{\\c&H0000FF&\\3c&H0000FF&\\4c&H0000FF&\\4a&H00&}"
+#define RUBY_GREEN "{\\c&H00FF00&\\3c&H00FF00&\\4c&H00FF00&\\4a&H00&}"
+#define RUBY_BLUE "{\\c&HFF0000&\\3c&HFF0000&\\4c&HFF0000&\\4a&H00&}"
+
+static int test_strict_ruby_geometry(void)
+{
+    int fail = 0;
+    const char *plain = RUBY_RED "W        W\\N" RUBY_GREEN "W        W";
+    const char *inward = RUBY_RED "<W||M>        W\\N"
+                         RUBY_GREEN "W        <W|M>";
+    for (int positioned = 0; positioned <= 1; positioned++)
+        for (int alignment = 1; alignment <= 9; alignment++) {
+            fail |= expect_strict_ruby_layout(RUBY_RED "W",
+                RUBY_RED "<W|M|M>", "", alignment, 1, positioned, false, 0, false);
+            fail |= expect_strict_ruby_layout(plain, inward, "", alignment,
+                2, positioned, true, 1, true);
+        }
+    fail |= expect_strict_ruby_layout(plain, inward,
+        "\\bord2\\shad2", 8, 2, true, true, 1, true);
+    fail |= expect_strict_ruby_layout(plain, inward,
+        "\\furipos(7,4)\\furisx90\\furisy70", 5, 2, true, true, 1, true);
+    fail |= expect_strict_ruby_layout(plain, inward,
+        "\\pos(~+4,~-3)", 8, 2, true, true, 1, true);
+    // Outward annotations and ample explicit line spacing need no movement.
+    fail |= expect_strict_ruby_layout(RUBY_RED "W\\N" RUBY_GREEN "W",
+        RUBY_RED "<W|M>\\N" RUBY_GREEN "<W||M>", "", 8, 2, true, false, 1, false);
+    fail |= expect_strict_ruby_layout(plain, inward, "\\fshp60",
+        8, 2, true, false, 1, false);
+    const char *three_plain = RUBY_RED "W        W\\N"
+                             RUBY_GREEN "W        W\\N" RUBY_BLUE "W        W";
+    const char *three = RUBY_RED "<W|M|M>        W\\N"
+                       RUBY_GREEN "W        <W|M|M>\\N"
+                       RUBY_BLUE "<W|M|M>        W";
+    fail |= expect_strict_ruby_layout(three_plain, three, "",
+        5, 3, true, true, 3, true);
+    fail |= expect_strict_ruby_layout(plain, inward, "\\furiplaceauto1",
+        2, 2, true, false, 1, false);
+    // Only the first line requests mode 2. Both adjacent lines participate in
+    // its boundary, even though the lower group explicitly selects mode 0.
+    fail |= expect_strict_ruby_layout(plain,
+        RUBY_RED "<W||M>        W\\N{\\furichangepos0}"
+        RUBY_GREEN "W        <W|M>", "", 8, 2, true, true, 1, true);
+    // A legacy mode-1 group retains its reservation. Strict spacing credits
+    // that space and supplies only the missing gyaku/normal clearance.
+    fail |= expect_strict_ruby_layout(plain,
+        RUBY_RED "<W||M>        W\\N{\\furichangepos1}"
+        RUBY_GREEN "W        <W|M>", "", 8, 2, true, true, 1, true);
+    // Automatic wrapping uses the final visual line IDs, like explicit \N.
+    fail |= expect_strict_ruby_layout(
+        RUBY_RED "WWWWWWWWWWWWWWWWWWWWW " RUBY_GREEN "W",
+        RUBY_RED "WWWWWWWWWW<W||M>WWWWWWWWWW " RUBY_GREEN "<W|M>",
+        "\\fs32\\q1", 5, 2, true, false, 1, false);
+    fail |= expect_same("{\\an8\\pos(192,70)\\furichangepos2\\r}<W||M>\\N<W|M>",
+                        "{\\an8\\pos(192,70)\\r}<W||M>\\N<W|M>");
+    fail |= expect_same("{\\furichangepos2\\furichangepos}<W||M>\\N<W|M>",
+                        "{\\furichangepos0}<W||M>\\N<W|M>");
+    fail |= expect_same("{\\furichangepos99}<W|M>\\N<W|M>",
+                        "{\\furichangepos1}<W|M>\\N<W|M>");
+    // Combining marks use real shaped ink; fallback fonts may split a reading
+    // into several image runs. Aggregation above deliberately permits that.
+    fail |= expect_strict_ruby_layout(plain,
+        RUBY_RED "<W||ဆာတို့>        W\\N" RUBY_GREEN "W        <W|စူဇူကီ>",
+        "", 8, 2, true, true, 1, true);
+    return fail;
+}
+
 static int test_ruby_geometry(void)
 {
     int fail = 0;
+    fail |= test_strict_ruby_geometry();
     const int upper[] = {-1}, lower[] = {1}, both[] = {-1, 1};
     const int first[] = {0, 0};
     const int two_base[] = {0, 1}, outward[] = {-1, 1}, inward[] = {1, -1};

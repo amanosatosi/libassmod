@@ -12,7 +12,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev
+          sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev fonts-noto-core
       - name: Configure sanitizers
         run: meson setup build -Dtest=enabled -Db_sanitize=address,undefined -Db_lundef=false -Ddefault_library=static
       - name: Build furigana tests
