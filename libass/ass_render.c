@@ -7140,11 +7140,65 @@ static bool same_furi_band(const FuriPlacement *a, const FuriPlacement *b)
 }
 
 /* Recenter sidecars after base layout, line shifts and final transforms. */
+/* Neighbouring ruby readings share a typographic baseline, not an ink
+ * bottom.  Combining marks and descenders have different ink bounds.
+ * Explicit \furipos overrides and rotated baselines retain their offsets. */
+static bool furi_common_baseline(RenderContext *state, FuriGroup *group,
+                                 double *baseline)
+{
+    if (!group->geometry_valid || group->position_explicit)
+        return false;
+    for (int j = 0; j < group->base_len; j++)
+        if (state->text_info.glyphs[group->base_start + j].frs != 0.0)
+            return false;
+    for (int j = 0; j < group->length; j++) {
+        GlyphInfo *root = &group->glyphs[j];
+        if (root->skip)
+            continue;
+        *baseline = d6_to_double(root->pos.y - root->offset.y - root->vshift);
+        return true;
+    }
+    return false;
+}
+
+static void align_furi_group_baselines(RenderContext *state)
+{
+    TextInfo *text = &state->text_info;
+    for (int line = 0; line < text->n_lines; line++)
+        for (int side = 0; side < 2; side++) {
+            double target = side ? -DBL_MAX : DBL_MAX;
+            int count = 0;
+            for (int i = 0; i < text->n_furi_groups; i++) {
+                FuriGroup *group = &text->furi_groups[i];
+                double baseline;
+                if (text->glyphs[group->base_start].line != line ||
+                    group->below != (bool) side ||
+                    !furi_common_baseline(state, group, &baseline))
+                    continue;
+                target = side ? FFMAX(target, baseline) :
+                                FFMIN(target, baseline);
+                count++;
+            }
+            if (count < 2)
+                continue;
+            for (int i = 0; i < text->n_furi_groups; i++) {
+                FuriGroup *group = &text->furi_groups[i];
+                double baseline;
+                if (text->glyphs[group->base_start].line != line ||
+                    group->below != (bool) side ||
+                    !furi_common_baseline(state, group, &baseline))
+                    continue;
+                shift_furi_group(group, 0, double_to_d6(target - baseline));
+            }
+        }
+}
+
 static void position_furi_groups(RenderContext *state)
 {
     TextInfo *text = &state->text_info;
     for (int i = 0; i < text->n_furi_groups; i++)
         position_furi_group(state, &text->furi_groups[i]);
+    align_furi_group_baselines(state);
 }
 
 static bool add_furi_spacing_before_group(RenderContext *state,
@@ -7536,6 +7590,98 @@ static void apply_line_shifts(RenderContext *state, const double *line_shift)
         shift_glyph_list_line(group->glyphs, group->length,
                               line_shift, text_info->n_lines);
     }
+}
+
+/*
+ * \furichangepos0 preserves the ordinary text anchor, not a rigid distance
+ * between all base lines.  Only collisions involving annotations require
+ * additional *internal* clearance.  Changing the preceding line's descent
+ * keeps top/bottom alignment attached to the original outer base line.
+ */
+static double furi_interline_overlap(const ASS_DRect *upper,
+                                     const ASS_DRect *lower)
+{
+    if (upper->x_min >= upper->x_max || lower->x_min >= lower->x_max ||
+        upper->x_min >= lower->x_max || lower->x_min >= upper->x_max)
+        return 0.0;
+    return FFMAX(0.0, upper->y_max + 1.0 - lower->y_min);
+}
+
+static bool expand_furi_interline_clearance(RenderContext *state)
+{
+    TextInfo *text = &state->text_info;
+    int n = text->n_lines;
+    // Retain the established, opt-in external ruby reservation path.
+    if (n < 2 || !text->n_furi_groups ||
+        furi_reserves_vertical_space(text))
+        return true;
+
+    ASS_DRect *base = calloc(n, sizeof(*base));
+    double *line_shift = calloc(n, sizeof(*line_shift));
+    if (!base || !line_shift) {
+        free(base);
+        free(line_shift);
+        return false;
+    }
+    for (int i = 0; i < n; i++)
+        base[i] = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
+
+    // Actual glyph ink including border/shadow, not a conservative font box.
+    for (int i = 0; i < text->length; i++) {
+        GlyphInfo *glyph = &text->glyphs[i];
+        int line = glyph->line;
+        if (glyph->skip || line < 0 || line >= n)
+            continue;
+        ASS_DRect bounds, ink;
+        if (!furi_occupied_bounds(state, glyph, 1, &bounds, &ink, NULL, NULL))
+            continue;
+        base[line].x_min = FFMIN(base[line].x_min, bounds.x_min);
+        base[line].y_min = FFMIN(base[line].y_min, bounds.y_min);
+        base[line].x_max = FFMAX(base[line].x_max, bounds.x_max);
+        base[line].y_max = FFMAX(base[line].y_max, bounds.y_max);
+    }
+
+    double accumulated = 0.0;
+    for (int line = 0; line < n - 1; line++) {
+        double needed = 0.0;
+        for (int i = 0; i < text->n_furi_groups; i++) {
+            FuriGroup *a = &text->furi_groups[i];
+            if (!a->geometry_valid)
+                continue;
+            int a_line = text->glyphs[a->base_start].line;
+            if (a_line == line)
+                needed = FFMAX(needed, furi_interline_overlap(
+                    &a->annotation_bounds, &base[line + 1]));
+            else if (a_line == line + 1)
+                needed = FFMAX(needed, furi_interline_overlap(
+                    &base[line], &a->annotation_bounds));
+            else
+                continue;
+            if (a_line != line)
+                continue;
+            for (int j = 0; j < text->n_furi_groups; j++) {
+                FuriGroup *b = &text->furi_groups[j];
+                if (!b->geometry_valid ||
+                    text->glyphs[b->base_start].line != line + 1)
+                    continue;
+                needed = FFMAX(needed, furi_interline_overlap(
+                    &a->annotation_bounds, &b->annotation_bounds));
+            }
+        }
+        if (needed > 0) {
+            double gap = ceil(needed);
+            text->lines[line].desc += gap;
+            accumulated += gap;
+        }
+        line_shift[line + 1] = accumulated;
+    }
+    if (accumulated > 0) {
+        update_text_height(state);
+        apply_line_shifts(state, line_shift);
+    }
+    free(base);
+    free(line_shift);
+    return true;
 }
 
 static bool furi_group_visual_bbox(FuriGroup *group,
@@ -11564,6 +11710,16 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     if (text_info->n_furi_groups)
         position_furi_groups(state);
+
+    if (!expand_furi_interline_clearance(state)) {
+        ass_msg(render_priv->library, MSGL_ERR,
+                "Failed to resolve furigana interline clearance");
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return false;
+    }
 
     if (!expand_furi_line_metrics(state)) {
         ass_msg(render_priv->library, MSGL_ERR, "Failed to expand furi line metrics");

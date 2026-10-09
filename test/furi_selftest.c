@@ -891,6 +891,66 @@ static int expect_reading_style(const char *tags)
     return ok ? 0 : 1;
 }
 
+/* Two-line ruby must make space *inside* the block, preserving its original
+ * top/bottom base anchor even when the next line's ruby is very tall. */
+static int expect_ruby_interline_anchor(int alignment)
+{
+    char plain[192], annotated[256];
+    snprintf(plain, sizeof(plain),
+             "{\\an%d\\pos(192,%d)\\bord0\\shad0\\fs32}W\\NW",
+             alignment, alignment == 8 ? 70 : 170);
+    snprintf(annotated, sizeof(annotated),
+             "{\\an%d\\pos(192,%d)\\bord0\\shad0\\fs32"
+             "\\furis140\\furichangepos0}<W|MMMM>\\N<W|MMMM>",
+             alignment, alignment == 8 ? 70 : 170);
+    RubySnapshot control = {0}, ruby = {0};
+    int err = render_ruby_snapshot(plain, &control);
+    if (!err)
+        err = render_ruby_snapshot(annotated, &ruby);
+    int anchor = alignment == 8 ? 0 : 1;
+    bool same_anchor = !err && control.count == 2 && ruby.count == 4 &&
+        control.runs[anchor].y0 == ruby.runs[anchor].y0 &&
+        control.runs[anchor].y1 == ruby.runs[anchor].y1;
+    bool separated = same_anchor && !ruby.runs[0].empty &&
+        !ruby.runs[3].empty &&
+        ruby.runs[0].y1 + 1 <= ruby.runs[3].y0;
+    bool internal_shift = separated &&
+        (alignment == 8 ? ruby.runs[1].y0 > control.runs[1].y0 :
+                          ruby.runs[0].y0 < control.runs[0].y0);
+    if (!internal_shift)
+        fprintf(stderr, "::error title=furigana interline anchor::"
+                "anchor/clearance failed for an%d (err=%d)\n",
+                alignment, err);
+    free_ruby_snapshot(&control);
+    free_ruby_snapshot(&ruby);
+    return internal_shift ? 0 : 1;
+}
+
+/* Adjacent readings A/g have unequal descenders: retain a common baseline,
+ * not equal ink bottoms.  Neither underlying W base may move. */
+static int expect_shared_ruby_baseline(void)
+{
+    RubySnapshot equal = {0}, mixed = {0};
+    int err = render_ruby_snapshot(
+        "{\\an8\\pos(192,75)\\bord0\\shad0\\fs40\\furis90}"
+        "<W|A><W|A>", &equal);
+    if (!err)
+        err = render_ruby_snapshot(
+            "{\\an8\\pos(192,75)\\bord0\\shad0\\fs40\\furis90}"
+            "<W|A><W|g>", &mixed);
+    bool ok = !err && equal.count == 4 && mixed.count == 4 &&
+        !equal.runs[2].empty && !mixed.runs[2].empty &&
+        mixed.runs[2].y0 < equal.runs[2].y0 &&
+        mixed.runs[0].y0 == equal.runs[0].y0 &&
+        mixed.runs[1].y0 == equal.runs[1].y0;
+    if (!ok)
+        fprintf(stderr, "::error title=furigana shared baseline::"
+                "unequal descenders displaced reading baseline (err=%d)\n", err);
+    free_ruby_snapshot(&equal);
+    free_ruby_snapshot(&mixed);
+    return ok ? 0 : 1;
+}
+
 static int test_ruby_geometry(void)
 {
     int fail = 0;
@@ -900,6 +960,9 @@ static int test_ruby_geometry(void)
     const int two_upper[] = {-1, -1};
     const int four_base[] = {0, 0, 1, 1}, four_side[] = {-1, 1, 1, -1};
     const int three_base[] = {0, 1, 2}, three_upper[] = {-1, -1, -1};
+    fail |= expect_ruby_interline_anchor(8);
+    fail |= expect_ruby_interline_anchor(2);
+    fail |= expect_shared_ruby_baseline();
     // Every ASS alignment keeps the base's Y placement in mode 0. Horizontal
     // accommodation and alignment are identical between modes, even with
     // overhanging readings on both sides.
@@ -944,13 +1007,13 @@ static int test_ruby_geometry(void)
         2, 2, two_base, outward, true);
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W||M>\\N<W||M>",
-        2, 2, two_base, inward, true);
+        2, 2, two_base, inward, false);
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W| |M>\\N<W| |M>",
-        2, 2, two_base, inward, true);
+        2, 2, two_base, inward, false);
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M|M>\\N<W|M|M>",
-        2, 4, four_base, four_side, true);
+        2, 4, four_base, four_side, false);
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1\\furichangepos1}<W|M|M>\\N<W|M|M>",
         2, 4, four_base, four_side, false);
