@@ -37,16 +37,16 @@ jobs:
       - name: Autotools concurrent registry regression
         run: autotools-lock/test/rgba_registry_unit
       - name: Meson configure and link comparison tool
+        # Meson rejects TinyCC during compiler discovery, before project
+        # configuration. Exercise TCC through the supported Autotools path.
+        if: matrix.cc != 'tcc'
         run: |
           meson setup meson-lock -Ddefault_library=static -Dtest=enabled \
             -Dcompare=enabled -Dasm=disabled -Dcheckasm=disabled \
             -Daligned-allocation-debug=true -Db_ndebug=false
           meson compile -C meson-lock compare rgba_registry_unit rgba_ownership_unit
-          if [ "$CC" = tcc ]; then
-            grep -q 'define HAVE_PTHREAD_MUTEX 1' meson-lock/config.h
-            if nm -u meson-lock/libass/libass.a | grep '__sync_'; then exit 1; fi
-          fi
       - name: Meson concurrency and ownership regressions
+        if: matrix.cc != 'tcc'
         run: meson test -C meson-lock --no-rebuild --print-errorlogs rgba-registry-concurrency rgba-ownership-lifetime
       - name: Upload logs
         if: always()
