@@ -931,30 +931,33 @@ static int expect_ruby_interline_anchor(int alignment)
     return internal_shift ? 0 : 1;
 }
 
-/* A and g have different ink bounds.  Their relative tops in separate
- * ruby readings must match ordinary glyphs on a shared baseline, rather
- * than assuming a change to the first reading's absolute top position. */
+/* A and g have different ink bounds. Their relative tops in two separate
+ * ruby readings must match glyphs sharing an ordinary typographic baseline.
+ * A color boundary makes each control glyph a separate IMAGE_TYPE_CHARACTER
+ * run: without it, ordinary "Ag" is rasterized as one run. */
 static int expect_shared_ruby_baseline(void)
 {
     RubySnapshot plain = {0}, ruby = {0};
     int err = render_ruby_snapshot(
-        "{\\an8\\pos(192,75)\\bord0\\shad0\\fs36}Ag", &plain);
+        "{\\an8\\pos(192,75)\\bord0\\shad0\\fs36}"
+        "A{\\c&H0000FF&}g", &plain);
     if (!err)
         err = render_ruby_snapshot(
             "{\\an8\\pos(192,75)\\bord0\\shad0\\fs40\\furis90}"
             "<W|A><W|g>", &ruby);
-    int expected = !err && plain.count == 2 ?
-        plain.runs[0].y0 - plain.runs[1].y0 : INT_MAX;
-    int actual = !err && ruby.count == 4 ?
-        ruby.runs[2].y0 - ruby.runs[3].y0 : INT_MIN;
-    bool ok = !err && plain.count == 2 && ruby.count == 4 &&
-        !plain.runs[0].empty && !plain.runs[1].empty &&
+    bool have_runs = !err && plain.count == 2 && ruby.count == 4;
+    int expected = 0, actual = 0;
+    if (have_runs) {
+        expected = plain.runs[0].y0 - plain.runs[1].y0;
+        actual = ruby.runs[2].y0 - ruby.runs[3].y0;
+    }
+    bool ok = have_runs && !plain.runs[0].empty && !plain.runs[1].empty &&
         !ruby.runs[2].empty && !ruby.runs[3].empty &&
         abs(actual - expected) <= 1;
     if (!ok)
         fprintf(stderr, "::error title=furigana shared baseline::"
-                "reading top delta=%d, unannotated delta=%d (err=%d)\n",
-                actual, expected, err);
+                "reading top delta=%d, control delta=%d; runs=%d/%d err=%d\n",
+                actual, expected, plain.count, ruby.count, err);
     free_ruby_snapshot(&plain);
     free_ruby_snapshot(&ruby);
     return ok ? 0 : 1;
@@ -1010,10 +1013,10 @@ static int test_ruby_geometry(void)
     const char *two_plain = "{\\pos(192,108)\\bord0\\shad0\\fs32}W\\NW";
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto0}<W|M>\\N<W|M>",
-        2, 2, two_base, two_upper, false);
+        2, 2, two_base, two_upper, true);
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M>\\N<W|M>",
-        2, 2, two_base, outward, false);
+        2, 2, two_base, outward, true);
     fail |= expect_ruby_geometry(two_plain,
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W||M>\\N<W||M>",
         2, 2, two_base, inward, false);
@@ -1029,7 +1032,7 @@ static int test_ruby_geometry(void)
     fail |= expect_ruby_geometry(
         "{\\pos(192,108)\\bord0\\shad0\\fs32}W\\NW\\NW",
         "{\\pos(192,108)\\bord0\\shad0\\fs32\\furiplaceauto1}<W|M>\\N<W|M>\\N<W|M>",
-        3, 3, three_base, three_upper, false);
+        3, 3, three_base, three_upper, true);
     fail |= expect_same("<W|M>", "{\\furiplaceauto1}<W|M>");
     fail |= expect_same("<W|M>\\N<W|M>\\N<W|M>",
                         "{\\furiplaceauto1}<W|M>\\N<W|M>\\N<W|M>");
