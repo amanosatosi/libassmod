@@ -8344,8 +8344,18 @@ static void align_lines(RenderContext *state, double max_text_width)
     // the available frame width. The longest line fixes the original block
     // extent; \an/\tan retain control of its external anchor. Untagged events
     // retain their existing layout, including justification.
-    if (state->n_line_alignments)
+    double block_origin = 0.0;
+    if (state->n_line_alignments) {
+        // Margin placement derives the event anchor from this origin. Keep
+        // the global \an/\tan origin while changing only internal spacing.
+        if (!(state->evt_type & EVENT_HSCROLL)) {
+            int fallback = state->text_alignment & 3;
+            block_origin = fallback == HALIGN_CENTER ?
+                (max_text_width - max_width) / 2.0 :
+                fallback == HALIGN_RIGHT ? max_text_width - max_width : 0.0;
+        }
         max_text_width = max_width;
+    }
     for (i = 0; i <= text_info->length; ++i) {   // (text_info->length + 1) is the end of the last line
         if ((i == text_info->length) || glyphs[i].linebreak) {
             int halign = ass_line_alignment(state, text_info->lines[line].offset) & 3;
@@ -8383,7 +8393,7 @@ static void align_lines(RenderContext *state, double max_text_width)
             for (j = last_break + 1; j < i; ++j) {
                 GlyphInfo *info = glyphs + j;
                 while (info) {
-                    info->pos.x += double_to_d6(shift);
+                    info->pos.x += double_to_d6(block_origin + shift);
                     info = info->next;
                 }
             }

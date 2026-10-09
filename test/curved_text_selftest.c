@@ -408,11 +408,11 @@ int main(void)
     KaraokeFrame explicit_anchor = {0}, inherited_anchor = {0};
     ok &= karaoke_frame(lib, renderer,
         "{\\an7\\ctan5\\ta2\\pos(480,270)\\1c&H0000FF&\\2c&HFF0000&"
-        "\\ct(m -300 0 b -220 -100 220 -100 300 0)\\kf100}MMMMMMMM\\NMMM",
+        "\\ct(m -300 0 b -220 -100 220 -100 300 0)\\kf100}MMMMMMMM\\N{\\ta2}MMM",
         500, &explicit_anchor, false);
     ok &= karaoke_frame(lib, renderer,
         "{\\an5\\ta2\\pos(480,270)\\1c&H0000FF&\\2c&HFF0000&"
-        "\\ct(m -300 0 b -220 -100 220 -100 300 0)\\kf100}MMMMMMMM\\NMMM",
+        "\\ct(m -300 0 b -220 -100 220 -100 300 0)\\kf100}MMMMMMMM\\N{\\ta2}MMM",
         500, &inherited_anchor, false);
     ok &= expect(same_karaoke_frame(&explicit_anchor, &inherited_anchor),
                  "ctan override and inherited an disagreed on karaoke attachment");

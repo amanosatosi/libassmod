@@ -205,14 +205,16 @@ int main(void)
             fprintf(stderr, "native vertical an%d margin/pos anchor mismatch\n", an);
         ok &= anchor_ok;
     }
+    // Both explicit columns must request the same alignment now; keep the
+    // original unequal-unit and block-anchor assertions for that layout.
     ok &= expect(render(lib, renderer,
-        "{\\an9\\ta1\\vert1}ကမြန်\\Nနိုင်", 0, &a) &&
+        "{\\an9\\ta1\\vert1}ကမြန်\\N{\\ta1}နိုင်", 0, &a) &&
         render(lib, renderer,
-        "{\\an9\\ta9\\vert1}ကမြန်\\Nနိုင်", 0, &b) &&
+        "{\\an9\\ta9\\vert1}ကမြန်\\N{\\ta9}နိုင်", 0, &b) &&
         a.fill_hash != b.fill_hash,
         "ta did not change internal unit alignment");
     ok &= expect(render(lib, renderer,
-        "{\\an9\\ta1\\pos(780,20)\\vert1}ကမြန်\\Nနိုင်", 0, &c) &&
+        "{\\an9\\ta1\\pos(780,20)\\vert1}ကမြန်\\N{\\ta1}နိုင်", 0, &c) &&
         a.fill_hash == c.fill_hash,
         "ta changed the an9 block anchor");
     ok &= expect(render(lib, renderer,
