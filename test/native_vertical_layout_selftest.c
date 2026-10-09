@@ -300,8 +300,8 @@ int main(void)
                  "per-column ta changed the block anchor or leaked across columns");
     static const uint32_t wrapping_column[] = {0x65e5, 0x672c, 0x8a9e, 0x65e5};
     init(f, wrapping_column, 4, 1, 2);
-    LineAlignment wrapped = {0, 4, VALIGN_SUB | HALIGN_CENTER};
-    f->state.line_alignments = &wrapped;
+    LineAlignment wrapped_alignment = {0, 4, VALIGN_SUB | HALIGN_CENTER};
+    f->state.line_alignments = &wrapped_alignment;
     f->state.n_line_alignments = 1;
     ok &= expect(ass_vertical_layout(&f->state, 120) &&
                  fabs(center_y(&f->glyphs[3]) - center_y(&f->glyphs[0]) - 80) < 0.1,
