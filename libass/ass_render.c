@@ -7607,67 +7607,63 @@ static double furi_interline_overlap(const ASS_DRect *upper,
     return FFMAX(0.0, upper->y_max + 1.0 - lower->y_min);
 }
 
+/*
+ * Compare occupied glyphs, not a line-wide union.  A reading at the far
+ * right must not reserve clearance merely because other glyphs at the far
+ * left make the line's combined bounding box wide.
+ */
+static double furi_line_clearance(RenderContext *state, int upper, int lower)
+{
+    TextInfo *text = &state->text_info;
+    double needed = 0.0;
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        if (!group->geometry_valid)
+            continue;
+        int line = text->glyphs[group->base_start].line;
+        if (line != upper && line != lower)
+            continue;
+        int opposite = line == upper ? lower : upper;
+        for (int j = 0; j < text->length; j++) {
+            GlyphInfo *glyph = &text->glyphs[j];
+            if (glyph->skip || glyph->line != opposite)
+                continue;
+            ASS_DRect bounds, ink;
+            if (!furi_occupied_bounds(state, glyph, 1, &bounds, &ink, NULL, NULL))
+                continue;
+            needed = FFMAX(needed, line == upper ?
+                furi_interline_overlap(&group->annotation_bounds, &bounds) :
+                furi_interline_overlap(&bounds, &group->annotation_bounds));
+        }
+        if (line != upper)
+            continue;
+        for (int j = 0; j < text->n_furi_groups; j++) {
+            FuriGroup *next = &text->furi_groups[j];
+            if (!next->geometry_valid ||
+                text->glyphs[next->base_start].line != lower)
+                continue;
+            needed = FFMAX(needed, furi_interline_overlap(
+                &group->annotation_bounds, &next->annotation_bounds));
+        }
+    }
+    return needed;
+}
+
 static bool expand_furi_interline_clearance(RenderContext *state)
 {
     TextInfo *text = &state->text_info;
     int n = text->n_lines;
-    // Retain the established, opt-in external ruby reservation path.
+    // The explicit \furichangepos1 path retains its existing reservation.
     if (n < 2 || !text->n_furi_groups ||
         furi_reserves_vertical_space(text))
         return true;
 
-    ASS_DRect *base = calloc(n, sizeof(*base));
     double *line_shift = calloc(n, sizeof(*line_shift));
-    if (!base || !line_shift) {
-        free(base);
-        free(line_shift);
+    if (!line_shift)
         return false;
-    }
-    for (int i = 0; i < n; i++)
-        base[i] = (ASS_DRect) {DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX};
-
-    // Actual glyph ink including border/shadow, not a conservative font box.
-    for (int i = 0; i < text->length; i++) {
-        GlyphInfo *glyph = &text->glyphs[i];
-        int line = glyph->line;
-        if (glyph->skip || line < 0 || line >= n)
-            continue;
-        ASS_DRect bounds, ink;
-        if (!furi_occupied_bounds(state, glyph, 1, &bounds, &ink, NULL, NULL))
-            continue;
-        base[line].x_min = FFMIN(base[line].x_min, bounds.x_min);
-        base[line].y_min = FFMIN(base[line].y_min, bounds.y_min);
-        base[line].x_max = FFMAX(base[line].x_max, bounds.x_max);
-        base[line].y_max = FFMAX(base[line].y_max, bounds.y_max);
-    }
-
     double accumulated = 0.0;
     for (int line = 0; line < n - 1; line++) {
-        double needed = 0.0;
-        for (int i = 0; i < text->n_furi_groups; i++) {
-            FuriGroup *a = &text->furi_groups[i];
-            if (!a->geometry_valid)
-                continue;
-            int a_line = text->glyphs[a->base_start].line;
-            if (a_line == line)
-                needed = FFMAX(needed, furi_interline_overlap(
-                    &a->annotation_bounds, &base[line + 1]));
-            else if (a_line == line + 1)
-                needed = FFMAX(needed, furi_interline_overlap(
-                    &base[line], &a->annotation_bounds));
-            else
-                continue;
-            if (a_line != line)
-                continue;
-            for (int j = 0; j < text->n_furi_groups; j++) {
-                FuriGroup *b = &text->furi_groups[j];
-                if (!b->geometry_valid ||
-                    text->glyphs[b->base_start].line != line + 1)
-                    continue;
-                needed = FFMAX(needed, furi_interline_overlap(
-                    &a->annotation_bounds, &b->annotation_bounds));
-            }
-        }
+        double needed = furi_line_clearance(state, line, line + 1);
         if (needed > 0) {
             double gap = ceil(needed);
             text->lines[line].desc += gap;
@@ -7679,7 +7675,6 @@ static bool expand_furi_interline_clearance(RenderContext *state)
         update_text_height(state);
         apply_line_shifts(state, line_shift);
     }
-    free(base);
     free(line_shift);
     return true;
 }
