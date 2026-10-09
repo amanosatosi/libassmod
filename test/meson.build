@@ -262,7 +262,7 @@ if get_option('default_library') != 'shared'
         registry_threads += dependency('threads')
     endif
     rgba_registry_unit = executable('rgba_registry_unit',
-        files('rgba_registry_selftest.c'),
+        files('rgba_registry_selftest.c'), config_h,
         include_directories: incs, dependencies: deps + registry_threads,
         link_with: libass_for_tools, install: false)
     test('rgba-registry-concurrency', rgba_registry_unit, timeout: 120)
