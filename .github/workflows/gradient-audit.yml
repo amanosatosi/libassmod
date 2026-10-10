@@ -18,12 +18,18 @@ jobs:
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
+      - name: Download pinned upstream ART samples
+        uses: actions/checkout@v4
+        with:
+          repository: libass/libass-tests
+          ref: 9498737388cbd78cbab6b703821adc213a335995
+          path: ext_art-samples
       - name: Install dependencies and script fonts
         run: |
           sudo apt-get update
           sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev fonts-noto-core fonts-noto-cjk
       - name: Configure
-        run: meson setup build -Dtest=enabled ${{ matrix.args }}
+        run: meson setup build -Dtest=enabled -Dcompare=enabled '-Dart-samples=${{ github.workspace }}/ext_art-samples' ${{ matrix.args }}
       - name: Compile regression suite
         run: meson compile -C build
       - name: Run all regressions

@@ -1029,48 +1029,26 @@ static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inve
             "PARSE %s rejected: %s", tag_name, parsed.reason);
 }
 
-static int hex_value(char c);
-
-/* All paint alpha values are bytes. A '$' explicitly selects decimal;
- * otherwise keep the legacy ASS hexadecimal spelling, including &Hxx&. */
-static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out)
+/* The new decimal spelling is always a complete, unsigned alpha byte.
+ * Legacy hexadecimal callers keep their own range and tolerance contracts. */
+static bool parse_decimal_alpha_arg(struct arg arg, uint32_t *out)
 {
     trim_arg_inline(&arg);
-    if (arg.start >= arg.end)
+    if (arg.start >= arg.end || *arg.start != '$')
         return false;
-    char *ptr = arg.start;
-    bool decimal = *ptr == '$';
-    unsigned base = decimal ? 10 : 16;
-    if (decimal)
-        ptr++;
-    else
-        while (ptr < arg.end && (*ptr == '&' || *ptr == 'H' || *ptr == 'h'))
-            ptr++;
-
+    char *ptr = arg.start + 1;
     uint32_t value = 0;
     bool have_digit = false;
     while (ptr < arg.end) {
         char *next = ptr;
-        int digit;
-        if (decimal) {
-            digit = ass_unicode_decimal_value(ass_utf8_get_char(&next));
-            if (next > arg.end)
-                return false;
-        } else {
-            digit = hex_value(*next++);
-        }
-        if (digit < 0)
-            break;
-        /* Bound accumulation itself, so long inputs cannot wrap to a byte. */
-        if (value > (255u - digit) / base)
+        int digit = ass_unicode_decimal_value(ass_utf8_get_char(&next));
+        if (next > arg.end || digit < 0 || value > (255u - digit) / 10)
             return false;
-        value = value * base + digit;
+        value = value * 10 + digit;
         ptr = next;
         have_digit = true;
     }
-    if (!decimal && ptr < arg.end && *ptr == '&')
-        ptr++;
-    if (!have_digit || ptr != arg.end)
+    if (!have_digit)
         return false;
     *out = value;
     return true;
@@ -1104,9 +1082,23 @@ static void replace_cycle_border_paint(RenderContext *state, int border,
                              border == 0 ? -1 : border, pwr);
 }
 
+/* Standard ASS scalar parsing is intentionally tolerant and keeps the full
+ * signed result of mystrtoi32. change_alpha truncates only AFTER animation
+ * (libass PR #637); failed legacy conversions historically produce zero. */
 static bool parse_alpha_tag(struct arg arg, uint32_t *out)
 {
-    return parse_ass_alpha_arg(arg, out);
+    char *str = arg.start;
+    skip_spaces(&str);
+    if (str < arg.end && *str == '$')
+        return parse_decimal_alpha_arg(arg, out);
+
+    str = arg.start;
+    int32_t alpha = 0;
+    while (*str == '&' || *str == 'H')
+        ++str;
+    mystrtoi32(&str, 16, &alpha);
+    *out = alpha;
+    return true;
 }
 
 static bool parse_named_ass_color_arg(struct arg arg, uint32_t *out)
@@ -1154,6 +1146,7 @@ static uint32_t parse_color_tag(struct arg arg)
 }
 
 static bool parse_ass_color_arg(struct arg arg, uint32_t *out);
+static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out);
 
 static bool parse_decoration_color_arg(struct arg arg, uint32_t *color)
 {
@@ -1491,6 +1484,18 @@ static bool chat_structural_name_is(char *p, char *end, const char *name)
     return (size_t) (end - p) == length && !memcmp(p, name, length);
 }
 
+/* Mangetsu structured arguments require the whole hexadecimal spelling, but
+ * historically accumulate modulo uint32_t without an alpha-byte limit.
+ * Decoration alpha masks this result; native vectors convert separately. */
+static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out)
+{
+    struct arg decimal = arg;
+    trim_arg_inline(&decimal);
+    if (decimal.start < decimal.end && *decimal.start == '$')
+        return parse_decimal_alpha_arg(decimal, out);
+    return parse_hex_arg_strict(arg, out);
+}
+
 static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out)
 {
     uint32_t value;
@@ -1504,7 +1509,7 @@ static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out)
 
 static bool parse_ass_alpha_arg_strict(struct arg arg, uint32_t *out)
 {
-    return parse_ass_alpha_arg(arg, out);
+    return parse_ass_alpha_arg(arg, out) && *out <= 0xFF;
 }
 
 static bool parse_percentage_arg_strict(struct arg arg, double *out)
@@ -1531,13 +1536,26 @@ static bool parse_mangetsu_gradient_reset_arg(struct arg arg)
 
 static bool valid_vector_gradient_args(struct arg *args, int nargs, bool alpha)
 {
-    if (alpha && nargs > 4)
-        return false;
     for (int i = 0; i < FFMIN(nargs, 4); i++) {
         uint32_t value;
         if (alpha ? !parse_ass_alpha_arg(args[i], &value) :
                     !parse_ass_color_arg(args[i], &value))
             return false;
+    }
+    return true;
+}
+
+/* Validate and convert all used corners before changing paint. Native vector
+ * alpha historically ignored corners after the fourth, and used the scalar
+ * hexadecimal conversion followed by a byte cast, BEFORE corner animation.
+ * Keep that separate from byte-constrained box vectors and gradient stops. */
+static bool parse_vector_alpha_args(struct arg *args, int nargs, uint8_t vals[4])
+{
+    for (int i = 0; i < FFMIN(nargs, 4); i++) {
+        uint32_t value;
+        if (!parse_alpha_tag(args[i], &value))
+            return false;
+        vals[i] = (uint8_t) value;
     }
     return true;
 }
@@ -2981,18 +2999,15 @@ static void apply_numbered_border_tag(RenderContext *state,
         }
         replace_cycle_border_paint(state, layer, pwr);
         break;
-    case BORDER_TAG_ALPHA_GRADIENT:
+    case BORDER_TAG_ALPHA_GRADIENT: {
+        uint8_t alpha_vals[4];
+        if (!parse_vector_alpha_args(args, nargs, alpha_vals))
+            return;
         if (layer == 0) {
             if (nargs) {
-                uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++) {
-                    uint32_t value = 0;
-                    parse_alpha_tag(args[i], &value);
-                    vals[i] = value;
-                }
                 disable_mangetsu_border_alpha_gradient_layer(state, 0);
-                ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 2, alpha_vals, cnt, pwr);
                 disable_image_fill_layer(state, 2);
                 mark_rgba_needed(state);
             } else {
@@ -3006,16 +3021,10 @@ static void apply_numbered_border_tag(RenderContext *state,
             BorderLayerState *border = &state->border_layers[layer];
             default_extra_border_color(state, layer);
             if (nargs) {
-                uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++) {
-                    uint32_t value = 0;
-                    parse_alpha_tag(args[i], &value);
-                    vals[i] = value;
-                }
                 disable_mangetsu_border_alpha_gradient_layer(state, layer);
                 ass_gradient_values_apply_alpha(&border->gradient,
-                                                vals, cnt, pwr);
+                                                alpha_vals, cnt, pwr);
                 border->has_alpha = true;
                 mark_rgba_needed(state);
             } else {
@@ -3026,6 +3035,7 @@ static void apply_numbered_border_tag(RenderContext *state,
             }
         }
         break;
+    }
     default:
         break;
     }
@@ -4828,14 +4838,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (tag("va") || tag("1va")) {
             if (nargs) {
-                uint8_t vals[4];
+                uint8_t alpha_vals[4];
+                if (!parse_vector_alpha_args(args, nargs, alpha_vals))
+                    continue;
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++) {
-                    uint32_t value = 0;
-                    parse_alpha_tag(args[i], &value);
-                    vals[i] = value;
-                }
-                ass_gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 0, alpha_vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_alpha_gradient_layer(state, 0);
                 disable_image_fill_layer(state, 0);
@@ -4850,14 +4857,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (tag("2va")) {
             if (nargs) {
-                uint8_t vals[4];
+                uint8_t alpha_vals[4];
+                if (!parse_vector_alpha_args(args, nargs, alpha_vals))
+                    continue;
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++) {
-                    uint32_t value = 0;
-                    parse_alpha_tag(args[i], &value);
-                    vals[i] = value;
-                }
-                ass_gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 1, alpha_vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_alpha_gradient_layer(state, 1);
                 disable_image_fill_layer(state, 0);
@@ -4872,14 +4876,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (tag("3va")) {
             if (nargs) {
-                uint8_t vals[4];
+                uint8_t alpha_vals[4];
+                if (!parse_vector_alpha_args(args, nargs, alpha_vals))
+                    continue;
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++) {
-                    uint32_t value = 0;
-                    parse_alpha_tag(args[i], &value);
-                    vals[i] = value;
-                }
-                ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 2, alpha_vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_border_alpha_gradient_layer(state, 0);
                 disable_image_fill_layer(state, 2);
@@ -4893,14 +4894,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         } else if (tag("4va")) {
             if (nargs) {
-                uint8_t vals[4];
+                uint8_t alpha_vals[4];
+                if (!parse_vector_alpha_args(args, nargs, alpha_vals))
+                    continue;
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++) {
-                    uint32_t value = 0;
-                    parse_alpha_tag(args[i], &value);
-                    vals[i] = value;
-                }
-                ass_gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
+                ass_gradient_apply_alpha(&state->gradient, 3, alpha_vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_alpha_gradient_layer(state, 3);
                 disable_image_fill_layer(state, 3);

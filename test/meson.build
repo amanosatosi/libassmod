@@ -425,4 +425,6 @@ alpha_parse_unit = executable('alpha_parse_unit',
     files('alpha_parse_selftest.c'),
     include_directories: incs, dependencies: deps,
     link_with: libass_for_tools, install: false)
-test('alpha-byte-syntax', alpha_parse_unit, timeout: 120)
+test('alpha-byte-syntax', alpha_parse_unit, timeout: 120,
+    env: {'ALPHA_TEST_FONT': join_paths(meson.project_source_root(),
+        'compare', 'test', 'font1.ttf')})

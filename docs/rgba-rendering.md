@@ -154,13 +154,41 @@ completely transparent. `$100` means alpha byte 100, never 100% transparency.
 Hexadecimal uses ASCII digits and `A`–`F`; `$` decimal also accepts Unicode
 [decimal digits](unicode-decimal-digits.md).
 
-The same rule applies to `\alpha`, `\1a` through `\5a`, `\Nba`, box-border
-alpha (`\bba`/`\Nbba`), chat alpha (`\buba`, `\bubba`,
-`\ba`), vector-alpha corners (`\va`, `\1va` through `\4va`, `\Nbva`,
-`\bbva`/`\Nbbva`), and alpha-gradient stops (`\1gra` through `\5gra`,
-`\Nbga`, `\bbga`/`\Nbbga`). It also applies to alpha fields in
-`\msgleft`/`\msgright` presets and to these paint arguments inside `\t`.
-Border indices retain their existing limits. For example:
+The `$` decimal rule applies consistently to scalar alpha, vector corners,
+gradient stops, chat preset fields, and these paint arguments inside `\t`.
+Hexadecimal parsing retains each feature's earlier compatibility contract:
+
+| Alpha arguments | Hexadecimal contract |
+| --- | --- |
+| `\alpha`, `\1a`–`\4a`; chat `\buba`, `\bubba`, `\ba` and chat channel alpha | Legacy scalar parsing: accept wider values and tolerated trailing text. Interpolate the full parsed value before converting to a byte. |
+| Decoration `\5a` | Complete hexadecimal argument, without a byte limit; use its low byte. |
+| Native vector `\va`, `\1va`–`\4va`, `\Nbva` | Validate the used hexadecimal corners, convert to bytes before corner interpolation. Use the first four arguments and ignore extras. |
+| Native border `\Nba`; box border `\bba`/`\Nbba`, `\bbva`/`\Nbbva`; gradient `\1gra`–`\5gra`, `\Nbga`, `\bbga`/`\Nbbga`; `\msgleft`/`\msgright` alpha fields | Complete hexadecimal arguments whose parsed values must fit 0–255. Box vectors accept at most four corners; invalid tuples reject the whole update. |
+
+Legacy scalar alpha accepts these ASS spellings:
+
+```ass
+\alpha&H1FF&
+\1a100
+\1a1FF
+{\1a0\t(0,1000,\1a1FF)}Two alpha cycles
+```
+
+`1FF` is hexadecimal 511. At 250, 500, and 750 milliseconds the example has
+alpha bytes 127, 255, and 127 respectively. The renderer interpolates toward
+511, then truncates the result to a byte, as required by
+[upstream libass PR #637](https://github.com/libass/libass/pull/637).
+Scalar spellings such as `FFG` and `&H80&junk` retain their legacy parsed prefix.
+Signed input and large hexadecimal values use the existing upstream signed
+32-bit saturation and animation conversion rules; they are not newly clamped
+to a byte. Structured Mangetsu hexadecimal arguments retain their existing
+unsigned 32-bit accumulation, with the strict byte check applied afterward.
+
+In contrast, `\1gra(0,80,FF)` is valid, but `\1gra(0,100,FF)` is rejected:
+its hexadecimal 256 stop exceeds the field's byte limit. Native vector
+`\va(0,80,100,1FF)` converts its corners to 0, 128, 0, and 255. Decoration
+alpha and vector corners keep their earlier conversion behavior rather than
+using scalar full-value animation.
 
 ```ass
 {\1a$100\2a80\3a$200\4aFF}Mixed alpha spellings
@@ -168,11 +196,11 @@ Border indices retain their existing limits. For example:
 {\alpha$0\t(0,1000,\alpha$255)}Fade through a transform
 ```
 
-Malformed or out-of-range bytes are ignored without changing the current
-paint. Invalid vector, gradient, or preset tuples are rejected as a whole.
-Examples include `$256`, `$-1`, `$abc`, `$`, `$12xyz`, and unprefixed `100`
-(hexadecimal 256). An omitted argument retains the tag's existing reset
-behavior; invalid input is not an omitted argument.
+All `$` decimal arguments remain strictly within 0–255, with no partial
+parsing or hexadecimal fallback. `$256`, `$-1`, `$abc`, `$`, and `$12xyz`
+are ignored without changing the current paint. Invalid used vector corners,
+gradient stops, or preset fields reject the whole update. An omitted argument
+retains the tag's existing reset behavior; invalid decimal input is not a reset.
 
 **Migration:** older Mangetsu subtitles using unprefixed decimal alpha must
 add `$`: change `\alpha128` to `\alpha$128` and a decimal alpha stop `128`

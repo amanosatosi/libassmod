@@ -31,7 +31,6 @@ EXTRA_DIST = libass.pc.in Changelog MAINTAINERS RELEASEVERSION ltnasm.sh \
 EXTRA_DIST += docs/native-scroll.md samples/scroll-lines.ass \
               test/scroll_selftest.c test/scroll_render_selftest.c
 
-EXTRA_DIST += test/alpha_parse_selftest.c
 EXTRA_DIST += test/clip_transform_selftest.c
 EXTRA_DIST += test/rgba_registry_selftest.c
 EXTRA_DIST += docs/furigana-extension.md test/furi_selftest.c \
