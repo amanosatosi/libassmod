@@ -400,9 +400,9 @@ static bool chat(ASS_Library *lib, ASS_Renderer *renderer)
     for (size_t i = 0; i < sizeof(legacy_tags) / sizeof(legacy_tags[0]); i++)
         for (int frame = 0; frame < 5; frame++) {
             char actual[512], expected[512];
-            snprintf(actual, sizeof(actual), "{\chatmode2\msgshowname1}|{\bord4\bubbs4\%s0\t(0,1000,\%s1FF)}Miku:\NMMMM|",
+            snprintf(actual, sizeof(actual), "{\\chatmode2\\msgshowname1}|{\\bord4\\bubbs4\\%s0\\t(0,1000,\\%s1FF)}Miku:\\NMMMM|",
                      legacy_tags[i], legacy_tags[i]);
-            snprintf(expected, sizeof(expected), "{\chatmode2\msgshowname1}|{\bord4\bubbs4\%s$%u}Miku:\NMMMM|",
+            snprintf(expected, sizeof(expected), "{\\chatmode2\\msgshowname1}|{\\bord4\\bubbs4\\%s$%u}Miku:\\NMMMM|",
                      legacy_tags[i], legacy_bytes[frame]);
             ok &= equivalent(lib, renderer, actual, expected, frame * 250, "chat full-value alpha interpolation");
         }
