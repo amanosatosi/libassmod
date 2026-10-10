@@ -2785,6 +2785,14 @@ static void apply_numbered_border_tag(RenderContext *state,
             ((*name_end == '(' && (tag_end <= name_end + 1 || tag_end[-1] != ')')) ||
              !valid_vector_gradient_args(args, nargs, tag == BORDER_TAG_ALPHA_GRADIENT)))
         return;
+    /* Numbered vector tags historically ignore inline hex arguments. Do not
+     * let a malformed NEW decimal spelling become an empty-argument reset. */
+    if (tag == BORDER_TAG_ALPHA_GRADIENT && inline_arg.start &&
+            inline_arg.start < inline_arg.end && *inline_arg.start == '$') {
+        uint32_t value;
+        if (!parse_decimal_alpha_arg(inline_arg, &value))
+            return;
+    }
     struct arg arg = (inline_arg.start && inline_arg.start < inline_arg.end) ? inline_arg :
         (nargs ? args[0] : (struct arg) { NULL, NULL });
 

@@ -338,6 +338,10 @@ static bool permissive_paints(ASS_Library *lib, ASS_Renderer *renderer)
         snprintf(actual, sizeof(actual), "{%s\\%s(10000000001,FFFFFFFFFF,7FFFFFFF,&h80&)}" BODY, t->setup, t->tag);
         snprintf(expected, sizeof(expected), "{%s\\%s($255,$255,$255,$0)}" BODY, t->setup, t->tag);
         ok &= equivalent(lib, renderer, actual, expected, 0, "vector uses legacy signed saturation");
+        snprintf(actual, sizeof(actual), "{%s\\%s(80,80,80,80)\\%s$abc}" BODY,
+                 t->setup, t->tag, t->tag);
+        snprintf(expected, sizeof(expected), "{%s\\%s(80,80,80,80)}" BODY, t->setup, t->tag);
+        ok &= equivalent(lib, renderer, actual, expected, 0, "invalid inline decimal preserves native vector");
         // Check each used corner and every count before replacing another source.
         for (int count = 1; count <= 4; count++) for (int corner = 0; corner < count; corner++) {
             char args[128] = "";
