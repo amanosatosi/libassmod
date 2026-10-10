@@ -2787,10 +2787,12 @@ static void apply_numbered_border_tag(RenderContext *state,
         return;
     /* Numbered vector tags historically ignore inline hex arguments. Do not
      * let a malformed NEW decimal spelling become an empty-argument reset. */
-    if (tag == BORDER_TAG_ALPHA_GRADIENT && inline_arg.start &&
-            inline_arg.start < inline_arg.end && *inline_arg.start == '$') {
+    if (tag == BORDER_TAG_ALPHA_GRADIENT && inline_arg.start) {
+        struct arg decimal = inline_arg;
+        trim_arg_inline(&decimal);
         uint32_t value;
-        if (!parse_decimal_alpha_arg(inline_arg, &value))
+        if (decimal.start < decimal.end && *decimal.start == '$' &&
+                !parse_decimal_alpha_arg(decimal, &value))
             return;
     }
     struct arg arg = (inline_arg.start && inline_arg.start < inline_arg.end) ? inline_arg :
