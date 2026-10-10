@@ -7,7 +7,7 @@ title: RGBA Rendering Guide
 Vector gradients (`\vc` / `\1vc`..`\4vc` for four corner colors,
 `\va` / `\1va`..`\4va` for corner alpha) and Mangetsu true gradients
 (`\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`,
-`\1bga`..`\10bga`) and fixed-frame primary gradients (`\pgrd` / `\1pgrd`)
+`\1bga`..`\10bga`) and fixed-frame color gradients (`\pgrd`, `\1pgrd`..`\5pgrd`, `\1bpgrd`..`\10bpgrd`)
 rely on per-pixel color or alpha. They cannot be
 reproduced with the legacy `ASS_Image` output. `ASS_Image` nodes are one-byte
 alpha masks with a single uniform RGBA color; they do not encode the
@@ -121,7 +121,7 @@ ass_free_images_rgba(rgba);
 ## Auto-switch suggestions
 
 - Always call `ass_render_frame_rgba` and composite the premultiplied tiles in order; the routine will still populate the legacy `ASS_Image` list, so you can keep both for compatibility.
-- Alternatively, inspect the subtitle text for `\1vc`..`\4vc`, `\1va`..`\4va`, `\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`, `\1bga`..`\10bga`, `\pgrd`, or `\1pgrd` before rendering and only use RGBA when present.
+- Alternatively, inspect the subtitle text for `\1vc`..`\4vc`, `\1va`..`\4va`, `\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`, `\1bga`..`\10bga`, `\pgrd`, `\1pgrd`..`\5pgrd`, or `\1bpgrd`..`\10bpgrd` before rendering and only use RGBA when present.
 - If your app already calls `ass_render_frame`, use `ass_frame_needs_rgba(renderer)` or the new `ASS_RenderResult` wrapper to decide whether to render again with `ass_render_frame_rgba`.
 - For a single-call path, use `ass_render_frame_compat()` and then `ass_render_result_free()` to free any RGBA list. This keeps legacy output intact while enabling gradients when needed.
 
@@ -143,7 +143,8 @@ out-of-range decimal values follow the parser's existing invalid-value handling.
 - `\1vc(&HBBGGRR&, &HBBGGRR&, &HBBGGRR&, &HBBGGRR&)` - four corner colors for primary fill.
 - `\1va(&HAA&, &HAA&, &HAA&, &HAA&)` - per-corner alpha overrides.
 - `\1grd(angle,&HBBGGRR&,&HBBGGRR&)` through `\5grd(...)` - Mangetsu attached linear true gradients with percentage stops.
-- `\pgrd(x1,y1,x2,y2,angle,&HBBGGRR&,... )` and `\1pgrd(...)` - primary-fill Mangetsu linear gradients bounded to a fixed script-coordinate rectangle. Pixels outside use the active `\1c` color.
+- `\pgrd(x1,y1,x2,y2,angle,&HBBGGRR&,... )`, `\1pgrd(...)`..`\5pgrd(...)` - independent primary, secondary, outline, shadow and decoration color fields bounded to fixed script-coordinate rectangles. Outside pixels use the target's ordinary color.
+- `\1bpgrd(...)` through `\10bpgrd(...)` - positioned native-border colors; `\3pgrd(...)` aliases `\1bpgrd(...)`. Empty parentheses reset only the target's positioned source, preserving unrelated or attached paint. See [positioned gradients](position-gradient.md).
 - `\1bgrd(...)` through `\10bgrd(...)` - Mangetsu true-gradient colors for native border layers. `\3grd(...)` is the layer-1 border alias.
 - `\1gra(angle,&HAA&,&HAA&)` through `\5gra(...)` - Mangetsu attached linear true alpha gradients with percentage stops. ASS alpha is inverse opacity: `&H00&` is opaque and `&HFF&` is transparent.
 - `\1bga(...)` through `\10bga(...)` - Mangetsu true-gradient alpha for native border layers. `\3gra(...)` is the layer-1 border-alpha alias.
@@ -176,7 +177,7 @@ object and keeps one segment across font changes and `\N`.
 
 Use the RGBA API to preserve gradient interpolation.
 
-`\pgrd` also supports positioned-to-positioned `\t` transforms: rectangle
+All `\Npgrd` and `\Nbpgrd` tags support positioned-to-positioned `\t` transforms: rectangle
 coordinates, angle, stops, and stop positions interpolate with the same rules
 as `\1grd`. Attached-to-positioned and positioned-to-attached transforms are
 ignored safely because their coordinate systems differ. See

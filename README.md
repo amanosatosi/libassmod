@@ -195,10 +195,10 @@ For implementation details and API notes, see:
 https://github.com/amanosatosi/libassmod/blob/master/docs/rgba-rendering.md
 
 Mangetsu also supports attached true gradients (`\1grd`..`\5grd`) and the
-primary-fill fixed-frame gradient aliases `\pgrd(...)` / `\1pgrd(...)`.
-The latter is bounded to a script-coordinate rectangle: text samples the
-gradient only while its final pixels overlap that rectangle, and otherwise uses
-the active primary color. See `docs/position-gradient.md`.
+fixed-frame color gradients (`\pgrd` / `\1pgrd`..`\5pgrd`, and
+`\1bpgrd`..`\10bpgrd` for native borders). Each target samples its independent
+script-coordinate rectangle and uses its ordinary color outside it.
+`\3pgrd` and `\1bpgrd` share first-border paint, like their attached aliases. See `docs/position-gradient.md`.
 
 ---
 

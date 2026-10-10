@@ -238,5 +238,6 @@ gradient automatically. Invalid arguments leave the last valid source intact.
 
 Gradients require RGBA output (`ass_render_frame_rgba` or automatic rendering).
 Legacy `ASS_Image` masks retain geometry and solid fallback colors; they cannot
-represent per-pixel RGB. Positioned `\pgrd` remains primary-text-only and
-does not paint boxes or their rings.
+represent per-pixel RGB. Positioned `\4pgrd` paints the fourth-channel box
+fill through the existing RGBA sampler. Box rings retain their attached/vector
+families; `\Nbpgrd` targets native glyph borders, not box rings.

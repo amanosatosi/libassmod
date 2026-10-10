@@ -644,6 +644,309 @@ static bool precedence(ASS_Library *lib, ASS_Renderer *renderer)
     return ok;
 }
 
+/* Fixed fields use exactly the same masks/coverage as solid and attached paint.
+ * Compare every target plane, so parser acceptance with flat or missing output
+ * cannot satisfy these regressions. Text spans most of this fixed rectangle. */
+#define FIELD "(140,80,500,280,0,&H0000FF&,&HFF0000&)"
+#define FIELD_BASE "\\an5\\pos(320,180)\\bord6\\shad12\\1c&H00FF00&\\2c&H00FF00&\\3c&H00FF00&\\4c&H00FF00&"
+#define FIELD_TEXT "MMMMMMMM"
+
+typedef struct {
+    const char *tag, *attached, *solid, *setup;
+    int type;
+} PositionedCase;
+
+static const PositionedCase positioned_cases[] = {
+    {"pgrd", "1grd", "1c", "", IMAGE_TYPE_CHARACTER},
+    {"1pgrd", "1grd", "1c", "", IMAGE_TYPE_CHARACTER},
+    {"2pgrd", "2grd", "2c", "\\kt100\\kf100", IMAGE_TYPE_CHARACTER},
+    {"3pgrd", "3grd", "3c", "", IMAGE_TYPE_OUTLINE},
+    {"4pgrd", "4grd", "4c", "", IMAGE_TYPE_SHADOW},
+    {"5pgrd", "5grd", "5c", "\\u1\\1a&HFF&\\2a&HFF&\\5a&H00&\\5c&H00FF00&", IMAGE_TYPE_CHARACTER},
+    {"1bpgrd", "1bgrd", "1bc", "\\2bs14\\2ba&HFF&", IMAGE_TYPE_OUTLINE},
+    {"2bpgrd", "2bgrd", "2bc", "\\2bs14\\1ba&HFF&\\2bc&H00FF00&", IMAGE_TYPE_OUTLINE},
+    {"10bpgrd", "10bgrd", "10bc", "\\10bs14\\1ba&HFF&\\10bc&H00FF00&", IMAGE_TYPE_OUTLINE},
+};
+
+static bool positioned_targets(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(positioned_cases) / sizeof(positioned_cases[0]); i++) {
+        const PositionedCase *c = &positioned_cases[i];
+        char text[2048];
+        Frame field = {0}, solid = {0}, actual = {0}, expected = {0};
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "}" FIELD_TEXT, c->setup, c->tag);
+        bool good = render(lib, renderer, text, 0, &field) && ass_frame_needs_rgba(renderer);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s&H00FF00&}" FIELD_TEXT, c->setup, c->solid);
+        good = good && render(lib, renderer, text, 0, &solid);
+        good = good && red_blue(&field, c->type) && same_mask(&field, &solid, c->type);
+        if (good) for (int type = 0; type < CHANNELS; type++)
+            if (type != c->type) good &= same_target(&field, &solid, type);
+        if (!good) fprintf(stderr, "positioned target missing, flat, or leaked: %s\n", c->tag);
+        ok &= good;
+        if (!good) { release(&field); release(&solid); return false; }
+
+        /* Solid replacement, and an empty reset, affect this source only. */
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "\\%s&H00FF00&}" FIELD_TEXT,
+                 c->setup, c->tag, c->solid);
+        good = render(lib, renderer, text, 0, &actual) && same_target(&actual, &solid, c->type);
+        release(&actual);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "\\%s()}" FIELD_TEXT,
+                 c->setup, c->tag, c->tag);
+        good &= render(lib, renderer, text, 0, &actual) && same_target(&actual, &solid, c->type);
+        release(&actual);
+
+        /* Attached paint wins; a positioned reset must leave it untouched. */
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "\\%s" RGB "\\%s()}" FIELD_TEXT,
+                 c->setup, c->tag, c->attached, c->tag);
+        good &= render(lib, renderer, text, 0, &actual);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" RGB "}" FIELD_TEXT, c->setup, c->attached);
+        good &= render(lib, renderer, text, 0, &expected) && same_target(&actual, &expected, c->type);
+        release(&actual); release(&expected);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" RGB "\\%s" FIELD "}" FIELD_TEXT,
+                 c->setup, c->attached, c->tag);
+        good &= render(lib, renderer, text, 0, &actual) && same_target(&actual, &field, c->type);
+        release(&actual);
+
+        /* Incompatible transforms in either direction retain exact paint. */
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "\\t(0,1000,\\%s" RGB ")}" FIELD_TEXT,
+                 c->setup, c->tag, c->attached);
+        good &= render(lib, renderer, text, 500, &actual) && same_target(&actual, &field, c->type);
+        release(&actual);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" RGB "\\t(0,1000,\\%s" FIELD ")}" FIELD_TEXT,
+                 c->setup, c->attached, c->tag);
+        good &= render(lib, renderer, text, 500, &actual);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" RGB "}" FIELD_TEXT, c->setup, c->attached);
+        good &= render(lib, renderer, text, 500, &expected) && same_target(&actual, &expected, c->type);
+        release(&actual); release(&expected);
+
+        /* Coordinates, shortest-path angle, stop positions and RGB at t=1/2.
+         * The midpoint's inserted stop is the resampled source/dest average. */
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s(140,80,500,280,350,&H000000&,&H000000&)"
+                 "\\t(0,1000,\\%s(160,100,520,300,10,&HFFFFFF&,50%%,&HFFFFFF&,&HFFFFFF&))}" FIELD_TEXT,
+                 c->setup, c->tag, c->tag);
+        good &= render(lib, renderer, text, 500, &actual);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s(150,90,510,290,0,&H7F7F7F&,50%%,&H7F7F7F&,&H7F7F7F&)}" FIELD_TEXT,
+                 c->setup, c->tag);
+        good &= render(lib, renderer, text, 500, &expected) && same_target(&actual, &expected, c->type);
+        release(&actual); release(&expected);
+        /* Non-flat endpoint paint ensures angle interpolation is sampled too. */
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD
+                 "\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&))}" FIELD_TEXT,
+                 c->setup, c->tag, c->tag);
+        good &= render(lib, renderer, text, 500, &actual);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s(150,90,510,290,45,&H0000FF&,&HFF0000&)}" FIELD_TEXT,
+                 c->setup, c->tag);
+        good &= render(lib, renderer, text, 500, &expected) && same_target(&actual, &expected, c->type);
+        release(&actual); release(&expected);
+
+        /* Invalid input never replaces valid paint, for every target family. */
+        const char *bad[] = {
+            "(140,,500,280,0,&HFFFFFF&,&H000000&)",
+            "(140,80,500,280,nan,&HFFFFFF&,&H000000&)",
+            "(140,80,500,280,0,broken,&H000000&)",
+            "(140,80,500,280,0,&HFFFFFF&,50%,&H000000&,)",
+            "(140,80,500,280,0,&HFFFFFF&,&H000000&", "140", "(0,0,1,1,0)",
+        };
+        for (size_t j = 0; j < sizeof(bad) / sizeof(bad[0]); j++) {
+            snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "\\%s%s}" FIELD_TEXT,
+                     c->setup, c->tag, c->tag, bad[j]);
+            good &= render(lib, renderer, text, 0, &actual) && same_target(&actual, &field, c->type);
+            release(&actual);
+        }
+        if (!good) fprintf(stderr, "positioned replacement/reset/transform/validation failed: %s\n", c->tag);
+        ok &= good;
+        release(&field); release(&solid);
+    }
+    return ok;
+}
+
+static bool positioned_isolation(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *paints = "\\1pgrd" FIELD "\\2pgrd(140,80,500,280,90,&H00FF00&,&HFFFFFF&)"
+        "\\3pgrd(140,80,500,280,180,&H0000FF&,&HFF0000&)"
+        "\\4pgrd(140,80,500,280,0,&H00FF00&,&HFFFFFF&)";
+    Frame all = {0}, changed = {0}, expected = {0};
+    char text[2048];
+    snprintf(text, sizeof(text), "{" FIELD_BASE "%s}" FIELD_TEXT, paints);
+    bool ok = render(lib, renderer, text, 0, &all);
+    ok &= render(lib, renderer, "{" FIELD_BASE "\\pgrd" FIELD "}" FIELD_TEXT, 0, &changed) &&
+          render(lib, renderer, "{" FIELD_BASE "\\1pgrd" FIELD "}" FIELD_TEXT, 0, &expected) &&
+          same_target(&changed, &expected, IMAGE_TYPE_CHARACTER);
+    release(&changed); release(&expected);
+    /* A primary reset/replacement cannot change outline or shadow planes. */
+    const char *replace[] = {"\\1c&H00FF00&", "\\1pgrd()", "\\1grd" RGB};
+    for (size_t i = 0; i < sizeof(replace) / sizeof(replace[0]); i++) {
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s%s}" FIELD_TEXT, paints, replace[i]);
+        ok &= render(lib, renderer, text, 0, &changed) &&
+            same_target(&all, &changed, IMAGE_TYPE_OUTLINE) && same_target(&all, &changed, IMAGE_TYPE_SHADOW);
+        release(&changed);
+    }
+    /* Secondary reset must leave the active primary and both other planes. */
+    snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\2pgrd()}" FIELD_TEXT, paints);
+    ok &= render(lib, renderer, text, 0, &changed);
+    for (int type = 0; type < CHANNELS; type++) ok &= same_target(&all, &changed, type);
+    release(&changed);
+    /* Explicit/ordinary outline aliases sample the same storage exactly. */
+    snprintf(text, sizeof(text), "{" FIELD_BASE "\\1bpgrd" FIELD "}" FIELD_TEXT);
+    ok &= render(lib, renderer, text, 0, &changed);
+    snprintf(text, sizeof(text), "{" FIELD_BASE "\\3pgrd" FIELD "}" FIELD_TEXT);
+    ok &= render(lib, renderer, text, 0, &expected) && same_target(&changed, &expected, IMAGE_TYPE_OUTLINE);
+    release(&changed); release(&expected);
+    /* Two independently painted native rings both produce visible pixels. */
+    ok &= render(lib, renderer, "{" FIELD_BASE "\\2bs16\\1bpgrd" FIELD
+                 "\\2bpgrd(140,80,500,280,0,&H00FF00&,&H00FF00&)}" FIELD_TEXT, 0, &changed);
+    int green = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+        uint8_t *p = pixel(&changed, IMAGE_TYPE_OUTLINE, x, y);
+        green += p[3] > 40 && p[1] > p[0] * 2 && p[1] > p[2] * 2;
+    }
+    ok &= green > 50 && red_blue(&changed, IMAGE_TYPE_OUTLINE);
+    release(&changed);
+    const char *invalid[] = {"0pgrd", "6pgrd", "11pgrd", "0bpgrd", "11bpgrd", "999999bpgrd", "2bpgrdjunk"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "}" FIELD_TEXT, paints, invalid[i]);
+        ok &= render(lib, renderer, text, 0, &changed);
+        for (int type = 0; type < CHANNELS; type++) ok &= same_target(&all, &changed, type);
+        release(&changed);
+    }
+    /* The same event selects secondary while waiting and primary afterward. */
+    snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\kt100\\kf100}" FIELD_TEXT, paints);
+    ok &= render(lib, renderer, text, 0, &changed);
+    ok &= render(lib, renderer, "{" FIELD_BASE "\\2pgrd(140,80,500,280,90,&H00FF00&,&HFFFFFF&)"
+                 "\\kt100\\kf100}" FIELD_TEXT, 0, &expected) &&
+          same_target(&changed, &expected, IMAGE_TYPE_CHARACTER);
+    release(&changed); release(&expected);
+    ok &= render(lib, renderer, text, 3000, &changed) && same_target(&all, &changed, IMAGE_TYPE_CHARACTER);
+    release(&changed);
+    for (int layer = 3; layer < 10; layer++) {
+        snprintf(text, sizeof(text), "{" FIELD_BASE "\\%dbs14\\1ba&HFF&\\%dbpgrd" FIELD "}" FIELD_TEXT,
+                 layer, layer);
+        ok &= render(lib, renderer, text, 0, &changed) && red_blue(&changed, IMAGE_TYPE_OUTLINE);
+        release(&changed);
+    }
+    release(&all);
+    return check(ok, "simultaneous positioned channels, outline aliases, or border isolation failed");
+}
+
+static bool positioned_sources(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const uint8_t green[] = {0, 255, 0, 255};
+    if (ass_set_tag_image_rgba(renderer, "positioned.png", ASS_TAG_IMAGE_FORMAT_PNG, 1, 1, 4, green))
+        return false;
+    const char *sources[][3] = {
+        {"\\1vc(&H00FF00&,&H00FF00&)", "\\1img(positioned.png)", "\\1cyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\1vc(&H00FF00&,&H00FF00&)", "\\1img(positioned.png)", "\\1cyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\2vc(&H00FF00&,&H00FF00&)", "\\2img(positioned.png)", "\\2cyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\3vc(&H00FF00&,&H00FF00&)", "\\3img(positioned.png)", "\\3cyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\4vc(&H00FF00&,&H00FF00&)", "\\4img(positioned.png)", NULL},
+        {NULL, NULL, NULL},
+        {"\\1bvc(&H00FF00&,&H00FF00&)", "\\3img(positioned.png)", "\\1bcyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\2bvc(&H00FF00&,&H00FF00&)", NULL, "\\2bcyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\10bvc(&H00FF00&,&H00FF00&)", NULL, "\\10bcyc(1,&H00FF00&,&H00FF00&)"},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(positioned_cases) / sizeof(positioned_cases[0]); i++) {
+        const PositionedCase *c = &positioned_cases[i];
+        Frame field = {0}, source = {0}, actual = {0};
+        char text[2048];
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "}" FIELD_TEXT, c->setup, c->tag);
+        ok &= render(lib, renderer, text, 0, &field);
+        for (int j = 0; j < 3; j++) {
+            if (!sources[i][j]) continue;
+            const char *paint = sources[i][j];
+            snprintf(text, sizeof(text), "{" FIELD_BASE "%s%s}" FIELD_TEXT, c->setup, paint);
+            ok &= render(lib, renderer, text, 0, &source) && flat_green(&source, c->type);
+            snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "%s\\%s()}" FIELD_TEXT,
+                     c->setup, c->tag, paint, c->tag);
+            ok &= render(lib, renderer, text, 0, &actual) && same_target(&source, &actual, c->type);
+            release(&actual);
+            snprintf(text, sizeof(text), "{" FIELD_BASE "%s%s\\%s" FIELD "}" FIELD_TEXT,
+                     c->setup, paint, c->tag);
+            ok &= render(lib, renderer, text, 0, &actual) && same_target(&field, &actual, c->type);
+            release(&actual); release(&source);
+        }
+        release(&field);
+    }
+    ass_clear_tag_images(renderer);
+    return check(ok, "positioned/vector/image/cycle precedence or reset failed");
+}
+
+static bool positioned_transform_order(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(positioned_cases) / sizeof(positioned_cases[0]); i++) {
+        const PositionedCase *c = &positioned_cases[i];
+        char text[2048], reference[2048];
+        Frame nested = {0}, simple = {0}, seq[3] = {{0}};
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD
+                 "\\t(0,1000,\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&)))}" FIELD_TEXT,
+                 c->setup, c->tag, c->tag);
+        snprintf(reference, sizeof(reference), "{" FIELD_BASE "%s\\%s" FIELD
+                 "\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&))}" FIELD_TEXT,
+                 c->setup, c->tag, c->tag);
+        ok &= render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
+              same_target(&nested, &simple, c->type);
+        release(&nested); release(&simple);
+        snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD
+                 "\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&))"
+                 "\\t(0,1000,\\%s" FIELD ")}" FIELD_TEXT, c->setup, c->tag, c->tag, c->tag);
+        snprintf(reference, sizeof(reference), "{" FIELD_BASE "%s\\%s(145,85,505,285,22.5,&H0000FF&,&HFF0000&)}" FIELD_TEXT,
+                 c->setup, c->tag);
+        ok &= render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
+              same_target(&nested, &simple, c->type);
+        release(&nested); release(&simple);
+        ASS_Track *track = track_for(lib, text);
+        if (!track) return false;
+        const long long times[] = {900, 100, 900};
+        for (int j = 0; j < 3; j++) ok &= render_track(renderer, track, times[j], &seq[j]);
+        ok &= render(lib, renderer, text, 100, &simple) && same_target(&seq[0], &seq[2], c->type) &&
+              same_target(&seq[1], &simple, c->type) && !same_target(&seq[0], &seq[1], c->type);
+        for (int j = 0; j < 3; j++) release(&seq[j]);
+        release(&simple); ass_free_track(track);
+    }
+    return check(ok, "positioned nested/overlapping transforms or reverse seek changed state");
+}
+
+static bool positioned_coverage(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    Frame full = {0}, clipped = {0}, faded = {0}, fallback = {0}, solid = {0};
+    bool ok = render(lib, renderer, "{\\an7\\pos(160,120)\\bord8\\shad12\\p1\\1c&H00FF00&"
+        "\\1pgrd" FIELD "\\3pgrd" FIELD "\\4pgrd" FIELD "}m 0 0 l 320 0 320 100 0 100", 0, &full);
+    ok &= red_blue(&full, IMAGE_TYPE_CHARACTER) && red_blue(&full, IMAGE_TYPE_OUTLINE) &&
+          red_blue(&full, IMAGE_TYPE_SHADOW);
+    ok &= render(lib, renderer, "{\\an7\\pos(160,120)\\bord8\\shad12\\p1\\1c&H00FF00&"
+        "\\1pgrd" FIELD "\\3pgrd" FIELD "\\4pgrd" FIELD
+        "\\clip(250,0,390,360)}m 0 0 l 320 0 320 100 0 100", 0, &clipped);
+    ok &= render(lib, renderer, "{\\an7\\pos(160,120)\\bord8\\shad12\\p1\\1c&H00FF00&"
+        "\\1pgrd" FIELD "\\3pgrd" FIELD "\\4pgrd" FIELD
+        "\\fad(1000,1000)}m 0 0 l 320 0 320 100 0 100", 500, &faded);
+    for (int type = 0; type < CHANNELS; type++) {
+        ok &= coverage(&faded, type) > 0 && coverage(&faded, type) < coverage(&full, type) * 6 / 10;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+            uint8_t *p = pixel(&clipped, type, x, y), *q = pixel(&full, type, x, y);
+            ok &= x >= 250 && x < 390 ? !memcmp(p, q, 4) : p[3] == 0;
+        }
+    }
+    /* A narrow rectangle leaves each channel's green solid outside it. */
+    ok &= render(lib, renderer, "{" FIELD_BASE
+        "\\1pgrd(300,0,340,360,0,&H0000FF&,&HFF0000&)"
+        "\\3pgrd(300,0,340,360,0,&H0000FF&,&HFF0000&)"
+        "\\4pgrd(300,0,340,360,0,&H0000FF&,&HFF0000&)}" FIELD_TEXT, 0, &fallback);
+    ok &= render(lib, renderer, "{" FIELD_BASE "}" FIELD_TEXT, 0, &solid);
+    for (int type = 0; type < CHANNELS; type++) {
+        int inside = 0, outside = 0;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+            uint8_t *p = pixel(&fallback, type, x, y), *q = pixel(&solid, type, x, y);
+            if (x < 300 || x >= 340) { ok &= !memcmp(p, q, 4); outside += p[3] > 40; }
+            else inside += p[3] > 40 && (p[0] > 0 || p[2] > 0);
+        }
+        ok &= inside > 10 && outside > 50;
+    }
+    release(&full); release(&clipped); release(&faded); release(&fallback); release(&solid);
+    return check(ok, "positioned drawing/clip/fade or outside solid fallback failed");
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -659,6 +962,11 @@ int main(void)
     ok &= timing(lib, renderer);
     ok &= automatic(lib, renderer);
     ok &= precedence(lib, renderer);
+    ok &= positioned_targets(lib, renderer);
+    ok &= positioned_isolation(lib, renderer);
+    ok &= positioned_coverage(lib, renderer);
+    ok &= positioned_sources(lib, renderer);
+    ok &= positioned_transform_order(lib, renderer);
     ass_renderer_done(renderer); ass_library_done(lib);
     return ok ? 0 : 1;
 }

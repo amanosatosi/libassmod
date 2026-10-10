@@ -8,12 +8,12 @@ opaque, `FF` transparent). Color and alpha sources remain independent.
 | Target | Vector color / alpha | Attached Mangetsu color / alpha | Positioned field |
 | --- | --- | --- | --- |
 | Primary fill | `\vc`, `\1vc` / `\va`, `\1va` | `\grd`, `\1grd` / `\1gra` | `\pgrd`, `\1pgrd` color only |
-| Secondary karaoke fill | `\2vc` / `\2va` | `\2grd` / `\2gra` | None |
-| First ordinary outline | `\3vc`, `\1bvc` / `\3va`, `\1bva` | `\3grd`, `\1bgrd` / `\3gra`, `\1bga` | None |
-| Native glyph-outline layers 1–10 | `\Nbvc` / `\Nbva` | `\Nbgrd` / `\Nbga` | None |
-| Ordinary shadow or BS4 fill | `\4vc` / `\4va` | `\4grd` / `\4gra` | None |
+| Secondary karaoke fill | `\2vc` / `\2va` | `\2grd` / `\2gra` | `\2pgrd` color |
+| First ordinary outline | `\3vc`, `\1bvc` / `\3va`, `\1bva` | `\3grd`, `\1bgrd` / `\3gra`, `\1bga` | `\3pgrd`, `\1bpgrd` color |
+| Native glyph-outline layers 1–10 | `\Nbvc` / `\Nbva` | `\Nbgrd` / `\Nbga` | `\Nbpgrd` color, N=1..10 |
+| Ordinary shadow or BS4 fill | `\4vc` / `\4va` | `\4grd` / `\4gra` | `\4pgrd` color |
 | BS4 outward rings 1–10 | `\Nbbvc` / `\Nbbva` | `\Nbbgrd` / `\Nbbga` | None |
-| Underline and strikeout | No dedicated fifth vector family | `\5grd` / `\5gra` | None |
+| Underline and strikeout | No dedicated fifth vector family | `\5grd` / `\5gra` | `\5pgrd` color |
 | Waiting first karaoke outline | `\3svc` (color) | `\3sgrd` (color); first-outline alpha | None |
 
 Box layer-1 aliases are `\bbvc`, `\bbva`, `\bbgrd`, `\bbga`. Box fill
@@ -36,9 +36,10 @@ Attached gradients follow their target's final rendered bounds; their angles
 use screen axes, not a locally warped texture. Native border rings use their
 own occupied mask bounds, including blur. Shadows use their shadow bounds.
 Primary and decoration paint use their corresponding rendered masks. Clip and
-karaoke slices preserve the original field. `\pgrd` alone stays stationary in
-video/script-frame coordinates, including during native scrolling; outside
-its rectangle the ordinary primary color remains active.
+karaoke slices preserve the original field. All `\Npgrd` / `\Nbpgrd` fields
+stay stationary in video/script-frame coordinates, including during native
+scrolling; outside each rectangle that target's ordinary color remains active.
+See [positioned gradient syntax, resets and examples](position-gradient.md).
 
 Paint follows the existing shaping/layout pipeline: fallback fonts, Japanese,
 Myanmar marks, normal and gyaku-furigana, wrapping, native vertical text,
@@ -55,8 +56,7 @@ inside `\t` interpolate the existing gradient stops toward the solid value.
 Existing layout restrictions still apply: native vertical furigana placement
 is unavailable; curved events with furigana, semantic columns, or scrolling
 fall back to normal layout; semantic columns ignore karaoke timing. Gradients
-do not enable unsupported layout combinations, positioned alpha fields, or
-numbered positioned gradients. Image fills and pattern paint keep their
+do not enable unsupported layout combinations or positioned alpha fields. Image fills and pattern paint keep their
 existing precedence; no image, cycle, or polka tags are added for box rings.
 
 `test/gradient_surface_selftest.c` compares actual target pixels and masks for
@@ -66,7 +66,10 @@ seek, and stationary scrolling fields. Existing colorcoding, image-fill,
 pattern, karaoke, layout, ownership, and decoration regression suites provide
 additional coverage. `.github/workflows/gradient-audit.yml` builds and runs
 the entire Meson regression suite with ASan/UBSan and a shared-library build.
-CI results, rather than parser acceptance alone, establish validation.
+Positioned-target regressions also assert visible RGB on supported targets,
+independent simultaneous channels and borders, paint replacement/reset, animated
+coordinates/angles/stops, malformed input, drawing masks, clipping, fades and
+outside fallback. CI results establish validation.
 
 ## Audit findings
 

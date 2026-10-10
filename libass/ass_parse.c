@@ -1243,6 +1243,7 @@ typedef enum {
     BORDER_TAG_COLOR_GRADIENT,
     BORDER_TAG_ALPHA_GRADIENT,
     BORDER_TAG_MANGETSU_GRADIENT,
+    BORDER_TAG_POSITIONED_GRADIENT,
     BORDER_TAG_MANGETSU_ALPHA_GRADIENT,
     BORDER_TAG_BOX_SIZE,
     BORDER_TAG_BOX_COLOR,
@@ -1323,6 +1324,9 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
         tag = BORDER_TAG_SIZE_Y;
     else if (match_border_suffix(q, name_end, "bs", &arg_start))
         tag = BORDER_TAG_SIZE;
+    else if (match_border_suffix(q, name_end, "bpgrd", &arg_start))
+        tag = arg_start == name_end ?
+            BORDER_TAG_POSITIONED_GRADIENT : BORDER_TAG_IGNORE;
     else if (match_border_suffix(q, name_end, "bgrd", &arg_start))
         tag = BORDER_TAG_MANGETSU_GRADIENT;
     else if (match_border_suffix(q, name_end, "bga", &arg_start))
@@ -1371,7 +1375,7 @@ static bool colorcode_tag_allowed(char *p, char *name_end)
         "1gra", "2gra", "3gra", "4gra", "5gra",
         "vc", "1vc", "2vc", "3vc", "4vc",
         "va", "1va", "2va", "3va", "4va",
-        "pgrd", "1pgrd",
+        "pgrd", "1pgrd", "2pgrd", "3pgrd", "4pgrd", "5pgrd",
         "b", "i", "u", "s",
     };
 
@@ -1394,6 +1398,7 @@ static bool colorcode_numbered_border_tag_allowed(NumberedBorderTag tag)
     case BORDER_TAG_COLOR_GRADIENT:
     case BORDER_TAG_ALPHA_GRADIENT:
     case BORDER_TAG_MANGETSU_GRADIENT:
+    case BORDER_TAG_POSITIONED_GRADIENT:
     case BORDER_TAG_MANGETSU_ALPHA_GRADIENT:
         return true;
     default:
@@ -1748,12 +1753,24 @@ static bool parse_mangetsu_fill_gradient_tag(char *p, char *name_end,
     return true;
 }
 
-static bool parse_mangetsu_positioned_primary_gradient_tag(char *p,
-                                                            char *name_end)
+static bool parse_mangetsu_positioned_gradient_tag(
+    char *p, char *name_end, int *layer, MangetsuGradientTarget *target)
 {
-    size_t len = name_end - p;
-    return (len == 4 && !strncmp(p, "pgrd", len)) ||
-           (len == 5 && !strncmp(p, "1pgrd", len));
+    char *q = p;
+    int channel = read_decimal_digit(&q, name_end);
+    if (channel < 0) {
+        channel = 1;
+        q = p;
+    }
+    if (channel < 1 || channel > MANGETSU_GRADIENT_LAYERS ||
+            name_end - q != 4 || strncmp(q, "pgrd", 4))
+        return false;
+
+    /* Like \3grd, the outline aliases the first native border paint. */
+    *target = channel == 3 ? MANGETSU_GRADIENT_TARGET_BORDER :
+                            MANGETSU_GRADIENT_TARGET_COLOR;
+    *layer = channel == 3 ? 0 : channel - 1;
+    return true;
 }
 
 static void disable_mangetsu_gradient_layer(RenderContext *state, int layer)
@@ -2042,21 +2059,31 @@ static bool transform_mangetsu_gradient_layer(RenderContext *state,
     return true;
 }
 
-static bool apply_mangetsu_positioned_primary_gradient_tag(
-    RenderContext *state, char *name_end, char *q, double pwr, bool nested)
+static bool apply_mangetsu_positioned_gradient_tag(
+    RenderContext *state, MangetsuGradientTarget target, int layer,
+    char *name_end, char *q, double pwr, bool nested)
 {
+    bool is_border = target == MANGETSU_GRADIENT_TARGET_BORDER;
+    if (layer < 0 || layer >= (is_border ? MANGETSU_GRADIENT_BORDER_LAYERS :
+                                          MANGETSU_GRADIENT_LAYERS))
+        return true;
     /* Positioned tags are deliberately parenthesized-only. */
     if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')')
         return true;
 
     char *raw_start = name_end + 1;
     char *raw_end = q - 1;
-    MangetsuGradientLayer *dst = &state->mangetsu_gradient.layer[0];
+    MangetsuGradientLayer *dst = is_border ?
+        &state->mangetsu_gradient.border[layer] :
+        &state->mangetsu_gradient.layer[layer];
     if (raw_start == raw_end) {
-        if (!nested) {
-            if (dst->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT)
-                disable_mangetsu_gradient_layer(state, 0);
-            replace_cycle_base_paint(state, 0, -1, pwr);
+        /* Reset only an active positioned source, never unrelated paint. */
+        if (!nested && dst->active &&
+                dst->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+            if (is_border)
+                disable_mangetsu_border_gradient_layer(state, layer);
+            else
+                disable_mangetsu_gradient_layer(state, layer);
         }
         return true;
     }
@@ -2066,24 +2093,45 @@ static bool apply_mangetsu_positioned_primary_gradient_tag(
                                                       &gradient))
         return true;
 
-    /* Attached and fixed-frame coordinates have no meaningful shared space. */
+    /* Reject incompatible transforms before touching any paint state. */
     if (nested && dst->active &&
             dst->coordinate_mode != MANGETSU_GRADIENT_POSITIONED_RECT)
         return true;
 
-    uint32_t solid = mangetsu_solid_color_for_target(
-        state, MANGETSU_GRADIENT_TARGET_COLOR, 0);
-    ass_gradient_disable_color(&state->gradient, 0, state->c[0], 1.0);
-    disable_image_fill_layer(state, 0);
-    disable_image_fill_layer(state, 1);
+    uint32_t solid = mangetsu_solid_color_for_target(state, target, layer);
+    if (is_border) {
+        BorderLayerState *border = &state->border_layers[layer];
+        default_extra_border_color(state, layer);
+        ass_gradient_values_disable_color(&border->gradient, border->color, 1.0);
+        border->has_color = true;
+        if (layer == 0) {
+            ass_gradient_disable_color(&state->gradient, 2, state->c[2], 1.0);
+            disable_image_fill_layer(state, 2);
+            sync_layer1_border(state);
+        }
+    } else if (layer < 4) {
+        ass_gradient_disable_color(&state->gradient, layer, state->c[layer], 1.0);
+        /* Primary/secondary image fills intentionally share their source. */
+        if (layer == 0 || layer == 1) {
+            disable_image_fill_layer(state, 0);
+            disable_image_fill_layer(state, 1);
+        } else {
+            disable_image_fill_layer(state, layer);
+        }
+    }
     if (nested) {
         if (!transform_mangetsu_gradient_layer(state, dst, &gradient,
                                                solid, pwr, false))
             return true;
+    } else if (is_border) {
+        apply_mangetsu_border_gradient_layer(state, layer, &gradient);
     } else {
-        apply_mangetsu_gradient_layer(state, 0, &gradient);
+        apply_mangetsu_gradient_layer(state, layer, &gradient);
     }
-    replace_cycle_base_paint(state, 0, -1, pwr);
+    if (is_border)
+        replace_cycle_border_paint(state, layer, pwr);
+    else
+        replace_cycle_base_paint(state, layer, -1, pwr);
     mark_rgba_needed(state);
     return true;
 }
@@ -2320,6 +2368,18 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
                                                      &gradient)) {
             return true;
         }
+
+        MangetsuGradientLayer *current = is_border ?
+            (is_alpha ? &state->mangetsu_gradient.border_alpha[layer] :
+                        &state->mangetsu_gradient.border[layer]) :
+            layer == 2 ?
+            (is_alpha ? &state->mangetsu_gradient.border_alpha[0] :
+                        &state->mangetsu_gradient.border[0]) :
+            (is_alpha ? &state->mangetsu_gradient.alpha[layer] :
+                        &state->mangetsu_gradient.layer[layer]);
+        if (nested && current->active &&
+                current->coordinate_mode != gradient.coordinate_mode)
+            return true;
 
         uint32_t solid_value = is_alpha ?
             mangetsu_solid_alpha_for_target(state, target, layer) :
@@ -2868,6 +2928,11 @@ static void apply_numbered_border_tag(RenderContext *state,
         }
         break;
     }
+    case BORDER_TAG_POSITIONED_GRADIENT:
+        apply_mangetsu_positioned_gradient_tag(
+            state, MANGETSU_GRADIENT_TARGET_BORDER, layer,
+            name_end, tag_end, pwr, nested);
+        break;
     case BORDER_TAG_MANGETSU_GRADIENT:
         apply_mangetsu_gradient_tag(state, MANGETSU_GRADIENT_TARGET_BORDER,
                                     layer, name_end, tag_end,
@@ -3713,8 +3778,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                              &mangetsu_fill_layer,
                                              &mangetsu_fill_target,
                                              &mangetsu_fill_arg);
-        bool mangetsu_positioned_primary_gradient_tag =
-            parse_mangetsu_positioned_primary_gradient_tag(p, name_end);
+        int mangetsu_positioned_layer = -1;
+        MangetsuGradientTarget mangetsu_positioned_target =
+            MANGETSU_GRADIENT_TARGET_COLOR;
+        bool mangetsu_positioned_tag = parse_mangetsu_positioned_gradient_tag(
+            p, name_end, &mangetsu_positioned_layer, &mangetsu_positioned_target);
         bool secondary_outline_color_tag =
             tag_name_matches(p, name_end, "3sc");
         bool secondary_outline_vector_tag =
@@ -4671,9 +4739,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             apply_img_tag(state, 2, args, nargs, pwr);
         } else if (tag("4img")) {
             apply_img_tag(state, 3, args, nargs, pwr);
-        } else if (mangetsu_positioned_primary_gradient_tag) {
-            apply_mangetsu_positioned_primary_gradient_tag(state, name_end,
-                                                            q, pwr, nested);
+        } else if (mangetsu_positioned_tag) {
+            apply_mangetsu_positioned_gradient_tag(
+                state, mangetsu_positioned_target, mangetsu_positioned_layer,
+                name_end, q, pwr, nested);
         } else if (mangetsu_fill_tag) {
             apply_mangetsu_gradient_tag(state, mangetsu_fill_target,
                                         mangetsu_fill_layer, name_end, q,

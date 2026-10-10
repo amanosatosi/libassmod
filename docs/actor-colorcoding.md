@@ -119,7 +119,9 @@ alpha behavior. Font/style changes and `\N` do not split an active Mangetsu
 gradient segment.
 
 `\pgrd(x1,y1,x2,y2,angle,stops...)` and its `\1pgrd` alias are primary-fill
-fixed-frame color gradients. They use the same color-stop grammar as `\1grd`.
+fixed-frame color gradients. `\2pgrd`..`\5pgrd` and `\1bpgrd`..`\10bpgrd`
+use the corresponding color targets, including actor colorcoding overrides.
+They use the same color-stop grammar as `\1grd`.
 Actor colorcoding remains the ordinary primary color beneath this source, so it
 is used for every positioned-gradient pixel outside the fixed rectangle unless
 an ordinary `\c` or `\1c` later overrides it.
