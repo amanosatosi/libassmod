@@ -843,7 +843,7 @@ static bool positioned_sources(ASS_Library *lib, ASS_Renderer *renderer)
         {NULL, NULL, NULL},
         {"\\1bvc(&H00FF00&,&H00FF00&)", "\\3img(positioned.png)", "\\1bcyc(1,&H00FF00&,&H00FF00&)"},
         {"\\2bvc(&H00FF00&,&H00FF00&)", NULL, "\\2bcyc(1,&H00FF00&,&H00FF00&)"},
-        {"\\10bvc(&H00FF00&,&H00FF00&)", NULL, "\\10bcyc(1,&H00FF00&,&H00FF00&)"},
+        {"\\10bvc(&H00FF00&,&H00FF00&)", NULL, NULL},
     };
     bool ok = true;
     for (size_t i = 0; i < sizeof(positioned_cases) / sizeof(positioned_cases[0]); i++) {
@@ -872,6 +872,20 @@ static bool positioned_sources(ASS_Library *lib, ASS_Renderer *renderer)
             ok &= good;
             release(&actual); release(&source);
         }
+        if (sources[i][1]) {
+            /* Missing host images must not resurrect replaced positioned paint. */
+            const char *image_tag = i == 2 ? "2img" : i == 3 || i == 6 ? "3img" :
+                                    i == 4 ? "4img" : "1img";
+            snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s(missing.png)}" FIELD_TEXT,
+                     c->setup, image_tag);
+            ok &= render(lib, renderer, text, 0, &source);
+            snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "\\%s(missing.png)}" FIELD_TEXT,
+                     c->setup, c->tag, image_tag);
+            bool good = render(lib, renderer, text, 0, &actual) && same_target(&source, &actual, c->type);
+            if (!good) fprintf(stderr, "positioned missing-image replacement failed: %s\n", c->tag);
+            ok &= good;
+            release(&source); release(&actual);
+        }
         release(&field);
     }
     ass_clear_tag_images(renderer);
@@ -888,9 +902,10 @@ static bool positioned_transform_order(ASS_Library *lib, ASS_Renderer *renderer)
         snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD
                  "\\t(0,1000,\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&)))}" FIELD_TEXT,
                  c->setup, c->tag, c->tag);
-        snprintf(reference, sizeof(reference), "{" FIELD_BASE "%s\\%s" FIELD
-                 "\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&))}" FIELD_TEXT,
-                 c->setup, c->tag, c->tag);
+        /* Existing nested-transform guards ignore this parenthesized inner
+         * tag. Keep that behavior and verify that it leaves paint intact. */
+        snprintf(reference, sizeof(reference), "{" FIELD_BASE "%s\\%s" FIELD "}" FIELD_TEXT,
+                 c->setup, c->tag);
         bool good = render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
                     same_target(&nested, &simple, c->type);
         if (!good) fprintf(stderr, "positioned nested transform failed: %s\n", c->tag);

@@ -712,10 +712,14 @@ static void apply_img_tag(RenderContext *state, int layer,
         state->image_fill.layer[layer].path.len = path_arg.end - path_arg.start;
         state->image_fill.layer[layer].xoffset = 0;
         state->image_fill.layer[layer].yoffset = 0;
-        /* Image fill is the latest primary-fill color source. */
-        if (layer == 0)
-            ass_mangetsu_gradient_layer_reset(
-                &state->mangetsu_gradient.layer[0]);
+        /* Preserve existing attached-image behavior, but replace positioned
+         * paint on this target even when the host cannot resolve the image. */
+        MangetsuGradientLayer *gradient = layer == 2 ?
+            &state->mangetsu_gradient.border[0] :
+            &state->mangetsu_gradient.layer[layer];
+        if (layer == 0 || gradient->coordinate_mode ==
+                MANGETSU_GRADIENT_POSITIONED_RECT)
+            ass_mangetsu_gradient_layer_reset(gradient);
         replace_cycle_base_paint(state, layer, -1, pwr);
         state->needs_rgba = true;
     }
@@ -2128,9 +2132,12 @@ static bool apply_mangetsu_positioned_gradient_tag(
     } else {
         apply_mangetsu_gradient_layer(state, layer, &gradient);
     }
-    if (is_border)
+    if (is_border) {
+        /* Both first-border cycle spellings can paint this same mask. */
+        if (layer == 0)
+            replace_cycle_base_paint(state, -1, 0, pwr);
         replace_cycle_border_paint(state, layer, pwr);
-    else
+    } else
         replace_cycle_base_paint(state, layer, -1, pwr);
     mark_rgba_needed(state);
     return true;
@@ -2325,10 +2332,8 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
                      target == MANGETSU_GRADIENT_TARGET_BORDER_ALPHA;
     bool is_alpha = target == MANGETSU_GRADIENT_TARGET_ALPHA ||
                     target == MANGETSU_GRADIENT_TARGET_BORDER_ALPHA;
-    if ((is_border && (layer < 0 ||
-                       layer >= MANGETSU_GRADIENT_BORDER_LAYERS)) ||
-            (!is_border && (layer < 0 ||
-                            layer >= MANGETSU_GRADIENT_LAYERS)))
+    if (layer < 0 || layer >= (is_border ? MANGETSU_GRADIENT_BORDER_LAYERS :
+                                          MANGETSU_GRADIENT_LAYERS))
         return true;
 
     if (*name_end == '(') {

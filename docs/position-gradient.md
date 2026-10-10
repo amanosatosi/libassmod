@@ -114,6 +114,9 @@ synthesized source stop list. Direct attached/positioned transforms
 because their coordinate spaces are incompatible. This applies independently
 to all five channels and ten borders, including outline aliases. Nested and
 overlapping transforms retain the existing ASS `\t` ordering and nesting rules.
+The existing nested-transform guard can ignore a parenthesized positioned tag
+inside another `\t`; it leaves the prior paint intact. This extension does not
+change that nesting restriction.
 
 Use `ass_render_frame_rgba()` (or an automatic RGBA wrapper) whenever this tag
 is present. `ass_frame_needs_rgba()` is set for accepted positioned gradients.
