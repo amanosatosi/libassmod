@@ -856,14 +856,20 @@ static bool positioned_sources(ASS_Library *lib, ASS_Renderer *renderer)
             if (!sources[i][j]) continue;
             const char *paint = sources[i][j];
             snprintf(text, sizeof(text), "{" FIELD_BASE "%s%s}" FIELD_TEXT, c->setup, paint);
-            ok &= render(lib, renderer, text, 0, &source) && flat_green(&source, c->type);
+            bool good = render(lib, renderer, text, 0, &source) && flat_green(&source, c->type);
+            if (!good) fprintf(stderr, "positioned source baseline failed: %s %s\n", c->tag, paint);
+            ok &= good;
             snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD "%s\\%s()}" FIELD_TEXT,
                      c->setup, c->tag, paint, c->tag);
-            ok &= render(lib, renderer, text, 0, &actual) && same_target(&source, &actual, c->type);
+            good = render(lib, renderer, text, 0, &actual) && same_target(&source, &actual, c->type);
+            if (!good) fprintf(stderr, "positioned source replacement/reset failed: %s %s\n", c->tag, paint);
+            ok &= good;
             release(&actual);
             snprintf(text, sizeof(text), "{" FIELD_BASE "%s%s\\%s" FIELD "}" FIELD_TEXT,
                      c->setup, paint, c->tag);
-            ok &= render(lib, renderer, text, 0, &actual) && same_target(&field, &actual, c->type);
+            good = render(lib, renderer, text, 0, &actual) && same_target(&field, &actual, c->type);
+            if (!good) fprintf(stderr, "positioned source supersession failed: %s %s\n", c->tag, paint);
+            ok &= good;
             release(&actual); release(&source);
         }
         release(&field);
@@ -885,23 +891,31 @@ static bool positioned_transform_order(ASS_Library *lib, ASS_Renderer *renderer)
         snprintf(reference, sizeof(reference), "{" FIELD_BASE "%s\\%s" FIELD
                  "\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&))}" FIELD_TEXT,
                  c->setup, c->tag, c->tag);
-        ok &= render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
-              same_target(&nested, &simple, c->type);
+        bool good = render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
+                    same_target(&nested, &simple, c->type);
+        if (!good) fprintf(stderr, "positioned nested transform failed: %s\n", c->tag);
+        ok &= good;
         release(&nested); release(&simple);
         snprintf(text, sizeof(text), "{" FIELD_BASE "%s\\%s" FIELD
                  "\\t(0,1000,\\%s(160,100,520,300,90,&H0000FF&,&HFF0000&))"
                  "\\t(0,1000,\\%s" FIELD ")}" FIELD_TEXT, c->setup, c->tag, c->tag, c->tag);
         snprintf(reference, sizeof(reference), "{" FIELD_BASE "%s\\%s(145,85,505,285,22.5,&H0000FF&,&HFF0000&)}" FIELD_TEXT,
                  c->setup, c->tag);
-        ok &= render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
-              same_target(&nested, &simple, c->type);
+        good = render(lib, renderer, text, 500, &nested) && render(lib, renderer, reference, 500, &simple) &&
+               same_target(&nested, &simple, c->type);
+        if (!good) fprintf(stderr, "positioned overlapping transform failed: %s\n", c->tag);
+        ok &= good;
         release(&nested); release(&simple);
         ASS_Track *track = track_for(lib, text);
         if (!track) return false;
-        const long long times[] = {900, 100, 900};
+        /* This round-trip transform has equal values at 100 and 900 ms;
+         * use 250 ms to assert a genuinely different sampled field. */
+        const long long times[] = {900, 250, 900};
         for (int j = 0; j < 3; j++) ok &= render_track(renderer, track, times[j], &seq[j]);
-        ok &= render(lib, renderer, text, 100, &simple) && same_target(&seq[0], &seq[2], c->type) &&
-              same_target(&seq[1], &simple, c->type) && !same_target(&seq[0], &seq[1], c->type);
+        good = render(lib, renderer, text, 250, &simple) && same_target(&seq[0], &seq[2], c->type) &&
+               same_target(&seq[1], &simple, c->type) && !same_target(&seq[0], &seq[1], c->type);
+        if (!good) fprintf(stderr, "positioned reverse seek failed: %s\n", c->tag);
+        ok &= good;
         for (int j = 0; j < 3; j++) release(&seq[j]);
         release(&simple); ass_free_track(track);
     }
