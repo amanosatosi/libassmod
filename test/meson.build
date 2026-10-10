@@ -420,3 +420,9 @@ if get_option('default_library') != 'shared'
              args: ['--extended'], timeout: 3600, is_parallel: false)
     endif
 endif
+
+alpha_parse_unit = executable('alpha_parse_unit',
+    files('alpha_parse_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    link_with: libass_for_tools, install: false)
+test('alpha-byte-syntax', alpha_parse_unit, timeout: 120)

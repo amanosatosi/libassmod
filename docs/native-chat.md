@@ -98,8 +98,10 @@ The convenient chat color channels are:
 | `\4c`, `\4a` | Outer panel fill color, alpha |
 
 Use these short tags for ordinary chat styling. ASS alpha runs from `&H00&`
-(opaque) to `&HFF&` (transparent); the usual numeric 0–255 alpha form also
-works. For more detailed styling, every chat mode also accepts:
+(opaque) to `&HFF&` (transparent). Unprefixed alpha values are hexadecimal,
+including digit-only values (`80` means decimal 128); `$128` explicitly selects
+a decimal byte. See [alpha syntax and migration](rgba-rendering.md#mangetsu-color-and-alpha-values).
+For more detailed styling, every chat mode also accepts:
 
 | Tag | Native chat surface |
 | --- | --- |
@@ -186,8 +188,10 @@ fixed for tools that generate ASS:
 {\chatmode2\msgm(Miku)\msgright(&HFFFFFF&,&H00&,&H39C5BB&,&H00&,&H332244&,&H20&,&HFF55CC&,&H10&,4,&H000000&,&H30&,2)}|Miku:\NHello||{\bubc&H0000FF&}Important||Normal purple bubble again|
 ```
 
-Colors use ASS BGR notation; alpha uses ASS hexadecimal or numeric 0–255
-notation. Sizes use the same script coordinates as the individual tags.
+Colors use ASS BGR notation; alpha uses ASS hexadecimal or `$`-prefixed
+decimal bytes from 0 through 255. Unprefixed digit-only alpha fields are
+hexadecimal; older decimal presets must add `$` to their alpha fields.
+Sizes use the same script coordinates as the individual tags.
 Negative sizes clamp to zero; sizes above 10000 clamp to 10000. Missing,
 extra, empty, or invalid fields reject the entire tuple without changing the
 previous preset. `\msgleft()` / `\msgright()` clear just that side's preset.

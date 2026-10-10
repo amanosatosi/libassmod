@@ -1397,7 +1397,7 @@ int main(void)
     };
     for (int i = 0; i < (int) (sizeof(decimal_alphas) / sizeof(decimal_alphas[0])); i++) {
         char actual[128], expected[128], label[160];
-        snprintf(actual, sizeof(actual), "{\\1gra(0,%s,&H00&)}Decimal",
+        snprintf(actual, sizeof(actual), "{\\1gra(0,$%s,&H00&)}Decimal",
                  decimal_alphas[i].decimal);
         snprintf(expected, sizeof(expected), "{\\1gra(0,%s,&H00&)}Hex",
                  decimal_alphas[i].hex);
@@ -1408,7 +1408,7 @@ int main(void)
     }
     ok &= expect_mangetsu_segments(
         lib, renderer,
-        "{\\1gra(0,256,&H00&)}OutOfRange",
+        "{\\1gra(0,$256,&H00&)}OutOfRange",
         0, "out-of-range decimal alpha did not reject the gradient");
 
     ok &= expect_one_mangetsu_segment(

@@ -934,7 +934,7 @@ int main(void)
         "{\\chatmode2\\msgshowname0}|{\\3a&H80&"
         "\\buba&H20&}Miku:\\NHi|") & 0xFFu) == 0x20u);
     assert((bubble_color(lib, renderer,
-        "{\\chatmode2\\msgshowname0}|{\\buba128"
+        "{\\chatmode2\\msgshowname0}|{\\buba$128"
         "\\3a&H40&}Miku:\\NHi|") & 0xFFu) == 0x40u);
 
     track = make_track(lib,

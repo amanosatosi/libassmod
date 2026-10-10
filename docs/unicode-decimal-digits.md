@@ -17,6 +17,7 @@ introduced as an alternate decimal separator.
 
 The shared parsing applies to:
 
+- `$`-prefixed decimal alpha bytes (for example, `\alpha$၁၂၈` is alpha 128);
 - numeric override-tag arguments, including Mangetsu tags such as `\scale` and
   multi-border layers;
 - decimal fields in `Dialogue:` and `Comment:` events, including layer,
@@ -40,5 +41,6 @@ Style: Default,Arial,４８,&H00FFFFFF,...
 Dialogue: ०,٠:٠٠:٠٠.٠٠,٠:٠٠:٠٢.٠٠,Default,,၁၀၀,๑๐๐,៥០,,{\pos(၆၄၀,၃၆၀)\scale၁၂၅}Text
 ```
 
-Hexadecimal color and alpha fields retain their existing ASCII hexadecimal
-grammar (`0-9`, `A-F`, and `a-f`). Arbitrary text metadata is not normalized.
+Unprefixed alpha values are hexadecimal, even when digit-only; use `$` for
+decimal alpha. Hexadecimal color and alpha fields retain their existing ASCII
+hexadecimal grammar (`0-9`, `A-F`, and `a-f`). Arbitrary text metadata is not normalized.

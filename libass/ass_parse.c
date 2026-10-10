@@ -1029,30 +1029,49 @@ static void apply_clip_tag(RenderContext *state, const char *tag_name, bool inve
             "PARSE %s rejected: %s", tag_name, parsed.reason);
 }
 
-static bool parse_plain_decimal_alpha_arg(struct arg arg, int32_t *out)
+static int hex_value(char c);
+
+/* All paint alpha values are bytes. A '$' explicitly selects decimal;
+ * otherwise keep the legacy ASS hexadecimal spelling, including &Hxx&. */
+static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out)
 {
+    trim_arg_inline(&arg);
+    if (arg.start >= arg.end)
+        return false;
     char *ptr = arg.start;
-    skip_spaces(&ptr);
-    char *start = ptr;
-    if (ptr < arg.end && (*ptr == '+' || *ptr == '-'))
+    bool decimal = *ptr == '$';
+    unsigned base = decimal ? 10 : 16;
+    if (decimal)
         ptr++;
-    char *digits = ptr;
-    while (ptr < arg.end && *ptr >= '0' && *ptr <= '9')
+    else
+        while (ptr < arg.end && (*ptr == '&' || *ptr == 'H' || *ptr == 'h'))
+            ptr++;
+
+    uint32_t value = 0;
+    bool have_digit = false;
+    while (ptr < arg.end) {
+        char *next = ptr;
+        int digit;
+        if (decimal) {
+            digit = ass_unicode_decimal_value(ass_utf8_get_char(&next));
+            if (next > arg.end)
+                return false;
+        } else {
+            digit = hex_value(*next++);
+        }
+        if (digit < 0)
+            break;
+        /* Bound accumulation itself, so long inputs cannot wrap to a byte. */
+        if (value > (255u - digit) / base)
+            return false;
+        value = value * base + digit;
+        ptr = next;
+        have_digit = true;
+    }
+    if (!decimal && ptr < arg.end && *ptr == '&')
         ptr++;
-    if (ptr == digits)
+    if (!have_digit || ptr != arg.end)
         return false;
-
-    char *number_end = ptr;
-    if (ptr < arg.end && *ptr == '&')
-        ptr++;
-    skip_spaces(&ptr);
-    if (ptr != arg.end)
-        return false;
-
-    int32_t value;
-    if (!mystrtoi32(&start, 10, &value) || start != number_end)
-        return false;
-
     *out = value;
     return true;
 }
@@ -1085,20 +1104,9 @@ static void replace_cycle_border_paint(RenderContext *state, int border,
                              border == 0 ? -1 : border, pwr);
 }
 
-static int32_t parse_alpha_tag(struct arg arg)
+static bool parse_alpha_tag(struct arg arg, uint32_t *out)
 {
-    int32_t value;
-    if (parse_plain_decimal_alpha_arg(arg, &value))
-        return value >= 0 && value <= 0xFF ? value : 0;
-
-    int32_t alpha = 0;
-    char *str = arg.start;
-
-    while (*str == '&' || *str == 'H')
-        ++str;
-
-    mystrtoi32(&str, 16, &alpha);
-    return alpha;
+    return parse_ass_alpha_arg(arg, out);
 }
 
 static bool parse_named_ass_color_arg(struct arg arg, uint32_t *out)
@@ -1146,7 +1154,6 @@ static uint32_t parse_color_tag(struct arg arg)
 }
 
 static bool parse_ass_color_arg(struct arg arg, uint32_t *out);
-static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out);
 
 static bool parse_decoration_color_arg(struct arg arg, uint32_t *color)
 {
@@ -1484,23 +1491,6 @@ static bool chat_structural_name_is(char *p, char *end, const char *name)
     return (size_t) (end - p) == length && !memcmp(p, name, length);
 }
 
-static bool parse_ass_alpha_arg(struct arg arg, uint32_t *out)
-{
-    int32_t decimal;
-    if (parse_plain_decimal_alpha_arg(arg, &decimal)) {
-        if (decimal < 0 || decimal > 0xFF)
-            return false;
-        *out = decimal;
-        return true;
-    }
-
-    uint32_t value;
-    if (!parse_hex_arg_strict(arg, &value))
-        return false;
-    *out = value;
-    return true;
-}
-
 static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out)
 {
     uint32_t value;
@@ -1514,7 +1504,7 @@ static bool parse_ass_color_arg_strict(struct arg arg, uint32_t *out)
 
 static bool parse_ass_alpha_arg_strict(struct arg arg, uint32_t *out)
 {
-    return parse_ass_alpha_arg(arg, out) && *out <= 0xFF;
+    return parse_ass_alpha_arg(arg, out);
 }
 
 static bool parse_percentage_arg_strict(struct arg arg, double *out)
@@ -1541,6 +1531,8 @@ static bool parse_mangetsu_gradient_reset_arg(struct arg arg)
 
 static bool valid_vector_gradient_args(struct arg *args, int nargs, bool alpha)
 {
+    if (alpha && nargs > 4)
+        return false;
     for (int i = 0; i < FFMIN(nargs, 4); i++) {
         uint32_t value;
         if (alpha ? !parse_ass_alpha_arg(args[i], &value) :
@@ -2994,8 +2986,11 @@ static void apply_numbered_border_tag(RenderContext *state,
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++)
-                    vals[i] = (uint8_t) parse_alpha_tag(args[i]);
+                for (int i = 0; i < cnt; i++) {
+                    uint32_t value = 0;
+                    parse_alpha_tag(args[i], &value);
+                    vals[i] = value;
+                }
                 disable_mangetsu_border_alpha_gradient_layer(state, 0);
                 ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
                 disable_image_fill_layer(state, 2);
@@ -3013,8 +3008,11 @@ static void apply_numbered_border_tag(RenderContext *state,
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++)
-                    vals[i] = (uint8_t) parse_alpha_tag(args[i]);
+                for (int i = 0; i < cnt; i++) {
+                    uint32_t value = 0;
+                    parse_alpha_tag(args[i], &value);
+                    vals[i] = value;
+                }
                 disable_mangetsu_border_alpha_gradient_layer(state, layer);
                 ass_gradient_values_apply_alpha(&border->gradient,
                                                 vals, cnt, pwr);
@@ -4404,7 +4402,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("alpha")) {
             int i;
             if (nargs) {
-                int32_t a = parse_alpha_tag(args[0]);
+                uint32_t a;
+                if (!parse_alpha_tag(args[0], &a))
+                    continue;
                 for (i = 0; i < 4; ++i)
                     change_alpha(&state->c[i], a, pwr);
                 if (state->chat_enabled) {
@@ -4830,8 +4830,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++)
-                    vals[i] = (uint8_t) parse_alpha_tag(args[i]);
+                for (int i = 0; i < cnt; i++) {
+                    uint32_t value = 0;
+                    parse_alpha_tag(args[i], &value);
+                    vals[i] = value;
+                }
                 ass_gradient_apply_alpha(&state->gradient, 0, vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_alpha_gradient_layer(state, 0);
@@ -4849,8 +4852,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++)
-                    vals[i] = (uint8_t) parse_alpha_tag(args[i]);
+                for (int i = 0; i < cnt; i++) {
+                    uint32_t value = 0;
+                    parse_alpha_tag(args[i], &value);
+                    vals[i] = value;
+                }
                 ass_gradient_apply_alpha(&state->gradient, 1, vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_alpha_gradient_layer(state, 1);
@@ -4868,8 +4874,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++)
-                    vals[i] = (uint8_t) parse_alpha_tag(args[i]);
+                for (int i = 0; i < cnt; i++) {
+                    uint32_t value = 0;
+                    parse_alpha_tag(args[i], &value);
+                    vals[i] = value;
+                }
                 ass_gradient_apply_alpha(&state->gradient, 2, vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_border_alpha_gradient_layer(state, 0);
@@ -4886,8 +4895,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint8_t vals[4];
                 int cnt = FFMIN(nargs, 4);
-                for (int i = 0; i < cnt; i++)
-                    vals[i] = (uint8_t) parse_alpha_tag(args[i]);
+                for (int i = 0; i < cnt; i++) {
+                    uint32_t value = 0;
+                    parse_alpha_tag(args[i], &value);
+                    vals[i] = value;
+                }
                 ass_gradient_apply_alpha(&state->gradient, 3, vals, cnt, pwr);
                 if (!nested && pwr > 0.0)
                     disable_mangetsu_alpha_gradient_layer(state, 3);
@@ -4967,8 +4979,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->default_style.c[2];
             change_color(&state->chat_bubble.border, color, pwr);
         } else if (state->chat_enabled && tag("bubba")) {
-            uint32_t alpha = nargs ? parse_alpha_tag(args[0]) :
-                _a(state->default_style.c[2]);
+            uint32_t alpha = _a(state->default_style.c[2]);
+            if (nargs && !parse_alpha_tag(args[0], &alpha))
+                continue;
             change_alpha(&state->chat_bubble.border, alpha, pwr);
         } else if (state->chat_enabled && tag("bubbs")) {
             double size = nargs ? numeric_argtod(args[0],
@@ -4983,8 +4996,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->default_style.c[2];
             change_color(&state->chat_bubble.fill, color, pwr);
         } else if (state->chat_enabled && tag("buba")) {
-            uint32_t alpha = nargs ? parse_alpha_tag(args[0]) :
-                _a(state->default_style.c[2]);
+            uint32_t alpha = _a(state->default_style.c[2]);
+            if (nargs && !parse_alpha_tag(args[0], &alpha))
+                continue;
             change_alpha(&state->chat_bubble.fill, alpha, pwr);
         } else if (state->chat_enabled && tag("bc")) {
             uint32_t color = nargs ? parse_color_tag(args[0]) :
@@ -4998,8 +5012,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             replace_cycle_base_paint(state, 2, -1, pwr);
             sync_layer1_border(state);
         } else if (state->chat_enabled && tag("ba")) {
-            uint32_t alpha = nargs ? parse_alpha_tag(args[0]) :
-                _a(state->default_style.c[2]);
+            uint32_t alpha = _a(state->default_style.c[2]);
+            if (nargs && !parse_alpha_tag(args[0], &alpha))
+                continue;
             apply_all_border_alpha(state, alpha, pwr, nested);
         } else if (state->chat_enabled && tag("bs")) {
             double size = nargs ? numeric_argtod(args[0], state->border_x,
@@ -5049,7 +5064,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             column_default(COLUMN_STYLE_COLOR3);
         } else if (tag("1a")) {
             if (nargs) {
-                uint32_t val = parse_alpha_tag(args[0]);
+                uint32_t val;
+                if (!parse_alpha_tag(args[0], &val))
+                    continue;
                 change_alpha(&state->c[0], val, pwr);
             } else
                 change_alpha(&state->c[0],
@@ -5061,7 +5078,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             column_default(COLUMN_STYLE_ALPHA0);
         } else if (tag("2a")) {
             if (nargs) {
-                uint32_t val = parse_alpha_tag(args[0]);
+                uint32_t val;
+                if (!parse_alpha_tag(args[0], &val))
+                    continue;
                 change_alpha(&state->c[1], val, pwr);
             } else
                 change_alpha(&state->c[1],
@@ -5074,11 +5093,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("3a")) {
             uint32_t val;
             if (state->chat_enabled) {
-                val = nargs ? parse_alpha_tag(args[0]) :
-                    _a(state->default_style.c[2]);
+                val = _a(state->default_style.c[2]);
+                if (nargs && !parse_alpha_tag(args[0], &val))
+                    continue;
                 change_alpha(&state->chat_bubble.fill, val, pwr);
             } else if (nargs) {
-                val = parse_alpha_tag(args[0]);
+                if (!parse_alpha_tag(args[0], &val))
+                    continue;
                 apply_all_border_alpha(state, val, pwr, nested);
             } else
                 apply_all_border_alpha(state,
@@ -5088,7 +5109,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 column_default(COLUMN_STYLE_ALPHA2);
         } else if (tag("4a")) {
             if (nargs) {
-                uint32_t val = parse_alpha_tag(args[0]);
+                uint32_t val;
+                if (!parse_alpha_tag(args[0], &val))
+                    continue;
                 change_alpha(&state->c[3], val, pwr);
             } else
                 change_alpha(&state->c[3],
@@ -5101,11 +5124,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("5a")) {
             if (nargs) {
                 uint32_t val;
-                if (parse_decoration_alpha_arg(*args, &val)) {
-                    state->decoration_alpha = val;
-                    state->decoration_alpha_set = true;
-                    column_default(COLUMN_STYLE_DECORATION_ALPHA);
-                }
+                if (!parse_decoration_alpha_arg(*args, &val))
+                    continue;
+                state->decoration_alpha = val;
+                state->decoration_alpha_set = true;
+                column_default(COLUMN_STYLE_DECORATION_ALPHA);
             } else {
                 state->decoration_alpha_set = false;
                 column_default(COLUMN_STYLE_DECORATION_ALPHA);

@@ -132,11 +132,57 @@ such as `&HFFFFFF&` and `&H000000&`. They also accept these case-insensitive
 shortcuts: `$white`, `$siro`, and `$shiro` mean `&HFFFFFF&`; `$black` and
 `$kuro` mean `&H000000&`. The `$` prefix is required for named colors.
 
-Alpha-valued arguments continue to accept hexadecimal bytes such as `&H00&`
-and `&HFF&`. A bare ASCII decimal integer from `0` through `255` is also
-accepted and represents the same byte: `15` is `&H0F&`, `128` is `&H80&`, and
-`255` is `&HFF&`. Bare digit-only alpha values are decimal, not hexadecimal;
-out-of-range decimal values follow the parser's existing invalid-value handling.
+Alpha-valued paint arguments use ASS hexadecimal unless prefixed with `$`.
+This includes digit-only arguments: `\alpha50` means hexadecimal `0x50`
+(decimal 80), and `\alpha10` means hexadecimal `0x10` (decimal 16).
+The `$` prefix selects an explicit decimal byte from 0 through 255:
+
+```ass
+Hex alpha (ASS-compatible):
+\alpha&H80&
+\alpha80
+\1aFF
+
+Decimal alpha (Mangetsu extension):
+\alpha$128
+\1a$255
+\3a$100
+```
+
+Both spellings use inverse opacity: 0 is completely opaque and 255 is
+completely transparent. `$100` means alpha byte 100, never 100% transparency.
+Hexadecimal uses ASCII digits and `A`–`F`; `$` decimal also accepts Unicode
+[decimal digits](unicode-decimal-digits.md).
+
+The same rule applies to `\alpha`, `\1a` through `\5a`, `\Nba`, box-border
+alpha (`\bba`/`\Nbba`), chat alpha (`\buba`, `\bubba`,
+`\ba`), vector-alpha corners (`\va`, `\1va` through `\4va`, `\Nbva`,
+`\bbva`/`\Nbbva`), and alpha-gradient stops (`\1gra` through `\5gra`,
+`\Nbga`, `\bbga`/`\Nbbga`). It also applies to alpha fields in
+`\msgleft`/`\msgright` presets and to these paint arguments inside `\t`.
+Border indices retain their existing limits. For example:
+
+```ass
+{\1a$100\2a80\3a$200\4aFF}Mixed alpha spellings
+{\2bs8\2ba$128\1gra(0,$0,50%,80,$255)}Independent border and fill alpha
+{\alpha$0\t(0,1000,\alpha$255)}Fade through a transform
+```
+
+Malformed or out-of-range bytes are ignored without changing the current
+paint. Invalid vector, gradient, or preset tuples are rejected as a whole.
+Examples include `$256`, `$-1`, `$abc`, `$`, `$12xyz`, and unprefixed `100`
+(hexadecimal 256). An omitted argument retains the tag's existing reset
+behavior; invalid input is not an omitted argument.
+
+**Migration:** older Mangetsu subtitles using unprefixed decimal alpha must
+add `$`: change `\alpha128` to `\alpha$128` and a decimal alpha stop `128`
+to `$128`. There is no compatibility heuristic for unprefixed values.
+
+Standard ASS `\fade(a1,a2,a3,t1,t2,t3,t4)` retains decimal alpha parameters.
+SSA `AlphaLevel` style fields also retain their standard decimal meaning.
+Ordinary numeric arguments (angles, percentages, timings, coordinates) and
+color arguments are unchanged. Extended `\fad` color parameters remain
+colors, including their existing `+a` option.
 
 ## Gradient tags at a glance
 
