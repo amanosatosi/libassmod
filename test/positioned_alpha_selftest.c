@@ -145,6 +145,8 @@ static bool surfaces(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\1cyc(1,&H0000FF&,&H00FF00&)", "MMMM", IMAGE_TYPE_CHARACTER},
         {"\\polc&H0000FF&\\pols3\\polsp7\\zpol1", "MMMM", IMAGE_TYPE_CHARACTER},
         {"\\frz25\\fax0.2\\fry15", "MMMM", IMAGE_TYPE_CHARACTER},
+        {"\\ct(m -100 0 b -60 -40 60 -40 100 0)", "MMMM", IMAGE_TYPE_CHARACTER},
+        {"\\wtan5\\distort(1,0,1.1,1,0,1,0,0)", "MMMM", IMAGE_TYPE_CHARACTER},
         {"\\distort(1,0,1.1,1,0,1,0,0)", "MMMM", IMAGE_TYPE_CHARACTER},
     };
     bool ok = true;
@@ -194,6 +196,44 @@ static bool rectangles(ASS_Library *lib, ASS_Renderer *renderer)
     ok &= masked_pixels(lib,renderer,"\\clip(110,50,210,150)","MMMM",120,40,200,160,0,255,0);
     ok &= masked_pixels(lib,renderer,"\\iclip(145,70,175,130)","MMMM",120,40,200,160,0,255,0);
     ok &= masked_pixels(lib,renderer,"\\clip(m 100 40 l 220 40 220 160 100 160)","MMMM",120,40,200,160,0,255,0);
+    Frame a={0},b={0};
+    ok &= render(lib,renderer,"{" POS "}MMMM",0,&a) &&
+        render(lib,renderer,"{" POS "\\pgrdalpha(120.5,40.5,200.5,160.5,0,FF,FF)}MMMM",0,&b);
+    for(int y=0;y<H;y++)for(int x=0;x<W;x++)for(int c=0;c<4;c++) {
+        bool inside=x>=120 && x<=200 && y>=40 && y<=160;
+        if(pixel(&b,ART,x,y)[c]!=(inside?0:pixel(&a,ART,x,y)[c])) {
+            fprintf(stderr,"pixel-center inclusive boundary failed (%d,%d)\n",x,y);ok=false;goto boundary_done;
+        }
+    }
+boundary_done:release(&a);release(&b);
+    return ok;
+}
+static bool coordinate_mapping(ASS_Library *lib,ASS_Renderer *renderer)
+{
+    bool ok=true;
+    for(int config=0;config<2;config++) {
+        if(config) {
+            ass_set_margins(renderer,10,20,8,12);
+            ass_set_pixel_aspect(renderer,1.2);
+            ass_set_storage_size(renderer,640,400);
+        }
+        Frame opacity={0},color={0};
+        ok &= render(lib,renderer,"{\\an7\\pos(40,40)\\bord0\\shad0\\1c&HFFFFFF&\\p1"
+            "\\pgrdalpha(80,40,240,160,45,00,FF)}m 0 0 l 160 0 160 100 0 100",0,&opacity);
+        ok &= render(lib,renderer,"{\\an7\\pos(40,40)\\bord0\\shad0\\1c&HFFFFFF&\\p1"
+            "\\pgrd(80,40,240,160,45,&HFFFFFF&,&H000000&)}m 0 0 l 160 0 160 100 0 100",0,&color);
+        ok &= coverage(&opacity,ART)>0;
+        for(int y=0;y<H;y++)for(int x=0;x<W;x++) {
+            if(abs((int)pixel(&opacity,ART,x,y)[3]-(int)pixel(&color,ART,x,y)[0])>2) {
+                fprintf(stderr,"script/frame positioned coordinate map differs at (%d,%d) config%d\n",x,y,config);
+                ok=false;goto map_done;
+            }
+        }
+map_done:release(&opacity);release(&color);
+    }
+    ass_set_margins(renderer,0,0,0,0);
+    ass_set_pixel_aspect(renderer,1);
+    ass_set_storage_size(renderer,W,H);
     return ok;
 }
 static bool boxes(ASS_Library *lib, ASS_Renderer *renderer)
@@ -316,19 +356,37 @@ static bool transforms_and_events(ASS_Library *lib, ASS_Renderer *renderer)
         render(lib,renderer,"{\\an7\\pos(20,130)}MMMM",0,&expected);
     ok &= !memcmp(actual.pixels,expected.pixels,(size_t)PLANES*W*H*4);
     release(&actual);release(&expected);ass_free_track(track);
-    // Normal non-positioned dialogues collide vertically. Their mask must be
-    // sampled after the collision shift, not in the original event coordinates.
-    track=track_for(lib,"{\\pgrdalpha(0,0,320,100,0,$255,$255)}MMMM");
+    // Both dialogues use the same field but independent snapshots. Compare
+    // against unmasked collision placement: upper pixels must disappear, and
+    // lower pixels must remain exact after final event displacements.
+    const char *collision_mask="{\\pgrdalpha(0,0,320,100,0,$255,$255)}MMMM";
+    track=track_for(lib,collision_mask);
     if(!track)return false;
     index=ass_alloc_event(track);
     if(index<0){ass_free_track(track);return false;}
     next=&track->events[index];
-    next->Start=0;next->Duration=10000;next->Style=style_id;next->Text=malloc(64);
+    next->Start=0;next->Duration=10000;next->Style=style_id;next->Text=malloc(strlen(collision_mask)+1);
     if(!next->Text){ass_free_track(track);return false;}
-    strcpy(next->Text,"MMMM");
+    strcpy(next->Text,collision_mask);
     ok &= render_track(renderer,track,0,&actual);
-    ok &= coverage(&actual,ART)>0;
-    release(&actual);ass_free_track(track);
+    ass_free_track(track);
+    track=track_for(lib,"MMMM");if(!track){release(&actual);return false;}
+    index=ass_alloc_event(track);
+    if(index<0){ass_free_track(track);release(&actual);return false;}
+    next=&track->events[index];
+    next->Start=0;next->Duration=10000;next->Style=style_id;next->Text=malloc(5);
+    if(!next->Text){ass_free_track(track);release(&actual);return false;}
+    strcpy(next->Text,"MMMM");
+    ok &= render_track(renderer,track,0,&expected);
+    unsigned removed=0,retained=0;
+    for(int y=0;y<H;y++)for(int x=0;x<W;x++)for(int c=0;c<4;c++) {
+        uint8_t value=y<100?0:pixel(&expected,ART,x,y)[c];
+        ok &= pixel(&actual,ART,x,y)[c]==value;
+        removed += y<100 && pixel(&expected,ART,x,y)[c]>0;
+        retained += y>=100 && value>0;
+    }
+    if(!removed || !retained)ok=false;
+    release(&actual);release(&expected);ass_free_track(track);
     return ok;
 }
 static bool blend_output(ASS_Library *lib,ASS_Renderer *renderer)
@@ -366,7 +424,7 @@ int main(void)
     ass_set_fonts(renderer,font,"sans-serif",ASS_FONTPROVIDER_NONE,NULL,1);
     bool ok=true, group;
 #define RUN(test) do { group=test(lib,renderer); if(!group)fprintf(stderr,#test " failed\n"); ok &= group; } while(0)
-    RUN(rectangles); RUN(surfaces); RUN(boxes); RUN(scopes_and_parser);
+    RUN(rectangles); RUN(coordinate_mapping); RUN(surfaces); RUN(boxes); RUN(scopes_and_parser);
     RUN(transforms_and_events); RUN(blend_output);
 #undef RUN
     ass_renderer_done(renderer);ass_library_done(lib);return ok?0:1;
