@@ -30,8 +30,9 @@ move only the subtitle mask through this stationary field.
 
 Each target keeps its own rectangle, angle and stops. Setting paint does not
 enable its geometry: use karaoke tags, `\bord`/`\Nbs`, `\shad`, or `\u`/`\s`
-as appropriate. There are no positioned alpha fields, box-ring variants, or
-separate positioned waiting-outline (`\3sgrd`) tags.
+as appropriate. [Global positioned alpha](positioned-alpha.md) uses `\pgrdalpha`
+to multiply all non-box paint. There are no layer-specific positioned alpha
+fields, box-ring variants, or separate positioned waiting-outline (`\3sgrd`) tags.
 
 ## Arguments and stops
 

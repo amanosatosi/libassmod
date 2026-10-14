@@ -121,7 +121,7 @@ ass_free_images_rgba(rgba);
 ## Auto-switch suggestions
 
 - Always call `ass_render_frame_rgba` and composite the premultiplied tiles in order; the routine will still populate the legacy `ASS_Image` list, so you can keep both for compatibility.
-- Alternatively, inspect the subtitle text for `\1vc`..`\4vc`, `\1va`..`\4va`, `\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`, `\1bga`..`\10bga`, `\pgrd`, `\1pgrd`..`\5pgrd`, or `\1bpgrd`..`\10bpgrd` before rendering and only use RGBA when present.
+- Alternatively, inspect the subtitle text for `\1vc`..`\4vc`, `\1va`..`\4va`, `\1grd`..`\5grd`, `\1gra`..`\5gra`, `\1bgrd`..`\10bgrd`, `\1bga`..`\10bga`, `\pgrd`, `\1pgrd`..`\5pgrd`, `\pgrdalpha`, or `\1bpgrd`..`\10bpgrd` before rendering and only use RGBA when present.
 - If your app already calls `ass_render_frame`, use `ass_frame_needs_rgba(renderer)` or the new `ASS_RenderResult` wrapper to decide whether to render again with `ass_render_frame_rgba`.
 - For a single-call path, use `ass_render_frame_compat()` and then `ass_render_result_free()` to free any RGBA list. This keeps legacy output intact while enabling gradients when needed.
 
@@ -214,6 +214,7 @@ colors, including their existing `+a` option.
 
 ## Gradient tags at a glance
 
+- `\pgrdalpha(x1,y1,x2,y2,angle,alpha1,...,lastAlpha)` - independent global positioned opacity, multiplied into non-box artwork only inside its rectangle; see [global positioned alpha](positioned-alpha.md).
 - `\1vc(&HBBGGRR&, &HBBGGRR&, &HBBGGRR&, &HBBGGRR&)` - four corner colors for primary fill.
 - `\1va(&HAA&, &HAA&, &HAA&, &HAA&)` - per-corner alpha overrides.
 - `\1grd(angle,&HBBGGRR&,&HBBGGRR&)` through `\5grd(...)` - Mangetsu attached linear true gradients with percentage stops.

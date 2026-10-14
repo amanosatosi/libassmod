@@ -166,6 +166,7 @@ typedef struct {
     bool has_preset;
     ChatBubbleStyle empty_bubble;
     uint32_t receipt_color;
+    PositionedAlphaMask *receipt_mask;
     ASS_DRect bounds;
     double width, height;
     double stack_top;
@@ -402,6 +403,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (!render_priv)
         return;
 
+    ass_positioned_alpha_masks_clear(&render_priv->state);
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
 
@@ -755,6 +757,8 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                              ASS_RGBA_OWNER_EVENT, "rendered glyph tile");
     if (!img)
         return NULL;
+    if (info->positioned_alpha_mask && (!info->box_surface || type == IMAGE_TYPE_CHARACTER))
+        ass_rgba_image_set_positioned_alpha(img, info->positioned_alpha_mask);
     int rgba_stride = img->stride;
     uint8_t *rgba = img->rgba;
     uint8_t *blend_rgb = NULL;
@@ -3322,6 +3326,7 @@ static void capture_effective_default_state(RenderContext *state)
     capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
     style->gradient = state->gradient;
     style->mangetsu_gradient = state->mangetsu_gradient;
+    style->positioned_alpha_mask = state->positioned_alpha_mask;
     style->pattern = state->pattern;
     style->image_fill = state->image_fill;
     style->blend_mode = state->blend_mode;
@@ -3601,6 +3606,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->c[3] = style->BackColour;
     ass_gradient_state_reset(&state->gradient, state->c);
     ass_mangetsu_gradient_state_reset(&state->mangetsu_gradient);
+    state->positioned_alpha_mask = NULL;
     state->pattern = (TextPatternPaint) {0};
     state->secondary_outline = (KaraokeOutlinePaint) {0};
     for (int i = 0; i < 4; i++)
@@ -3979,6 +3985,7 @@ static void capture_column_base_style(RenderContext *state)
     capture_column_style(state, style, COLUMN_STYLE_ALL_FIELDS);
     style->gradient = state->gradient;
     style->mangetsu_gradient = state->mangetsu_gradient;
+    style->positioned_alpha_mask = state->positioned_alpha_mask;
     style->pattern = state->pattern;
     style->image_fill = state->image_fill;
     style->blend_mode = state->blend_mode;
@@ -4000,6 +4007,7 @@ static void apply_column_base_style(RenderContext *state)
     memcpy(state->c, style->c, sizeof(state->c));
     state->gradient = style->gradient;
     state->mangetsu_gradient = style->mangetsu_gradient;
+    state->positioned_alpha_mask = style->positioned_alpha_mask;
     state->pattern = style->pattern;
     state->image_fill = style->image_fill;
     state->blend_mode = style->blend_mode;
@@ -4264,6 +4272,7 @@ static void free_distortion_resources(RenderContext *state)
 
 static void free_render_context(RenderContext *state)
 {
+    ass_positioned_alpha_masks_clear(state);
     while (state->box_paints) {
         BS4Paint *paint = state->box_paints;
         state->box_paints = paint->next;
@@ -5639,6 +5648,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
             !ass_gradient_equal(&last->gradient, &info->gradient) ||
             !ass_mangetsu_gradient_state_equal(&last->mangetsu_gradient,
                                                &info->mangetsu_gradient) ||
+            last->positioned_alpha_mask != info->positioned_alpha_mask ||
             memcmp(&last->pattern, &info->pattern, sizeof(info->pattern)) ||
             !secondary_outline_equal(&last->secondary_outline,
                                      &info->secondary_outline) ||
@@ -5820,6 +5830,7 @@ static bool append_glyph_to_target(RenderContext *state,
         info->chat_bubble = state->chat_bubble;
     info->gradient = state->gradient;
     info->mangetsu_gradient = state->mangetsu_gradient;
+    info->positioned_alpha_mask = state->positioned_alpha_mask;
     info->pattern = state->pattern;
     info->secondary_outline = state->secondary_outline;
     info->image_fill = state->image_fill;
@@ -6547,6 +6558,7 @@ fail:
  * panel, header, receipt state, etc.) keep their ordinary inheritance. */
 static void chat_save_visual_state(RenderContext *state, ColumnStyleState *base)
 {
+    base->positioned_alpha_mask = state->positioned_alpha_mask;
     base->mask = 0;
     capture_column_style(state, base,
         COLUMN_STYLE_COLOR0 | COLUMN_STYLE_COLOR1 | COLUMN_STYLE_COLOR2 |
@@ -6570,6 +6582,7 @@ static void chat_save_visual_state(RenderContext *state, ColumnStyleState *base)
 static void chat_restore_visual_state(RenderContext *state,
                                        const ColumnStyleState *base)
 {
+    state->positioned_alpha_mask = base->positioned_alpha_mask;
     memcpy(state->c, base->c, 3 * sizeof(*state->c));
     memcpy(state->gradient.layer, base->gradient.layer,
            3 * sizeof(*base->gradient.layer));
@@ -6663,6 +6676,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event,
         if (preset)
             ranges[i].empty_bubble = state->chat_bubble;
         ranges[i].receipt_color = state->c[0];
+        ranges[i].receipt_mask = state->positioned_alpha_mask;
         if (preset && reset_serial == state->chat_reset_serial) {
             chat_restore_visual_state(state, &base);
             state->chat_bubble = base_bubble;
@@ -8933,6 +8947,13 @@ static void compute_mangetsu_gradient_rect_for_layer(
 
 static void compute_mangetsu_gradient_rects(RenderContext *state)
 {
+    ASS_Renderer *renderer = state->renderer;
+    for (PositionedAlphaMask *mask = state->positioned_alpha_masks; mask; mask = mask->next) {
+        MangetsuGradientLayer *layer = &mask->gradient;
+        ass_mangetsu_gradient_prepare_positioned(layer,
+            x2scr_pos_scaled(renderer, layer->script_x1), y2scr_pos(renderer, layer->script_y1),
+            x2scr_pos_scaled(renderer, layer->script_x2), y2scr_pos(renderer, layer->script_y2));
+    }
     /* Composite rings share allocation bounds. Measure their actual occupied
      * masks once, only for layers using attached paint, then share the result
      * between color and alpha and between runs in the same paint segment. */
@@ -9349,6 +9370,8 @@ static bool text_needs_rgba(const TextInfo *text_info)
             has_bitmap = info->bm_border[layer] != NULL;
         if (!info->bitmap_count || !has_bitmap)
             continue;
+        if (info->positioned_alpha_mask)
+            return true;
         if (info->blend_mode != ASS_BLEND_NORMAL)
             return true;
         if (info->fade_color.active && info->fade_color.amount > 0)
@@ -9555,6 +9578,8 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 }
                 current_info->gradient = info->gradient;
                 current_info->mangetsu_gradient = info->mangetsu_gradient;
+                current_info->positioned_alpha_mask = info->positioned_alpha_mask;
+                current_info->box_surface = info->border_style == 3;
                 current_info->pattern = info->pattern;
                 current_info->secondary_outline = info->secondary_outline;
                 current_info->image_fill = info->image_fill;
@@ -9802,6 +9827,8 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     memcpy(&current_info->base_c, &deco.c, sizeof(deco.c));
     current_info->gradient = deco.gradient;
     current_info->mangetsu_gradient = deco.mangetsu_gradient;
+    current_info->positioned_alpha_mask = deco.positioned_alpha_mask;
+    current_info->box_surface = deco.border_style == 3;
     current_info->pattern = (TextPatternPaint) {0};
     current_info->secondary_outline = deco.secondary_outline;
     current_info->image_fill = deco.image_fill;
@@ -10985,6 +11012,8 @@ static ASS_Image **append_bs4_bitmap(RenderContext *state, Bitmap *bitmap,
     CombinedBitmapInfo paint = {0};
     paint.base_c[0] = color;
     paint.c[0] = color;
+    if (type == IMAGE_TYPE_CHARACTER)
+        paint.positioned_alpha_mask = state->positioned_alpha_mask;
     paint.blend_mode = state->blend_mode;
     return render_glyph(state, &paint, bitmap, pos.x, pos.y, color, 0,
                         1000000, tail, type, NULL, 0, 0, rgba_tail);
@@ -11793,11 +11822,14 @@ static bool render_chat_scene(RenderContext *state, ASS_Event *event,
         if (mark) {
             double inset = FFMAX(1.0, m->bubble_gap * 0.4);
             double padding = FFMAX(0.0, m->bubble_pad - stroke_y - inset);
+            PositionedAlphaMask *saved_mask = state->positioned_alpha_mask;
+            state->positioned_alpha_mask = glyph ? glyph->positioned_alpha_mask : ranges[i].receipt_mask;
             box_tail = append_chat_receipt(state, mark,
                 bubble_x + bubble_width - stroke_x - inset,
                 ranges[i].stack_top + bubble_height - stroke_y - inset,
                 padding, FFMAX(0.0, bubble_width - 2 * (stroke_x + inset)),
                 glyph ? glyph->c[0] : ranges[i].receipt_color, box_tail, rgba_tail);
+            state->positioned_alpha_mask = saved_mask;
         }
     }
     state->chat_clip_active = false;
@@ -12059,6 +12091,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (chat) {
         bool ok = render_chat_scene(state, event, event_images, rgba_out,
                                     chat, ranges, &title, &chat_metrics);
+        event_images->has_positioned_alpha = state->positioned_alpha_masks != NULL;
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
         release_chat_scene(chat, chat_cached);
@@ -12424,6 +12457,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (rgba_out)
         *rgba_out = event_images->imgs_rgba;
 
+    event_images->has_positioned_alpha = state->positioned_alpha_masks != NULL;
     ass_shaper_cleanup(state->shaper, text_info);
     free_render_context(state);
 

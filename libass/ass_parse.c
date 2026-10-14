@@ -1703,7 +1703,7 @@ static bool parse_mangetsu_alpha_gradient_raw_args(char *start, char *end,
     (4 + 2 * MANGETSU_GRADIENT_MAX_STOPS - 1)
 
 static bool parse_mangetsu_positioned_gradient_raw_args(
-    char *start, char *end, MangetsuGradientLayer *out)
+    char *start, char *end, MangetsuGradientLayer *out, bool alpha)
 {
     struct arg args[MANGETSU_POSITIONED_GRADIENT_MAX_ARGS];
     int nargs = 0;
@@ -1718,7 +1718,8 @@ static bool parse_mangetsu_positioned_gradient_raw_args(
             !parse_double_arg_strict(args[1], &y1) ||
             !parse_double_arg_strict(args[2], &x2) ||
             !parse_double_arg_strict(args[3], &y2) ||
-            !parse_mangetsu_gradient_args(args + 4, nargs - 4, &parsed))
+            !(alpha ? parse_mangetsu_alpha_gradient_args(args + 4, nargs - 4, &parsed) :
+                       parse_mangetsu_gradient_args(args + 4, nargs - 4, &parsed)))
         return false;
 
     parsed.coordinate_mode = MANGETSU_GRADIENT_POSITIONED_RECT;
@@ -2073,6 +2074,32 @@ static bool transform_mangetsu_gradient_layer(RenderContext *state,
     return true;
 }
 
+static void apply_positioned_alpha_tag(RenderContext *state, char *name_end,
+                                        char *q, double pwr, bool nested)
+{
+    if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')')
+        return;
+    if (q == name_end + 2) {
+        /* Match positioned color gradients: nested resets are ignored. */
+        if (!nested)
+            state->positioned_alpha_mask = NULL;
+        return;
+    }
+    MangetsuGradientLayer target;
+    if (!parse_mangetsu_positioned_gradient_raw_args(name_end + 1, q - 1,
+                                                      &target, true))
+        return;
+    if (nested) {
+        MangetsuGradientLayer value = state->positioned_alpha_mask ?
+            state->positioned_alpha_mask->gradient : (MangetsuGradientLayer) {0};
+        if (!transform_mangetsu_gradient_layer(state, &value, &target, 0, pwr, true))
+            return;
+        target = value;
+    }
+    ass_positioned_alpha_mask_set(state, &target);
+    mark_rgba_needed(state);
+}
+
 static bool apply_mangetsu_positioned_gradient_tag(
     RenderContext *state, MangetsuGradientTarget target, int layer,
     char *name_end, char *q, double pwr, bool nested)
@@ -2104,7 +2131,7 @@ static bool apply_mangetsu_positioned_gradient_tag(
 
     MangetsuGradientLayer gradient;
     if (!parse_mangetsu_positioned_gradient_raw_args(raw_start, raw_end,
-                                                      &gradient))
+                                                      &gradient, false))
         return true;
 
     /* Reject incompatible transforms before touching any paint state. */
@@ -3786,6 +3813,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
              chat_structural_name_is(p, name_end, "msg")))
             continue;
 
+        if ((size_t) (name_end - p) >= 9 && !memcmp(p, "pgrdalpha", 9)) {
+            if (name_end - p == 9)
+                apply_positioned_alpha_tag(state, name_end, q, pwr, nested);
+            continue;
+        }
         // New tags introduced in vsfilter 2.39
         int numbered_border_layer = -1;
         struct arg numbered_border_arg = { NULL, NULL };

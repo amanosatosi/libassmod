@@ -374,6 +374,58 @@ uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
     return buffer;
 }
 
+static void positioned_alpha_unref(PositionedAlphaMask *mask)
+{
+    if (mask && !--mask->references)
+        free(mask);
+}
+
+void ass_positioned_alpha_mask_set(RenderContext *state,
+                                    const MangetsuGradientLayer *gradient)
+{
+    MangetsuGradientLayer value = *gradient;
+    /* Global masks have no attached segment identity. Intern equal snapshots
+     * so every surface in a scope shares one immutable field. */
+    value.segment_id = 0;
+    for (PositionedAlphaMask *mask = state->positioned_alpha_masks; mask; mask = mask->next) {
+        if (ass_mangetsu_gradient_layer_equal(&mask->gradient, &value)) {
+            state->positioned_alpha_mask = mask;
+            return;
+        }
+    }
+    PositionedAlphaMask *mask = malloc(sizeof(*mask));
+    if (!mask)
+        return;
+    *mask = (PositionedAlphaMask) {
+        .gradient = value, .references = 1, .next = state->positioned_alpha_masks,
+    };
+    state->positioned_alpha_masks = mask;
+    state->positioned_alpha_mask = mask;
+}
+
+void ass_positioned_alpha_masks_clear(RenderContext *state)
+{
+    while (state->positioned_alpha_masks) {
+        PositionedAlphaMask *mask = state->positioned_alpha_masks;
+        state->positioned_alpha_masks = mask->next;
+        mask->next = NULL;
+        positioned_alpha_unref(mask);
+    }
+    state->positioned_alpha_mask = NULL;
+}
+
+void ass_rgba_image_set_positioned_alpha(ASS_ImageRGBA *image,
+                                         PositionedAlphaMask *mask)
+{
+    ASS_ImageRGBAPriv *priv = ass_rgba_image_private(image, "positioned alpha snapshot");
+    if (!priv || priv->positioned_alpha_mask == mask)
+        return;
+    if (mask)
+        mask->references++;
+    positioned_alpha_unref(priv->positioned_alpha_mask);
+    priv->positioned_alpha_mask = mask;
+}
+
 ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
                                     int dst_x, int dst_y, int type,
                                     ASS_RGBAOwner owner,
@@ -413,6 +465,7 @@ ASS_ImageRGBA *ass_rgba_image_alloc(ASS_Renderer *priv, int w, int h,
     img->blend_alloc_size = 0;
     img->blend_stride = 0;
     img->blend_mode = ASS_BLEND_NORMAL;
+    img->positioned_alpha_mask = NULL;
     ass_aligned_retag(buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, img,
                       allocation_site);
 #ifndef NDEBUG
@@ -493,6 +546,7 @@ void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img)
 #endif
     ass_aligned_free_tagged(
         rgba_priv->buffer, ASS_ALIGNED_ALLOC_RGBA_IMAGE, rgba_priv);
+    positioned_alpha_unref(rgba_priv->positioned_alpha_mask);
     free(rgba_priv->blend_rgb);
     free(rgba_priv);
 }
@@ -730,6 +784,187 @@ static ASS_ImageRGBA *convert_images_to_rgba(ASS_Renderer *priv, ASS_Image *imgs
     return head;
 }
 
+/* With original transmittance T above this surface and common mask opacity
+ * m, scale its premultiplied RGBA by m*T/(1-m+m*T). The resulting ordered
+ * source-over stack equals masking the completed artwork once, rather than
+ * making intersecting borders/shadows increasingly opaque. Q16 transmittance
+ * avoids cumulative byte rounding; straight blend RGB remains untouched. */
+static void positioned_alpha_scale_pixel(uint8_t pixel[4], unsigned opacity,
+                                          unsigned transmittance)
+{
+    if (opacity == 255)
+        return; // Including hidden pixels: an opaque mask is an exact identity.
+    if (!opacity) {
+        memset(pixel, 0, 4);
+        return;
+    }
+    unsigned numerator = opacity * transmittance;
+    unsigned denominator = 255u * 65535 - opacity * (65535 - transmittance);
+    for (int c = 0; c < 4; c++)
+        pixel[c] = (pixel[c] * numerator + denominator / 2) / denominator;
+}
+
+static uint8_t positioned_alpha_opacity(const PositionedAlphaMask *mask, int x, int y)
+{
+    uint8_t alpha;
+    return ass_mangetsu_positioned_gradient_sample_alpha(&mask->gradient,
+        x + 0.5, y + 0.5, &alpha) ? 255 - alpha : 255;
+}
+
+/* Allocation-free, front-to-back fallback: upper surfaces are still original.
+ * It has the same coverage math, with extra tile searches only on OOM. */
+static void positioned_alpha_apply_without_scratch(ASS_Renderer *renderer,
+                                                   ASS_ImageRGBA *images)
+{
+    for (ASS_ImageRGBA *img = images; img; img = img->next) {
+        PositionedAlphaMask *mask = ((ASS_ImageRGBAPriv *) img)->positioned_alpha_mask;
+        if (!mask || !ass_rgba_image_view_valid(img, "positioned alpha fallback"))
+            continue;
+        int x0 = FFMAX(img->dst_x, 0), y0 = FFMAX(img->dst_y, 0);
+        int x1 = FFMIN((int64_t) img->dst_x + img->w, renderer->width);
+        int y1 = FFMIN((int64_t) img->dst_y + img->h, renderer->height);
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            uint8_t opacity = positioned_alpha_opacity(mask, x, y);
+            if (opacity == 255)
+                continue;
+            unsigned transmittance = 65535;
+            for (ASS_ImageRGBA *above = img->next; above; above = above->next) {
+                if (((ASS_ImageRGBAPriv *) above)->positioned_alpha_mask != mask ||
+                        x < above->dst_x || y < above->dst_y ||
+                        (int64_t) x >= (int64_t) above->dst_x + above->w ||
+                        (int64_t) y >= (int64_t) above->dst_y + above->h)
+                    continue;
+                const uint8_t *p = above->rgba + (size_t) (y - above->dst_y) * above->stride +
+                    (size_t) (x - above->dst_x) * 4;
+                transmittance = (transmittance * (255 - p[3]) + 127) / 255;
+            }
+            uint8_t *p = img->rgba + (size_t) (y - img->dst_y) * img->stride +
+                (size_t) (x - img->dst_x) * 4;
+            positioned_alpha_scale_pixel(p, opacity, transmittance);
+        }
+    }
+}
+
+static uint64_t positioned_alpha_hash_value(uint64_t hash, uint64_t value)
+{
+    return (hash ^ value) * UINT64_C(1099511628211);
+}
+
+static uint64_t positioned_alpha_hash_double(uint64_t hash, double value)
+{
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return positioned_alpha_hash_value(hash, bits);
+}
+
+/* ASS_Image change detection cannot see this independent RGBA-only effect.
+ * Hash its numeric snapshot and surface assignment, never pointers/padding. */
+static uint64_t positioned_alpha_fingerprint(ASS_ImageRGBA *images)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (ASS_ImageRGBA *img = images; img; img = img->next) {
+        PositionedAlphaMask *mask = ((ASS_ImageRGBAPriv *) img)->positioned_alpha_mask;
+        if (!mask)
+            continue;
+        const MangetsuGradientLayer *g = &mask->gradient;
+        const double values[] = {g->angle, g->script_x1, g->script_y1,
+            g->script_x2, g->script_y2, g->positioned_rect.left, g->positioned_rect.top,
+            g->positioned_rect.right, g->positioned_rect.bottom};
+        for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+            hash = positioned_alpha_hash_double(hash, values[i]);
+        hash = positioned_alpha_hash_value(hash, g->n_stops);
+        for (int stop = 0; stop < g->n_stops; stop++) {
+            hash = positioned_alpha_hash_double(hash, g->stops[stop].offset);
+            hash = positioned_alpha_hash_value(hash, g->stops[stop].color);
+        }
+        const int geometry[] = {img->dst_x, img->dst_y, img->w, img->h, img->type};
+        for (unsigned i = 0; i < sizeof(geometry) / sizeof(geometry[0]); i++)
+            hash = positioned_alpha_hash_value(hash, (uint32_t) geometry[i]);
+    }
+    return hash ? hash : 1;
+}
+
+uint64_t ass_rgba_apply_positioned_alpha(ASS_Renderer *renderer, ASS_ImageRGBA *images)
+{
+    size_t count = 0;
+    for (ASS_ImageRGBA *img = images; img; img = img->next)
+        if (((ASS_ImageRGBAPriv *) img)->positioned_alpha_mask)
+            count++;
+    if (!count)
+        return 0;
+    uint64_t fingerprint = positioned_alpha_fingerprint(images);
+    ASS_ImageRGBA **tiles = ass_realloc_array(NULL, count, sizeof(*tiles));
+    unsigned *transmittance = ass_realloc_array(NULL, renderer->width, sizeof(*transmittance));
+    uint8_t *opacities = malloc(renderer->width);
+    if (!tiles || !transmittance || !opacities) {
+        free(tiles); free(transmittance); free(opacities);
+        positioned_alpha_apply_without_scratch(renderer, images);
+        goto release;
+    }
+    size_t n = 0;
+    for (ASS_ImageRGBA *img = images; img; img = img->next)
+        if (((ASS_ImageRGBAPriv *) img)->positioned_alpha_mask &&
+                ass_rgba_image_view_valid(img, "positioned alpha surface"))
+            tiles[n++] = img;
+    for (size_t group = 0; group < n; group++) {
+        PositionedAlphaMask *mask = ((ASS_ImageRGBAPriv *) tiles[group])->positioned_alpha_mask;
+        bool seen = false;
+        for (size_t i = 0; i < group; i++)
+            seen |= ((ASS_ImageRGBAPriv *) tiles[i])->positioned_alpha_mask == mask;
+        if (seen || !mask->gradient.positioned_rect.valid)
+            continue;
+        bool opaque = true;
+        for (int stop = 0; stop < mask->gradient.n_stops; stop++)
+            opaque &= mask->gradient.stops[stop].color == 0;
+        if (opaque)
+            continue;
+        const MangetsuGradientPositionedRect *rect = &mask->gradient.positioned_rect;
+        int x0 = renderer->width, x1 = 0, y0 = renderer->height, y1 = 0;
+        for (size_t i = group; i < n; i++) {
+            ASS_ImageRGBA *img = tiles[i];
+            if (((ASS_ImageRGBAPriv *) img)->positioned_alpha_mask != mask)
+                continue;
+            x0 = FFMIN(x0, FFMAX(img->dst_x, 0));
+            y0 = FFMIN(y0, FFMAX(img->dst_y, 0));
+            x1 = FFMAX(x1, FFMIN((int64_t) img->dst_x + img->w, renderer->width));
+            y1 = FFMAX(y1, FFMIN((int64_t) img->dst_y + img->h, renderer->height));
+        }
+        // Match positioned color inclusion at pixel centers, without casting huge coordinates.
+        x0 = FFMAX(x0, (int) fmin(renderer->width, fmax(0, ceil(rect->left - 0.5))));
+        y0 = FFMAX(y0, (int) fmin(renderer->height, fmax(0, ceil(rect->top - 0.5))));
+        x1 = FFMIN(x1, (int) fmin(renderer->width, fmax(0, floor(rect->right - 0.5) + 1)));
+        y1 = FFMIN(y1, (int) fmin(renderer->height, fmax(0, floor(rect->bottom - 0.5) + 1)));
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++) {
+                transmittance[x] = 65535;
+                opacities[x] = positioned_alpha_opacity(mask, x, y);
+            }
+            for (size_t i = n; i-- > group;) {
+                ASS_ImageRGBA *img = tiles[i];
+                if (((ASS_ImageRGBAPriv *) img)->positioned_alpha_mask != mask ||
+                        y < img->dst_y || (int64_t) y >= (int64_t) img->dst_y + img->h)
+                    continue;
+                int left = FFMAX(x0, img->dst_x);
+                int right = FFMIN(x1, (int64_t) img->dst_x + img->w);
+                uint8_t *row = img->rgba + (size_t) (y - img->dst_y) * img->stride;
+                for (int x = left; x < right; x++) {
+                    uint8_t *p = row + (size_t) (x - img->dst_x) * 4;
+                    unsigned alpha = p[3];
+                    positioned_alpha_scale_pixel(p, opacities[x], transmittance[x]);
+                    transmittance[x] = (transmittance[x] * (255 - alpha) + 127) / 255;
+                }
+            }
+        }
+    }
+    free(tiles); free(transmittance); free(opacities);
+release:
+    // Returned hardware-compatible tiles own no mutable mask state. Also makes
+    // accidental repeat calls identities and avoids references crossing frames.
+    for (ASS_ImageRGBA *img = images; img; img = img->next)
+        ass_rgba_image_set_positioned_alpha(img, NULL);
+    return fingerprint;
+}
+
 ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
                                      long long now, int *detect_change)
 {
@@ -770,12 +1005,18 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
         ass_fix_collisions(priv, last, priv->eimg + cnt - last);
 
     ASS_Image **tail = &priv->images_root;
+    uint64_t alpha_fingerprint = 0;
     for (int i = 0; i < cnt; i++) {
         ASS_Image *cur = priv->eimg[i].imgs;
         while (cur) {
             *tail = cur;
             tail = &cur->next;
             cur = cur->next;
+        }
+        if (priv->eimg[i].has_positioned_alpha) {
+            uint64_t fingerprint = ass_rgba_apply_positioned_alpha(priv, priv->eimg[i].imgs_rgba);
+            if (fingerprint)
+                alpha_fingerprint = positioned_alpha_hash_value(alpha_fingerprint, fingerprint);
         }
         ASS_ImageRGBA *rcur = priv->eimg[i].imgs_rgba;
         /* Transfer the entire event-local list before exposing any node in
@@ -798,8 +1039,12 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
 
     ass_frame_ref(priv->images_root);
 
-    if (detect_change)
+    if (detect_change) {
         *detect_change = ass_detect_change(priv);
+        if (alpha_fingerprint != priv->positioned_alpha_fingerprint)
+            *detect_change = 2;
+    }
+    priv->positioned_alpha_fingerprint = alpha_fingerprint;
 
     ass_frame_unref(priv->prev_images_root);
     priv->prev_images_root = NULL;

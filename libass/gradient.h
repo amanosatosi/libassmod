@@ -170,4 +170,7 @@ void ass_mangetsu_gradient_prepare_positioned(MangetsuGradientLayer *layer,
 bool ass_mangetsu_positioned_gradient_sample_color(
     const MangetsuGradientLayer *layer, double x, double y, uint32_t *color);
 
+bool ass_mangetsu_positioned_gradient_sample_alpha(
+    const MangetsuGradientLayer *layer, double x, double y, uint8_t *alpha);
+
 #endif /* LIBASS_GRADIENT_H */

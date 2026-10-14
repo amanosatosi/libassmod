@@ -104,3 +104,9 @@ run-checkasm: checkasm/checkasm$(EXEEXT)
 
 run-checkasm-bench: checkasm/checkasm$(EXEEXT)
 	checkasm/checkasm$(EXEEXT) --bench
+
+check_PROGRAMS += test/positioned_alpha_unit
+TESTS += test/positioned_alpha_unit$(EXEEXT)
+test_positioned_alpha_unit_SOURCES = test/positioned_alpha_selftest.c
+test_positioned_alpha_unit_LDADD = libass/libass_internal.la
+test_positioned_alpha_unit_LDFLAGS = $(AM_LDFLAGS) -static

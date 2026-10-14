@@ -134,6 +134,14 @@ static inline uint8_t ass_blend_compose_channel(ASS_BlendMode mode,
                        blended * (alpha + 1)) >> 8);
 }
 
+/* One immutable override snapshot shared by glyphs, never by dialogue events.
+ * Context owns the pool; rendered tiles hold references until final masking. */
+typedef struct PositionedAlphaMask {
+    MangetsuGradientLayer gradient;
+    unsigned references;
+    struct PositionedAlphaMask *next;
+} PositionedAlphaMask;
+
 typedef struct ass_image_rgba_priv {
     ASS_ImageRGBA result;
     /* Always the exact base returned by ass_aligned_alloc(), never a view. */
@@ -144,6 +152,7 @@ typedef struct ass_image_rgba_priv {
     size_t blend_alloc_size;
     int blend_stride;
     ASS_BlendMode blend_mode;
+    PositionedAlphaMask *positioned_alpha_mask;
 #ifndef NDEBUG
     uint64_t magic;
     uint64_t allocation_id;
@@ -184,6 +193,7 @@ typedef struct {
     int shift_direction;
     ASS_Event *event;
     bool needs_rgba;
+    bool has_positioned_alpha;
 } EventImages;
 
 typedef enum {
@@ -366,6 +376,7 @@ typedef struct {
     CompositeHashValue *image;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    PositionedAlphaMask *positioned_alpha_mask;
     GradientRect border_paint_bounds[ASS_BORDER_LAYERS_MAX];
     TextPatternPaint pattern;
     ImageFillState image_fill;
@@ -378,6 +389,7 @@ typedef struct {
     uint8_t draw_sub_x;
     uint8_t draw_sub_y;
     bool from_drawing;
+    bool box_surface; // BS3 background/box shadow, exempt except character paint
     ASS_BlendMode blend_mode;
 } CombinedBitmapInfo;
 
@@ -440,6 +452,7 @@ typedef struct glyph_info {
     ChatBubbleStyle chat_bubble;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    PositionedAlphaMask *positioned_alpha_mask;
     TextPatternPaint pattern;
     KaraokeOutlinePaint secondary_outline;
     ImageFillState image_fill;
@@ -656,6 +669,7 @@ typedef struct {
     uint32_t c[4];
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    PositionedAlphaMask *positioned_alpha_mask;
     TextPatternPaint pattern;
     ImageFillState image_fill;
     ASS_BlendMode blend_mode;
@@ -845,8 +859,10 @@ struct render_context {
     unsigned chat_reset_serial;
     GradientState gradient;
     MangetsuGradientState mangetsu_gradient;
+    PositionedAlphaMask *positioned_alpha_mask;
     TextPatternPaint pattern;
     KaraokeOutlinePaint secondary_outline;
+    PositionedAlphaMask *positioned_alpha_masks;
     int mangetsu_gradient_next_id;
     uint32_t pattern_cycle_serial;
     CyclePalette *cycle_palettes;
@@ -997,6 +1013,7 @@ struct ass_renderer {
     ASS_Settings settings;
     int render_id;
     bool frame_needs_rgba;
+    uint64_t positioned_alpha_fingerprint;
     bool rgba_output_limit_hit;
     size_t rgba_output_size;
     size_t rgba_output_max_size;
@@ -1087,6 +1104,13 @@ void ass_rgba_image_replace_buffer(ASS_ImageRGBA *img, uint8_t *buffer,
                                    size_t alloc_size, int w, int h,
                                    int stride);
 void ass_rgba_image_free(ASS_Renderer *priv, ASS_ImageRGBA *img);
+void ass_positioned_alpha_mask_set(RenderContext *state,
+                                    const MangetsuGradientLayer *gradient);
+void ass_positioned_alpha_masks_clear(RenderContext *state);
+void ass_rgba_image_set_positioned_alpha(ASS_ImageRGBA *image,
+                                         PositionedAlphaMask *mask);
+uint64_t ass_rgba_apply_positioned_alpha(ASS_Renderer *renderer, ASS_ImageRGBA *images);
+
 ASS_ImageRGBAPriv *ass_rgba_image_private(ASS_ImageRGBA *img,
                                            const char *operation);
 bool ass_rgba_image_view_valid(ASS_ImageRGBA *img, const char *operation);

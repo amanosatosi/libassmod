@@ -107,3 +107,7 @@ ring changes the composite allocation. The fixture checks every mask pixel,
 the sampled colors in the common covered region, and both gradient endpoints;
 it does not require byte-identical blurred allocations. Other mask/color
 comparisons retain exact equality where the geometry and allocation are equal.
+
+Global positioned opacity is available through [`\pgrdalpha`](positioned-alpha.md).
+It combines with existing alpha on non-box surfaces, preserves paint outside
+its fixed rectangle, and excludes all box backgrounds and borders.
