@@ -5696,6 +5696,14 @@ static int event_has_override_names(char *str, const char *const *names,
                 if (*scan == '\\') {
                     for (size_t i = 0; i < count; i++) {
                         char *p = scan + 1;
+                        /* A global paint mask must not look like drawing \p
+                         * to selective style overrides or margin placement. */
+                        if (!strcmp(names[i], "p")) {
+                            char *mask_name = p;
+                            if (end ? ass_override_prefix(&mask_name, limit, "pgrdalpha") :
+                                      mystrcmp(&mask_name, "pgrdalpha"))
+                                continue;
+                        }
                         if (end ? ass_override_prefix(&p, limit, names[i]) :
                                   mystrcmp(&p, names[i])) {
                             if (clip_transforms) {

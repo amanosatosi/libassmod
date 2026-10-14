@@ -234,6 +234,16 @@ map_done:release(&opacity);release(&color);
     ass_set_margins(renderer,0,0,0,0);
     ass_set_pixel_aspect(renderer,1);
     ass_set_storage_size(renderer,W,H);
+    ass_set_use_margins(renderer,1);
+    ass_set_margins(renderer,10,20,8,12);
+    ass_set_line_position(renderer,23);
+    ok &= equal(lib,renderer,"{\\pgrdalpha(-1000,-1000,-900,-900,0,FF,FF)}MMMM",
+                 "MMMM",0,"global paint must not change normal margin/line placement");
+    ok &= equal(lib,renderer,"{\\bs4\\boxp12\\pgrdalpha(-1000,-1000,-900,-900,0,FF,FF)}MMMM",
+                 "{\\bs4\\boxp12}MMMM",0,"global paint must not displace boxes");
+    ass_set_line_position(renderer,0);
+    ass_set_use_margins(renderer,0);
+    ass_set_margins(renderer,0,0,0,0);
     return ok;
 }
 static bool boxes(ASS_Library *lib, ASS_Renderer *renderer)
