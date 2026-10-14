@@ -46,13 +46,17 @@ static bool render_track(ASS_Renderer *renderer, ASS_Track *track, long long now
     }
     ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, now, NULL);
     bool ok = ass_composite_images_bgra(images, f->video, W, H, W * 4) == 0;
+    if(!ok)fprintf(stderr,"BGRA composite rejected rendered tiles\n");
     for (ASS_ImageRGBA *img = images; img; img = img->next) {
         if (img->type > 2) { ok = false; continue; }
         for (int y = 0; y < img->h; y++) for (int x = 0; x < img->w; x++) {
             int px = img->dst_x + x, py = img->dst_y + y;
             if (px < 0 || px >= W || py < 0 || py >= H) continue;
             const uint8_t *s = img->rgba + (size_t) y * img->stride + 4 * x;
-            for (int c = 0; c < 3; c++) if (s[c] > s[3]) ok = false;
+            for (int c = 0; c < 3; c++) if (s[c] > s[3]) {
+                fprintf(stderr,"non-premultiplied surface: type%u (%d,%d) c%d=%u alpha=%u\n",img->type,px,py,c,s[c],s[3]);
+                ok = false;
+            }
             for (int j = 0; j < 2; j++) {
                 uint8_t *d = pixel(f, j ? ART : img->type, px, py);
                 for (int c = 0; c < 4; c++) d[c] = s[c] + (d[c] * (255 - s[3]) + 127) / 255;
@@ -67,6 +71,7 @@ static bool render(ASS_Library *lib, ASS_Renderer *renderer, const char *text, l
     ASS_Track *track = track_for(lib, text);
     if (!track) return false;
     bool ok = render_track(renderer, track, now, f);
+    if(!ok)fprintf(stderr,"render failed: %s\n",text);
     ass_free_track(track); return ok;
 }
 static bool equal(ASS_Library *lib, ASS_Renderer *renderer, const char *a, const char *b,
@@ -298,10 +303,11 @@ static bool transforms_and_events(ASS_Library *lib, ASS_Renderer *renderer)
                  "{" POS HALF "}MMMM",500,"nested reset matches positioned gradient policy");
     ASS_Track *track=track_for(lib,"{\\an7\\pos(20,40)" FULL "}MMMM");
     if(!track)return false;
+    int style_id=track->events[0].Style;
     int index=ass_alloc_event(track);
     if(index<0){ass_free_track(track);return false;}
     ASS_Event *next=&track->events[index];
-    next->Start=0;next->Duration=10000;next->Style=0;
+    next->Start=0;next->Duration=10000;next->Style=style_id;
     next->Text=malloc(128);
     if(!next->Text){ass_free_track(track);return false;}
     strcpy(next->Text,"{\\an7\\pos(20,130)" OPAQUE "}MMMM");
@@ -317,7 +323,7 @@ static bool transforms_and_events(ASS_Library *lib, ASS_Renderer *renderer)
     index=ass_alloc_event(track);
     if(index<0){ass_free_track(track);return false;}
     next=&track->events[index];
-    next->Start=0;next->Duration=10000;next->Style=0;next->Text=malloc(64);
+    next->Start=0;next->Duration=10000;next->Style=style_id;next->Text=malloc(64);
     if(!next->Text){ass_free_track(track);return false;}
     strcpy(next->Text,"MMMM");
     ok &= render_track(renderer,track,0,&actual);
@@ -358,11 +364,10 @@ int main(void)
     ASS_Renderer *renderer=ass_renderer_init(lib);if(!renderer){ass_library_done(lib);return 2;}
     ass_set_frame_size(renderer,W,H);ass_set_storage_size(renderer,W,H);
     ass_set_fonts(renderer,font,"sans-serif",ASS_FONTPROVIDER_NONE,NULL,1);
-    bool ok=rectangles(lib,renderer);
-    ok &= surfaces(lib,renderer);
-    ok &= boxes(lib,renderer);
-    ok &= scopes_and_parser(lib,renderer);
-    ok &= transforms_and_events(lib,renderer);
-    ok &= blend_output(lib,renderer);
+    bool ok=true, group;
+#define RUN(test) do { group=test(lib,renderer); if(!group)fprintf(stderr,#test " failed\n"); ok &= group; } while(0)
+    RUN(rectangles); RUN(surfaces); RUN(boxes); RUN(scopes_and_parser);
+    RUN(transforms_and_events); RUN(blend_output);
+#undef RUN
     ass_renderer_done(renderer);ass_library_done(lib);return ok?0:1;
 }
