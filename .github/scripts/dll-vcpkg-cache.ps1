@@ -20,6 +20,12 @@ function Get-ArchiveInventory {
     return @{ fingerprint = Get-TextHash ($entries -join "`n"); count = $files.Count }
 }
 
+if ($Phase -eq 'key') {
+    # runner.temp is available on the executing runner, not in job-level env
+    # expressions. Publish the absolute path for subsequent actions/steps.
+    $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+    "VCPKG_DEFAULT_BINARY_CACHE=$env:VCPKG_DEFAULT_BINARY_CACHE" >> $env:GITHUB_ENV
+}
 New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 $inventoryPath = Join-Path $env:RUNNER_TEMP 'dll-vcpkg-inventory.json'
 if ($Phase -eq 'key') {

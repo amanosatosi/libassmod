@@ -12,7 +12,6 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
       BUILD_DIR: build-ci
       VCPKG_PACKAGES: freetype fribidi harfbuzz pkgconf
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}\vcpkg-binary-cache
       VCPKG_BINARY_SOURCES: clear;default,readwrite
     permissions:
       contents: read
