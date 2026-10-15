@@ -45,8 +45,18 @@ jobs:
             $command = Get-Command $tool.Name -ErrorAction SilentlyContinue
             $compatible = $false
             if ($command) {
-              $version = (& $command.Source --version | Select-Object -First 1).Trim()
-              $compatible = $LASTEXITCODE -eq 0 -and [version]$version -ge $tool.Minimum -and [version]$version -lt $tool.Maximum
+              # Drain stdout before reading the exit code: Select-Object
+              # -First can stop a native version probe's pipeline early.
+              $versionOutput = @(& $command.Source --version)
+              $versionExit = $LASTEXITCODE
+              $version = ([string]$versionOutput[0]).Trim()
+              $parsed = $null
+              # VS Ninja can append .git.kitware.jobserver-pipe-*.
+              if ($version -match '^(\d+\.\d+(?:\.\d+){0,2})(?:[.-].*)?$') {
+                $parsed = [version]$Matches[1]
+              }
+              $compatible = ($null -eq $versionExit -or $versionExit -eq 0) -and
+                $null -ne $parsed -and $parsed -ge $tool.Minimum -and $parsed -lt $tool.Maximum
               Write-Host "$($tool.Name): $version ($($command.Source)); compatible: $compatible"
             }
             if (!$compatible) { $pythonTools += $tool.Package }
