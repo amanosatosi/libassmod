@@ -11,6 +11,12 @@ jobs:
       VCPKG_ROOT: C:\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
       BUILD_DIR: build-ci
+      VCPKG_PACKAGES: freetype fribidi harfbuzz pkgconf
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}\vcpkg-binary-cache
+      VCPKG_BINARY_SOURCES: clear;default,readwrite
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         shell: pwsh
@@ -23,29 +29,105 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install meson ninja
-          choco install nasm -y
-
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Install missing build tools
+        run: |
+          # MSVC adds its bundled Ninja to PATH. Probe the actual runner;
+          # the image inventory is not a promise that every tool is on PATH.
+          $pythonTools = @()
+          foreach ($tool in @(
+            @{ Name = 'meson'; Minimum = [version]'1.9'; Maximum = [version]'2.0'; Package = 'meson>=1.9,<2' },
+            @{ Name = 'ninja'; Minimum = [version]'1.10'; Maximum = [version]'2.0'; Package = 'ninja>=1.10,<2' }
+          )) {
+            $command = Get-Command $tool.Name -ErrorAction SilentlyContinue
+            $compatible = $false
+            if ($command) {
+              $version = (& $command.Source --version | Select-Object -First 1).Trim()
+              $compatible = $LASTEXITCODE -eq 0 -and [version]$version -ge $tool.Minimum -and [version]$version -lt $tool.Maximum
+              Write-Host "$($tool.Name): $version ($($command.Source)); compatible: $compatible"
+            }
+            if (!$compatible) { $pythonTools += $tool.Package }
+          }
+          if ($pythonTools.Count) {
+            python -m pip install --disable-pip-version-check @pythonTools
+            if ($LASTEXITCODE) { throw 'Build-tool installation failed' }
+          }
+          $nasm = Get-Command nasm.exe -ErrorAction SilentlyContinue
+          if (!$nasm -and (Test-Path 'C:\Program Files\NASM\nasm.exe')) {
+            $env:PATH = "C:\Program Files\NASM;$env:PATH"
+            $nasm = Get-Command nasm.exe -ErrorAction Stop
+          }
+          if (!$nasm) {
+            choco install nasm -y --no-progress
+            if ($LASTEXITCODE) { throw 'NASM installation failed' }
+            $env:PATH = "C:\Program Files\NASM;$env:PATH"
+          }
+          "C:\Program Files\NASM" >> $env:GITHUB_PATH
+          meson --version
+          ninja --version
+          nasm -v
+          if ($LASTEXITCODE) { throw 'NASM is unavailable' }
 
       - name: Use classic vcpkg
         run: |
           if (-not (Test-Path C:\vcpkg\vcpkg.exe)) {
             git clone https://github.com/microsoft/vcpkg C:\vcpkg
             & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+            if ($LASTEXITCODE) { throw 'vcpkg bootstrap failed' }
           }
           "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" >> $env:GITHUB_ENV
 
+      - name: Identify dependency cache
+        id: cache-config
+        run: ./.github/scripts/dll-vcpkg-cache.ps1 key
+
+      # Snapshot names are content-addressed because Actions caches are
+      # immutable. A matching config restores its latest snapshot; older
+      # configs can seed it, but vcpkg still validates every package's ABI.
+      - name: Restore vcpkg binary archives
+        id: vcpkg-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.cache-config.outputs.prefix }}-snapshot
+          restore-keys: |
+            ${{ steps.cache-config.outputs.prefix }}-
+            ${{ steps.cache-config.outputs.family }}-
+
       - name: Install vcpkg deps (static)
+        id: deps
         run: |
-          & "$env:VCPKG_ROOT\\vcpkg.exe" install freetype fribidi harfbuzz pkgconf --triplet $env:VCPKG_DEFAULT_TRIPLET
+          ./.github/scripts/dll-vcpkg-cache.ps1 before
+          $packages = $env:VCPKG_PACKAGES -split ' '
+          $log = Join-Path $env:RUNNER_TEMP 'dll-vcpkg-install.log'
+          & "$env:VCPKG_ROOT\vcpkg.exe" install @packages --triplet $env:VCPKG_DEFAULT_TRIPLET 2>&1 |
+            Tee-Object -FilePath $log
+          if ($LASTEXITCODE) { throw 'vcpkg dependency installation failed' }
+          $lines = Get-Content -LiteralPath $log
+          $restored = 0
+          foreach ($line in $lines) {
+            if ($line -match '^Restored (\d+) package\(s\) from ') { $restored += [int]$Matches[1] }
+          }
+          $built = @($lines | Where-Object { $_ -match '^Building [^ ]+:' }).Count
+          "restored=$restored" >> $env:GITHUB_OUTPUT
+          "built=$built" >> $env:GITHUB_OUTPUT
+          Write-Host "vcpkg ABI reuse: $restored restored; $built built from source"
+          ./.github/scripts/dll-vcpkg-cache.ps1 after
+
+      # Save immediately after dependency success, even if the DLL build later
+      # fails. No new snapshot is uploaded on an unchanged warm run.
+      - name: Save vcpkg binary archives
+        id: cache-save
+        if: steps.deps.outputs.changed == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.cache-config.outputs.prefix }}-${{ steps.deps.outputs.fingerprint }}
 
       - name: Configure
         run: |
@@ -129,9 +211,12 @@ jobs:
           }
           $canonicalHash = (Get-FileHash -LiteralPath $canonical -Algorithm SHA256).Hash
           $mangetsuHash = (Get-FileHash -LiteralPath $mangetsu -Algorithm SHA256).Hash
-          if ($canonicalHash -ne $mangetsuHash) {
-            throw "mangetsu.dll is not byte-identical to $($dll.Name)"
+          foreach ($alias in @('ass.dll', 'libassmod.dll', 'assmod.dll', 'libass.dll', 'mangetsu.dll')) {
+            if ((Get-FileHash -LiteralPath (Join-Path artifact $alias) -Algorithm SHA256).Hash -ne $canonicalHash) {
+              throw "$alias is not byte-identical to $($dll.Name)"
+            }
           }
+          Write-Host "All DLL aliases match $($dll.Name): SHA256 $canonicalHash"
 
           # Keep the matching PDB with the DLL. Crash dumps require the exact
           # GUID/age-matched PDB; a later rebuild cannot safely symbolize them.
@@ -145,6 +230,10 @@ jobs:
           }
           $pdb = $pdbCandidates[0]
           Copy-Item $pdb.FullName (Join-Path artifact $pdb.Name) -Force
+          Write-Host "Matching same-build PDB: $($pdb.Name)"
+          $pdbIdentity = python .github/scripts/verify-dll-pdb.py $canonical (Join-Path artifact $pdb.Name)
+          if ($LASTEXITCODE) { throw 'DLL/PDB identity verification failed' }
+          Write-Host $pdbIdentity
 
           $info = @(
             "repo: $env:GITHUB_REPOSITORY"
@@ -155,6 +244,7 @@ jobs:
             "runtime_dll: $($dll.Name)"
             "mangetsu_sha256: $mangetsuHash"
             "pdb: $($pdb.Name)"
+            "pdb_identity: $pdbIdentity"
           )
           $info | Set-Content -Path artifact\\libassmod-build.txt -Encoding ASCII
 
@@ -164,3 +254,43 @@ jobs:
           name: libass-dll
           path: artifact/*
           if-no-files-found: error
+
+      - name: Build timing and cache summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_MATCH: ${{ steps.vcpkg-cache.outputs.cache-matched-key }}
+          CACHE_PREFIX: ${{ steps.cache-config.outputs.prefix }}
+          CACHE_SAVE: ${{ steps.cache-save.outcome }}
+          ARCHIVE_COUNT: ${{ steps.deps.outputs.count }}
+          PACKAGES_RESTORED: ${{ steps.deps.outputs.restored }}
+          PACKAGES_BUILT: ${{ steps.deps.outputs.built }}
+        run: |
+          $summary = @(
+            '## Windows DLL build'
+            ''
+            "Binary archive directory: ``$env:VCPKG_DEFAULT_BINARY_CACHE``"
+            "Configuration: ``$env:CACHE_PREFIX``"
+            "Actions cache restored: ``$(if ($env:CACHE_MATCH) { $env:CACHE_MATCH } else { 'miss' })``"
+            "vcpkg ABI reuse: **$env:PACKAGES_RESTORED restored / $env:PACKAGES_BUILT built**"
+            "Archives after installation: $env:ARCHIVE_COUNT; snapshot save step: $env:CACHE_SAVE"
+            ''
+            '| Step | Seconds | Result |'
+            '| --- | ---: | --- |'
+          )
+          try {
+            $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+            $url = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/attempts/$env:GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+            $jobs = (Invoke-RestMethod -Uri $url -Headers $headers).jobs
+            $job = $jobs | Where-Object { $_.runner_name -eq $env:RUNNER_NAME } | Select-Object -First 1
+            foreach ($step in $job.steps) {
+              if (!$step.started_at -or !$step.completed_at) { continue }
+              $seconds = ([datetime]$step.completed_at - [datetime]$step.started_at).TotalSeconds
+              $summary += "| $($step.name) | $seconds | $($step.conclusion) |"
+            }
+          } catch {
+            # Telemetry must never turn a successfully packaged DLL red.
+            $summary += "Timing API unavailable; see the Actions step durations."
+            Write-Warning 'Unable to retrieve step timings; build result is unaffected.'
+          }
+          $summary >> $env:GITHUB_STEP_SUMMARY
