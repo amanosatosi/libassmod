@@ -436,3 +436,13 @@ positioned_alpha_unit = executable('positioned_alpha_unit',
 test('global-positioned-alpha', positioned_alpha_unit, timeout: 120,
     env: {'ALPHA_TEST_FONT': join_paths(meson.project_source_root(),
         'compare', 'test', 'font1.ttf')})
+
+native_vertical_furigana_unit = executable('native_vertical_furigana_unit',
+    files('native_vertical_furigana_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    link_with: libass_for_tools, install: false)
+test('native-vertical-furigana', native_vertical_furigana_unit, timeout: 120,
+    env: {
+        'VERTICAL_FURI_FONT': join_paths(meson.current_source_dir(), 'fonts', 'native-vertical-furi.ttf'),
+        'FURI_MYANMAR_FONT': furi_myanmar_font,
+    })

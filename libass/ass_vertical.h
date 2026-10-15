@@ -13,3 +13,9 @@ void ass_vertical_mark_syllables(RenderContext *state);
 bool ass_vertical_layout(RenderContext *state, double max_height);
 
 #endif
+
+/* Sidecars use the same cluster measurement/orientation without wrapping or
+ * event column alignment. These views never take ownership of glyph arrays. */
+void ass_vertical_prepare_text(RenderContext *state, TextInfo *text);
+void ass_vertical_mark_text_syllables(TextInfo *text);
+bool ass_vertical_layout_reading(RenderContext *state, FuriGroup *group);

@@ -123,3 +123,9 @@ font("furi-tight-ascent.ttf", "Furi Tight Ascent", 1000, 250, 750,
      -100, 50, 200, 50, furi_chars)
 font("furi-tight-descent.ttf", "Furi Tight Descent", 1000, 900, 100,
      -100, 50, 200, 50, furi_chars, ink_bottom=-400)
+
+# Native ruby geometry probes include both sides, wrapping and escaped syntax.
+vertical_chars = set(range(33, 127)) | {ord(c) for c in
+    "漢字かんじカンジ日本語にほんご文字もじ時とてもながいよみかた「」、。မြန်မာနိုင်ငံဆာတို့စူဇူကီ"}
+font("native-vertical-furi.ttf", "Native Vertical Furi", 1000, 800, 200,
+     -100, 50, 200, 50, vertical_chars)

@@ -100,6 +100,17 @@ void ass_vertical_prepare(RenderContext *state)
         state->vertical_direction = cjk > other ||
             (cjk && cjk == other && first_cjk) ? 1 : 2;
     }
+    ass_vertical_prepare_text(state, text);
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        TextInfo reading = {.glyphs = group->glyphs,
+            .event_text = group->event_text, .length = group->length};
+        ass_vertical_prepare_text(state, &reading);
+    }
+}
+
+void ass_vertical_prepare_text(RenderContext *state, TextInfo *text)
+{
     text->native_vertical = true;
     for (int i = 0; i < text->length; i++) {
         GlyphInfo *g = &text->glyphs[i];
@@ -112,20 +123,25 @@ void ass_vertical_prepare(RenderContext *state)
     }
 }
 
-void ass_vertical_mark_syllables(RenderContext *state)
+void ass_vertical_mark_text_syllables(TextInfo *text)
 {
-    if (!state->native_vertical)
-        return;
-    TextInfo *text = &state->text_info;
-    /* A boundary between layout syllables is also a safe HarfBuzz run
-     * boundary. Keep all codepoints of each syllable in the same run. */
+    /* A layout syllable must not be split into independent shaping runs. */
     for (int i = 1; i < text->length; i++) {
+        if ((text->glyphs[i].is_furi_base || text->glyphs[i - 1].is_furi_base) &&
+                text->glyphs[i].furi_group != text->glyphs[i - 1].furi_group)
+            text->glyphs[i].starts_new_run = true;
         if (myanmar_char(text->glyphs[i].symbol) &&
                 ass_myanmar_layout_break(
                     (const uint32_t *) text->event_text,
                     text->length, i))
             text->glyphs[i].starts_new_run = true;
     }
+}
+
+void ass_vertical_mark_syllables(RenderContext *state)
+{
+    if (state->native_vertical)
+        ass_vertical_mark_text_syllables(&state->text_info);
 }
 
 static void extend_bbox(VerticalUnit *unit, double x0, double x1,
@@ -231,6 +247,7 @@ static void place_unit(VerticalUnit *unit, GlyphInfo *glyphs,
             g->pos.y = layout_d6(y + (unit->sideways ? gx : gy));
             g->curved_angle = unit->sideways ? -90.0 : 0.0;
             g->line = 0; /* columns share the single ASS block metric line */
+            g->vertical_column = unit->column;
             inner_x += d6_to_double(g->advance.x);
             inner_y += d6_to_double(g->advance.y);
         }
@@ -240,9 +257,9 @@ static void place_unit(VerticalUnit *unit, GlyphInfo *glyphs,
     }
 }
 
-bool ass_vertical_layout(RenderContext *state, double max_height)
+static bool vertical_layout(RenderContext *state, TextInfo *text,
+                            double max_height, bool reading)
 {
-    TextInfo *text = &state->text_info;
     int length = text->length;
     size_t n = (size_t) length;
     if (n > (SIZE_MAX - sizeof(VerticalColumn)) /
@@ -257,7 +274,7 @@ bool ass_vertical_layout(RenderContext *state, double max_height)
     int count = 0, pending_breaks = 0;
 #ifdef CONFIG_UNIBREAK
     char *unibrks = NULL;
-    if (state->renderer && text->breaks &&
+    if (!reading && state->renderer && text->breaks &&
             (state->renderer->track->parser_priv->feature_flags &
              FEATURE_MASK(ASS_FEATURE_WRAP_UNICODE))) {
         unibrks = text->breaks;
@@ -304,6 +321,10 @@ bool ass_vertical_layout(RenderContext *state, double max_height)
         if (unibrks && unibrks[unit->end - 1] == LINEBREAK_ALLOWBREAK)
             unit->break_after = true;
 #endif
+        /* Ruby spacing follows its own screen-Y scale; it must not inherit
+         * the event's \vsp or horizontal ASS letter-spacing advance. */
+        if (reading)
+            spacing = root->hspacing * state->screen_scale_y * root->scale_y;
         measure_unit(unit, text->glyphs, spacing);
         i = unit->end;
     }
@@ -324,22 +345,47 @@ bool ass_vertical_layout(RenderContext *state, double max_height)
             double next = height +
                 (end > start ? units[end - 1].spacing : 0.0) +
                 units[end].advance;
-            if (end > start && state->wrap_style != 2 &&
-                    next > max_height)
+            GlyphInfo *next_root = &text->glyphs[units[end].first];
+            if (!reading && end > start && next_root->is_furi_base &&
+                    (end == 0 || !text->glyphs[units[end - 1].first].is_furi_base ||
+                     text->glyphs[units[end - 1].first].furi_group != next_root->furi_group) &&
+                    state->wrap_style != 2) {
+                double group_height = next;
+                for (int k = end + 1; k < count &&
+                        !units[k].breaks_before &&
+                        text->glyphs[units[k].first].is_furi_base &&
+                        text->glyphs[units[k].first].furi_group == next_root->furi_group; k++)
+                    group_height += units[k - 1].spacing + units[k].advance;
+                if (group_height > max_height)
+                    break;
+            }
+            bool inside_base = end > start &&
+                text->glyphs[units[end].first].is_furi_base &&
+                text->glyphs[units[end - 1].first].is_furi_base &&
+                text->glyphs[units[end].first].furi_group ==
+                    text->glyphs[units[end - 1].first].furi_group;
+            if (end > start && !reading && !inside_base &&
+                    state->wrap_style != 2 && next > max_height)
                 break;
             height = next;
             end++;
-            if (units[end - 1].break_after)
+            bool in_group = end < count &&
+                text->glyphs[units[end - 1].first].is_furi_base &&
+                text->glyphs[units[end].first].is_furi_base &&
+                text->glyphs[units[end - 1].first].furi_group ==
+                    text->glyphs[units[end].first].furi_group;
+            if (units[end - 1].break_after && !in_group)
                 legal = end;
         }
-        if (end < count && !units[end].breaks_before &&
+        if (end < count && !reading && !units[end].breaks_before &&
                 state->wrap_style != 2 &&
                 height + units[end - 1].spacing +
                     units[end].advance > max_height &&
                 legal > start)
             end = legal;
         double top = 0.0;
-        cols[column].alignment = ass_line_alignment(state, units[start].first);
+        cols[column].alignment = reading ? HALIGN_CENTER | VALIGN_TOP :
+            ass_line_alignment(state, units[start].first);
         for (int j = start; j < end; j++) {
             if (j > start)
                 top += units[j - 1].spacing;
@@ -405,4 +451,17 @@ bool ass_vertical_layout(RenderContext *state, double max_height)
     text->lines[0].offset = 0;
     free(storage);
     return true;
+}
+
+bool ass_vertical_layout(RenderContext *state, double max_height)
+{
+    return vertical_layout(state, &state->text_info, max_height, false);
+}
+
+bool ass_vertical_layout_reading(RenderContext *state, FuriGroup *group)
+{
+    LineInfo line = {0};
+    TextInfo text = {.glyphs = group->glyphs, .event_text = group->event_text,
+                     .length = group->length, .lines = &line};
+    return vertical_layout(state, &text, DBL_MAX, true);
 }

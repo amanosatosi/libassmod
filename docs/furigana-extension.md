@@ -275,3 +275,13 @@ with additional `furi-tight-ascent` and `furi-tight-descent` geometry runs using
 original fixture fonts whose ink exceeds their nominal metrics. GitHub Actions
 also runs these under AddressSanitizer/UndefinedBehaviorSanitizer in the
 Mangetsu furigana regression workflow. Builds are performed in CI.
+
+## Native vertical layout
+
+With `\vert1`, the same syntax creates native vertical readings: normal ruby
+is physically right, gyaku is physically left, and both flow top to bottom.
+Column direction never exchanges the sides. Reading spacing/fitting and karaoke
+use Y; column reservation uses measured X extents. See
+[native vertical furigana](native-vertical.md#native-vertical-furigana) for
+placement modes, screen-coordinate offsets and examples. The descriptions of
+above/below placement and X fitting in this document apply to horizontal text.

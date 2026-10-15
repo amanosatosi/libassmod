@@ -80,7 +80,65 @@ digits use optical units. The chosen column direction stays fixed for the
 whole event. Myanmar syllables remain grouped even when Japanese is present.
 `\vdir2` overrides a CJK block's leftward default.
 
-Proper native vertical furigana placement is outside this first version.
-Furigana markup in a native vertical event is rendered as literal text;
-horizontal Mangetsu furigana remains unchanged. Curved text paths are likewise
-horizontal layout controls and are ignored in native vertical mode.
+## Native vertical furigana
+
+```ass
+{\vert1}<漢字|かんじ>
+{\vert1}<漢字||かんじ>
+{\vert1}<漢字|かんじ|カンジ>
+```
+
+Both base and readings flow from top to bottom, using native shaped clusters,
+font fallback, vertical CJK substitutions and the same script-specific unit
+policies as ordinary vertical text. Readings are not rotated horizontal images.
+Normal ruby (field 2) is always on the physical **right** of its base;
+gyaku-furigana (field 3) is always on the physical **left**. Gyaku does not
+reverse character order. `\vdir1` advances columns leftward and `\vdir2`
+rightward; neither direction nor `\furiplaceauto` changes reading sides.
+
+Each reading is centered on its base's occupied Y span. Its X attachment uses
+independently measured base and reading ink, borders and shadows, with a small
+visual clearance. The two reading sides do not inherit each other's widths or
+vertical metrics. Escapes, invalid-candidate rejection, empty reading sides,
+`\furi0`/`\furi1` and style inheritance use the existing furigana parser.
+
+`\furis`, `\furisx` and `\furisy` scale reading glyphs; `\furifsp` adds spacing
+along Y. `\furistyle0` and `1` allow long readings to overhang their base's
+natural height. `\furistyle2` fits an overlong reading along Y while preserving
+its X size. Adjacent readings on the same side of a column are separated along
+Y in base order; this moves annotations rather than base glyphs.
+
+`\furipos(x,y)` retains screen axes: positive X moves right and positive Y
+moves upward. Offsets apply after automatic attachment, constrained to keep
+the reading on its declared side with minimum clearance. `\furiap` controls
+the additional automatic gap; it cannot exchange sides. These controls are
+captured independently for each group and reset by `\r`.
+
+| Mode | Native vertical behavior |
+| --- | --- |
+| `\furichangepos0` (default) | Preserve the original base block anchor. The first column and each group's base Y advances remain fixed; later columns move outward when occupied annotation bands require clearance. |
+| `\furichangepos1` | Reserve annotation bands between columns and use the complete occupied block for anchoring. |
+| `\furichangepos2` | Separate complete occupied column bands, retaining the original base block anchor as in mode 0. |
+
+Column reservation measures both reading sides, including borders and shadows,
+before calculating a single outward shift for each subsequent column. Explicit
+`\N` and automatically wrapped columns use the same pass. A base group stays
+intact across automatic wrapping; a group taller than the usable frame remains
+one overflowing column. No extra metrics or padding are added to vertical
+events without annotations. Compact and strict placement distinguish base
+anchoring from occupied rendering bounds: ruby contributes to collision and
+background-box extents without shifting the base anchor at the outer edges.
+Content can still extend outside the frame at an explicitly chosen position.
+
+Internal `\k`, `\kf`/`\K`, `\ko` and reveal timing use the shared furigana
+karaoke timeline. Reading segments project onto their associated base along Y;
+progressive wipes run top to bottom, including independent two-sided readings
+and empty timing segments. The ordinary glyph paint path supplies colors,
+alpha, native border layers, shadows, images and gradients. `\pgrdalpha` samples
+final-frame coordinates for reading pixels just as for base text; background
+box exemptions are unchanged.
+
+See [the annotated-column sample](../samples/native-vertical-furigana.ass).
+Horizontal furigana keeps its existing placement, spacing and karaoke paths.
+Curved text paths remain horizontal layout controls and are ignored in native
+vertical mode.

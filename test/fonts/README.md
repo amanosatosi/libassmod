@@ -53,3 +53,10 @@ visible zero-advance marks and ink above/below the baseline, then tests the
 original Myanmar gyaku/normal pair with top, center and bottom anchors, explicit
 positions, margins, borders/shadows, and already sufficient line spacing.
 Missing glyphs and empty annotation geometry are explicit failures, never skips.
+
+`native-vertical-furi.ttf` is another original ISC rectangle fixture generated
+by the same script. It uses ordinary 800/200 metrics and includes ASCII,
+Japanese bases/readings, punctuation and Myanmar geometry probes. The native
+vertical furigana suite embeds it with font providers disabled, tests both
+public image APIs, and separately selects the committed Noto Myanmar fixture
+for real cluster shaping and font fallback.

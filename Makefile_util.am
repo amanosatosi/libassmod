@@ -110,3 +110,11 @@ TESTS += test/positioned_alpha_unit$(EXEEXT)
 test_positioned_alpha_unit_SOURCES = test/positioned_alpha_selftest.c
 test_positioned_alpha_unit_LDADD = libass/libass_internal.la
 test_positioned_alpha_unit_LDFLAGS = $(AM_LDFLAGS) -static
+
+check_PROGRAMS += test/native_vertical_furigana_unit
+TESTS += test/native_vertical_furigana_unit$(EXEEXT)
+test_native_vertical_furigana_unit_SOURCES = test/native_vertical_furigana_selftest.c
+test_native_vertical_furigana_unit_LDADD = libass/libass_internal.la
+test_native_vertical_furigana_unit_LDFLAGS = $(AM_LDFLAGS) -static
+AM_TESTS_ENVIRONMENT += VERTICAL_FURI_FONT='$(abs_srcdir)/test/fonts/native-vertical-furi.ttf'; export VERTICAL_FURI_FONT;
+AM_TESTS_ENVIRONMENT += FURI_MYANMAR_FONT='$(abs_srcdir)/test/fonts/NotoSansMyanmar-Regular.ttf'; export FURI_MYANMAR_FONT;

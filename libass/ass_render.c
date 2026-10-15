@@ -1318,7 +1318,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
     dst_x += bm->left;
     dst_y += bm->top;
     brk -= combined && combined->native_vertical &&
-           combined->effect_type == EF_KARAOKE_KF ? dst_y : dst_x;
+           (combined->effect_type == EF_KARAOKE_KF ||
+            combined->furi_base_karaoke) ? dst_y : dst_x;
 
     // we still need to clip against screen boundaries
     zx = x2scr_pos_scaled(render_priv, 0);
@@ -1383,8 +1384,13 @@ static ASS_Image **render_glyph_i(RenderContext *state,
             r[j].y1 = FFMIN(r[j].y1, state->scroll_clip_y1 - dst_y);
         }
         if (state->karaoke_clip_enabled) {
-            r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
-            r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
+            if (combined && combined->native_vertical) {
+                r[j].y0 = FFMAX(r[j].y0, state->karaoke_clip_x0 - dst_y);
+                r[j].y1 = FFMIN(r[j].y1, state->karaoke_clip_x1 - dst_y);
+            } else {
+                r[j].x0 = FFMAX(r[j].x0, state->karaoke_clip_x0 - dst_x);
+                r[j].x1 = FFMIN(r[j].x1, state->karaoke_clip_x1 - dst_x);
+            }
         }
     }
 
@@ -1397,7 +1403,8 @@ static ASS_Image **render_glyph_i(RenderContext *state,
     }
 
     if (combined && combined->native_vertical &&
-            combined->effect_type == EF_KARAOKE_KF) {
+            (combined->effect_type == EF_KARAOKE_KF ||
+             combined->furi_base_karaoke)) {
         for (j = 0; j < i; j++)
             tail = render_vertical_karaoke_rect(state, combined, bm,
                 dst_x, dst_y, r[j], brk, color, color2, layer1, layer2,
@@ -1538,7 +1545,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     dst_x += bm->left;
     dst_y += bm->top;
     brk -= combined && combined->native_vertical &&
-           combined->effect_type == EF_KARAOKE_KF ? dst_y : dst_x;
+           (combined->effect_type == EF_KARAOKE_KF ||
+            combined->furi_base_karaoke) ? dst_y : dst_x;
 
     // clipping
     clip_x0 = FFMINMAX(state->clip_x0, 0, render_priv->width);
@@ -1556,8 +1564,13 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
         clip_y1 = FFMIN(clip_y1, state->scroll_clip_y1);
     }
     if (state->karaoke_clip_enabled) {
-        clip_x0 = FFMAX(clip_x0, state->karaoke_clip_x0);
-        clip_x1 = FFMIN(clip_x1, state->karaoke_clip_x1);
+        if (combined && combined->native_vertical) {
+            clip_y0 = FFMAX(clip_y0, state->karaoke_clip_x0);
+            clip_y1 = FFMIN(clip_y1, state->karaoke_clip_x1);
+        } else {
+            clip_x0 = FFMAX(clip_x0, state->karaoke_clip_x0);
+            clip_x1 = FFMIN(clip_x1, state->karaoke_clip_x1);
+        }
     }
     b_x0 = 0;
     b_y0 = 0;
@@ -1590,7 +1603,8 @@ render_glyph(RenderContext *state, CombinedBitmapInfo *combined,
     }
 
     if (combined && combined->native_vertical &&
-            combined->effect_type == EF_KARAOKE_KF) {
+            (combined->effect_type == EF_KARAOKE_KF ||
+             combined->furi_base_karaoke)) {
         Rect rect = {b_x0, b_y0, b_x1, b_y1};
         return render_vertical_karaoke_rect(state, combined, bm,
             dst_x, dst_y, rect, brk, color, color2, layer1, layer2,
@@ -1719,10 +1733,10 @@ static bool furi_base_region_bounds(RenderContext *state,
         rel0 = info->furi_base_end - ass_lrint(width * region->start);
         rel1 = info->furi_base_end - ass_lrint(width * region->end);
     }
-    int pos0 = lround(d6_to_double(info->leftmost_x) +
-        d6_to_double(rel0) * state->renderer->par_scale_x);
-    int pos1 = lround(d6_to_double(info->leftmost_x) +
-        d6_to_double(rel1) * state->renderer->par_scale_x);
+    int pos0 = lround(d6_to_double(info->native_vertical ? info->karaoke_origin_y : info->leftmost_x) +
+        d6_to_double(rel0) * (info->native_vertical ? 1.0 : state->renderer->par_scale_x));
+    int pos1 = lround(d6_to_double(info->native_vertical ? info->karaoke_origin_y : info->leftmost_x) +
+        d6_to_double(rel1) * (info->native_vertical ? 1.0 : state->renderer->par_scale_x));
     *x0 = FFMIN(pos0, pos1);
     *x1 = FFMAX(pos0, pos1);
     return *x0 < *x1;
@@ -1735,8 +1749,8 @@ static int furi_base_frontier(RenderContext *state,
     int32_t rel = info->furi_base_reverse ?
         info->furi_base_end - ass_lrint(width * amount) :
         info->furi_base_start + ass_lrint(width * amount);
-    return lround(d6_to_double(info->leftmost_x) +
-        d6_to_double(rel) * state->renderer->par_scale_x);
+    return lround(d6_to_double(info->native_vertical ? info->karaoke_origin_y : info->leftmost_x) +
+        d6_to_double(rel) * (info->native_vertical ? 1.0 : state->renderer->par_scale_x));
 }
 
 static ASS_Image **render_furi_base_border_regions(
@@ -3051,6 +3065,8 @@ static void compute_string_bbox(TextInfo *text, ASS_DRect *bbox)
         bbox->x_min = bbox->x_max = bbox->y_min = bbox->y_max = 0;
 }
 
+static ASS_Rect furi_glyph_bbox(const GlyphInfo *info);
+
 static void add_glyph_list_visual_bbox(GlyphInfo *glyphs, int length,
                                        ASS_DRect *bbox)
 {
@@ -3060,18 +3076,21 @@ static void add_glyph_list_visual_bbox(GlyphInfo *glyphs, int length,
             continue;
 
         for (GlyphInfo *info = root; info; info = info->next) {
+            ASS_Rect box = furi_glyph_bbox(info);
             double x = d6_to_double(info->pos.x);
             double y = d6_to_double(info->pos.y);
-            bbox->x_min = FFMIN(bbox->x_min, x + d6_to_double(info->bbox.x_min));
-            bbox->x_max = FFMAX(bbox->x_max, x + d6_to_double(info->bbox.x_max));
-            bbox->y_min = FFMIN(bbox->y_min, y + d6_to_double(info->bbox.y_min));
-            bbox->y_max = FFMAX(bbox->y_max, y + d6_to_double(info->bbox.y_max));
+            bbox->x_min = FFMIN(bbox->x_min, x + d6_to_double(box.x_min));
+            bbox->x_max = FFMAX(bbox->x_max, x + d6_to_double(box.x_max));
+            bbox->y_min = FFMIN(bbox->y_min, y + d6_to_double(box.y_min));
+            bbox->y_max = FFMAX(bbox->y_max, y + d6_to_double(box.y_max));
         }
     }
 }
 
 static void add_furi_to_bbox(TextInfo *text_info, ASS_DRect *bbox)
 {
+    if (text_info->native_vertical && text_info->n_furi_groups)
+        add_glyph_list_visual_bbox(text_info->glyphs, text_info->length, bbox);
     for (int i = 0; i < text_info->n_furi_groups; i++) {
         FuriGroup *group = &text_info->furi_groups[i];
         add_glyph_list_visual_bbox(group->glyphs, group->length, bbox);
@@ -6488,7 +6507,7 @@ static bool parse_event_fragment(RenderContext *state, char *p)
                 if (ordinary_angle_end && p >= ordinary_angle_end)
                     ordinary_angle_end = NULL;
                 if (!ordinary_angle_end && state->furi_enabled &&
-                        !state->native_vertical && *p == '<') {
+                        *p == '<') {
                     FuriCandidate candidate;
                     FuriCandidateType type = parse_furi_candidate(p, &candidate);
                     if (type == FURI_CANDIDATE_GROUP) {
@@ -7033,6 +7052,14 @@ static bool furi_group_visual_x_bounds(FuriGroup *group, double *left,
  * antialias footprint on each edge; touching fringe pixels are visually
  * occupied even when the mathematical outlines do not touch. This padding
  * belongs only to ruby geometry, never ordinary glyph/line metrics. */
+static ASS_Rect furi_glyph_bbox(const GlyphInfo *info)
+{
+    ASS_Rect b = info->bbox;
+    if (info->native_vertical && info->curved_angle == -90.0)
+        b = (ASS_Rect) {-b.y_max, b.x_min, -b.y_min, b.x_max};
+    return b;
+}
+
 static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
                                   int length, ASS_DRect *bounds,
                                   ASS_DRect *ink, double *top, double *bottom)
@@ -7047,15 +7074,16 @@ static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
         for (GlyphInfo *info = &glyphs[i]; info; info = info->next) {
             if (top) *top = FFMIN(*top, d6_to_double(info->pos.y - info->asc));
             if (bottom) *bottom = FFMAX(*bottom, d6_to_double(info->pos.y + info->desc));
-            if (info->bbox.x_min >= info->bbox.x_max ||
-                    info->bbox.y_min >= info->bbox.y_max)
+            ASS_Rect box = furi_glyph_bbox(info);
+            if (box.x_min >= box.x_max ||
+                    box.y_min >= box.y_max)
                 continue;
             double x = d6_to_double(info->pos.x);
             double y = d6_to_double(info->pos.y);
-            ink->x_min = FFMIN(ink->x_min, x + d6_to_double(info->bbox.x_min));
-            ink->x_max = FFMAX(ink->x_max, x + d6_to_double(info->bbox.x_max));
-            ink->y_min = FFMIN(ink->y_min, y + d6_to_double(info->bbox.y_min));
-            ink->y_max = FFMAX(ink->y_max, y + d6_to_double(info->bbox.y_max));
+            ink->x_min = FFMIN(ink->x_min, x + d6_to_double(box.x_min));
+            ink->x_max = FFMAX(ink->x_max, x + d6_to_double(box.x_max));
+            ink->y_min = FFMIN(ink->y_min, y + d6_to_double(box.y_min));
+            ink->y_max = FFMAX(ink->y_max, y + d6_to_double(box.y_max));
             double bx = glyph_border_max_x(info) * state->border_scale_x /
                         state->renderer->par_scale_x;
             double by = glyph_border_max_y(info) * state->border_scale_y;
@@ -7063,13 +7091,13 @@ static bool furi_occupied_bounds(RenderContext *state, GlyphInfo *glyphs,
                         state->renderer->par_scale_x;
             double sy = info->shadow_y * state->border_scale_y;
             bounds->x_min = FFMIN(bounds->x_min,
-                x + d6_to_double(info->bbox.x_min) - bx + FFMIN(0, sx) - 1);
+                x + d6_to_double(box.x_min) - bx + FFMIN(0, sx) - 1);
             bounds->x_max = FFMAX(bounds->x_max,
-                x + d6_to_double(info->bbox.x_max) + bx + FFMAX(0, sx) + 1);
+                x + d6_to_double(box.x_max) + bx + FFMAX(0, sx) + 1);
             bounds->y_min = FFMIN(bounds->y_min,
-                y + d6_to_double(info->bbox.y_min) - by + FFMIN(0, sy) - 1);
+                y + d6_to_double(box.y_min) - by + FFMIN(0, sy) - 1);
             bounds->y_max = FFMAX(bounds->y_max,
-                y + d6_to_double(info->bbox.y_max) + by + FFMAX(0, sy) + 1);
+                y + d6_to_double(box.y_max) + by + FFMAX(0, sy) + 1);
         }
     }
     return bounds->x_min < bounds->x_max && bounds->y_min < bounds->y_max;
@@ -7088,8 +7116,52 @@ static void shift_furi_group(FuriGroup *group, int32_t dx, int32_t dy)
     group->annotation_bounds.y_max += d6_to_double(dy);
 }
 
+static void position_vertical_furi_group(RenderContext *state, FuriGroup *group)
+{
+    TextInfo *text = &state->text_info;
+    ASS_DRect base_ink, reading_ink;
+    group->geometry_valid = false;
+    /* The logical side is physical screen X; neither vdir nor placeauto
+     * participates. A gyaku-only owner still belongs on the left. */
+    group->below = group->opposite_side;
+    if (!furi_occupied_bounds(state, text->glyphs + group->base_start,
+            group->base_len, &group->base_bounds, &base_ink, NULL, NULL) ||
+        !furi_occupied_bounds(state, group->glyphs, group->length,
+            &group->annotation_bounds, &reading_ink, NULL, NULL))
+        return;
+    ASS_DRect *ann = &group->annotation_bounds;
+    double gap = !group->position_explicit && group->auto_placement ?
+                 group->auto_gap : 0.0;
+    double minimum = FFMAX(1.0 / 64, FFMAX(group->auto_gap * 0.5,
+                       (ann->x_max - ann->x_min) * FURI_AUTO_GAP_FACTOR));
+    gap = FFMAX(gap, minimum);
+    double dx = group->opposite_side ?
+        group->base_bounds.x_min - gap - ann->x_max :
+        group->base_bounds.x_max + gap - ann->x_min;
+    double dy = (base_ink.y_min + base_ink.y_max -
+                 reading_ink.y_min - reading_ink.y_max) * 0.5;
+    /* furipos keeps screen axes and its upward-positive Y convention.
+     * Constrain X to its declared side, as horizontal ruby constrains Y. */
+    dx += x2scr_offset(state, group->offset_x);
+    dx = group->opposite_side ?
+        FFMIN(dx, group->base_bounds.x_min - minimum - ann->x_max) :
+        FFMAX(dx, group->base_bounds.x_max + minimum - ann->x_min);
+    dy -= y2scr_offset(state, group->offset_y);
+    shift_furi_group(group, double_to_d6(dx), double_to_d6(dy));
+    group->geometry_valid = true;
+    for (int i = 0; i < group->length; i++)
+        for (GlyphInfo *g = &group->glyphs[i]; g; g = g->next) {
+            g->line = text->glyphs[group->base_start].line;
+            g->vertical_column = text->glyphs[group->base_start].vertical_column;
+        }
+}
+
 static void position_furi_group(RenderContext *state, FuriGroup *group)
 {
+    if (state->native_vertical) {
+        position_vertical_furi_group(state, group);
+        return;
+    }
     TextInfo *text = &state->text_info;
     ASS_DRect base_ink, reading_ink;
     double base_top, base_bottom;
@@ -7191,15 +7263,24 @@ static int collect_furi_placements(TextInfo *text, FuriPlacement *placements)
         FuriGroup *group = &text->furi_groups[i];
         if (!group->geometry_valid)
             continue;
+        bool vertical = text->native_vertical;
         placements[n++] = (FuriPlacement) {
-            .group = i, .line = text->glyphs[group->base_start].line,
+            .group = i,
+            .line = vertical ? text->glyphs[group->base_start].vertical_column :
+                               text->glyphs[group->base_start].line,
             .below = group->below,
-            .left = group->annotation_bounds.x_min,
-            .right = group->annotation_bounds.x_max,
-            .base_center = (group->base_bounds.x_min + group->base_bounds.x_max) / 2,
+            .left = vertical ? group->annotation_bounds.y_min :
+                               group->annotation_bounds.x_min,
+            .right = vertical ? group->annotation_bounds.y_max :
+                                group->annotation_bounds.x_max,
+            .base_center = vertical ?
+                (group->base_bounds.y_min + group->base_bounds.y_max) / 2 :
+                (group->base_bounds.x_min + group->base_bounds.x_max) / 2,
             .gap = FFMAX(1.0 / 64, FFMAX(group->auto_gap,
-                (group->annotation_bounds.y_max -
-                 group->annotation_bounds.y_min) * 0.08)),
+                (vertical ? group->annotation_bounds.x_max -
+                            group->annotation_bounds.x_min :
+                            group->annotation_bounds.y_max -
+                            group->annotation_bounds.y_min) * 0.08)),
         };
     }
     qsort(placements, n, sizeof(*placements), compare_furi_placement);
@@ -7209,6 +7290,38 @@ static int collect_furi_placements(TextInfo *text, FuriPlacement *placements)
 static bool same_furi_band(const FuriPlacement *a, const FuriPlacement *b)
 {
     return a->line == b->line && a->below == b->below;
+}
+
+/* Resolve long-reading overhang along Y without changing base advances.
+ * Recomputed from automatic placement on every call, never accumulated across
+ * frames. A whole side-band is recentered after forward separation. */
+static void separate_vertical_furi_readings(RenderContext *state)
+{
+    TextInfo *text = &state->text_info;
+    if (text->n_furi_groups < 2)
+        return;
+    FuriPlacement *p = ass_realloc_array(NULL, text->n_furi_groups, sizeof(*p));
+    if (!p)
+        return;
+    int n = collect_furi_placements(text, p);
+    for (int start = 0; start < n;) {
+        int end = start + 1;
+        double shift = 0.0, right = p[start].right;
+        while (end < n && same_furi_band(&p[start], &p[end])) {
+            double needed = right + FFMAX(p[end - 1].gap, p[end].gap) - p[end].left;
+            double dy = FFMAX(0.0, needed);
+            shift_furi_group(&text->furi_groups[p[end].group], 0, double_to_d6(dy));
+            right = p[end].right + dy;
+            shift = dy;
+            end++;
+        }
+        if (shift > 0)
+            for (int i = start; i < end; i++)
+                shift_furi_group(&text->furi_groups[p[i].group], 0,
+                                  double_to_d6(-shift * 0.5));
+        start = end;
+    }
+    free(p);
 }
 
 /* Recenter sidecars after base layout, line shifts and final transforms. */
@@ -7270,7 +7383,10 @@ static void position_furi_groups(RenderContext *state)
     TextInfo *text = &state->text_info;
     for (int i = 0; i < text->n_furi_groups; i++)
         position_furi_group(state, &text->furi_groups[i]);
-    align_furi_group_baselines(state);
+    if (!state->native_vertical)
+        align_furi_group_baselines(state);
+    else
+        separate_vertical_furi_readings(state);
 }
 
 static bool add_furi_spacing_before_group(RenderContext *state,
@@ -7416,19 +7532,21 @@ static bool prepare_furi_karaoke_regions(TextInfo *text_info,
         if (root->skip || segment < 0 || segment >= count)
             continue;
         if (!(direction[segment] & 1))
-            direction[segment] = 1 | (root->karaoke_rtl ? 2 : 0);
+            direction[segment] = 1 | (!text_info->native_vertical && root->karaoke_rtl ? 2 : 0);
 
-        double x0 = d6_to_double(root->pos.x);
-        double x1 = x0 + d6_to_double(root->cluster_advance.x -
-                                      root->hspacing_scaled);
+        bool vertical = text_info->native_vertical;
+        double x0 = d6_to_double(vertical ? root->pos.y : root->pos.x);
+        double x1 = x0 + d6_to_double(vertical ? root->cluster_advance.y :
+                                      root->cluster_advance.x - root->hspacing_scaled);
         left[segment] = FFMIN(left[segment], FFMIN(x0, x1));
         right[segment] = FFMAX(right[segment], FFMAX(x0, x1));
         for (GlyphInfo *info = root; info; info = info->next) {
-            double x = d6_to_double(info->pos.x);
-            left[segment] = FFMIN(left[segment],
-                                  x + d6_to_double(info->bbox.x_min));
-            right[segment] = FFMAX(right[segment],
-                                   x + d6_to_double(info->bbox.x_max));
+            ASS_Rect box = furi_glyph_bbox(info);
+            double x = d6_to_double(vertical ? info->pos.y : info->pos.x);
+            left[segment] = FFMIN(left[segment], x +
+                d6_to_double(vertical ? box.y_min : box.x_min));
+            right[segment] = FFMAX(right[segment], x +
+                d6_to_double(vertical ? box.y_max : box.x_max));
         }
     }
 
@@ -7517,6 +7635,8 @@ static bool prepare_furi_groups(RenderContext *state)
 
         split_style_runs_list(group->glyphs, group->length,
                               text_info->n_karaoke_segments > 0);
+        if (state->native_vertical)
+            ass_vertical_mark_text_syllables(&furi_text);
         ass_shaper_find_runs(state->furi_shaper, state->renderer,
                              group->glyphs, group->length);
         if (!ass_shaper_shape(state->furi_shaper, &furi_text))
@@ -7529,6 +7649,16 @@ static bool prepare_furi_groups(RenderContext *state)
                  info = info->next)
                 info->karaoke_rtl = rtl;
         }
+        if (state->native_vertical) {
+            /* Horizontal spacing was added when outlines were retrieved;
+             * ruby letter spacing belongs to its vertical advance instead. */
+            for (int j = 0; j < group->length; j++)
+                group->glyphs[j].cluster_advance.x -= group->glyphs[j].hspacing_scaled;
+            if (!ass_shaper_reorder(state->furi_shaper, &furi_text) ||
+                    !ass_vertical_layout_reading(state, group))
+                return false;
+            continue;
+        }
         // Position once before measuring visual overhangs for reservation.
         if (!reorder_furi_group(state, group))
             return false;
@@ -7539,6 +7669,121 @@ static bool prepare_furi_groups(RenderContext *state)
             return false;
     }
 
+    return true;
+}
+
+/* Ruby has already been shaped and laid out with the native vertical engine.
+ * Fit only its flow axis, then reserve measured column bands in one pass.
+ * The original vertical_bbox remains the compact/strict base anchor; occupied
+ * rendering bounds (including shifted columns) are measured separately. */
+static bool layout_vertical_furi_groups(RenderContext *state)
+{
+    TextInfo *text = &state->text_info;
+    if (!text->n_furi_groups)
+        return true;
+    for (int i = 0; i < text->n_furi_groups; i++) {
+        FuriGroup *group = &text->furi_groups[i];
+        int32_t top = INT_MAX, bottom = INT_MIN;
+        for (int j = 0; j < group->base_len; j++) {
+            GlyphInfo *g = &text->glyphs[group->base_start + j];
+            if (!g->skip) {
+                top = FFMIN(top, g->pos.y);
+                bottom = FFMAX(bottom, clamp_i64_to_i32(
+                    (int64_t) g->pos.y + g->cluster_advance.y));
+            }
+        }
+        group->base_width = top < bottom ?
+            clamp_i64_to_i32((int64_t) bottom - top) : 0;
+        ASS_DRect base, base_ink, ann, ann_ink;
+        if (group->style == 2 &&
+            furi_occupied_bounds(state, text->glyphs + group->base_start,
+                group->base_len, &base, &base_ink, NULL, NULL) &&
+            furi_occupied_bounds(state, group->glyphs, group->length,
+                &ann, &ann_ink, NULL, NULL)) {
+            double base_height = base_ink.y_max - base_ink.y_min;
+            double height = ann_ink.y_max - ann_ink.y_min;
+            if (base_height > 0.0 && height > base_height) {
+                double scale = base_height / height;
+                for (int j = 0; j < group->length; j++) {
+                    GlyphInfo *root = &group->glyphs[j];
+                    root->cluster_advance.y = double_to_d6(
+                        d6_to_double(root->cluster_advance.y) * scale);
+                    for (GlyphInfo *g = root; g; g = g->next) {
+                        g->pos.y = double_to_d6(d6_to_double(g->pos.y) * scale);
+                        if (g->curved_angle == -90.0) {
+                            g->bbox.x_min = double_to_d6(d6_to_double(g->bbox.x_min) * scale);
+                            g->bbox.x_max = double_to_d6(d6_to_double(g->bbox.x_max) * scale);
+                            g->scale_x *= scale;
+                            g->transform.scale.x *= scale;
+                        } else {
+                            g->bbox.y_min = double_to_d6(d6_to_double(g->bbox.y_min) * scale);
+                            g->bbox.y_max = double_to_d6(d6_to_double(g->bbox.y_max) * scale);
+                            g->scale_y *= scale;
+                            g->transform.scale.y *= scale;
+                        }
+                    }
+                }
+            }
+        }
+        if (!prepare_furi_karaoke_regions(text, group))
+            return false;
+    }
+    position_furi_groups(state);
+    int columns = 0;
+    for (int i = 0; i < text->length; i++)
+        if (!text->glyphs[i].skip)
+            columns = FFMAX(columns, text->glyphs[i].vertical_column + 1);
+    typedef struct { double left, right, shift; bool have; } ColumnBand;
+    ColumnBand *bands = calloc(columns, sizeof(*bands));
+    if (columns && !bands)
+        return false;
+    for (int list = -1; list < text->n_furi_groups; list++) {
+        GlyphInfo *glyphs = list < 0 ? text->glyphs : text->furi_groups[list].glyphs;
+        int length = list < 0 ? text->length : text->furi_groups[list].length;
+        for (int i = 0; i < length; i++) {
+            if (glyphs[i].skip)
+                continue;
+            ASS_DRect bounds, ink;
+            if (!furi_occupied_bounds(state, glyphs + i, 1,
+                                      &bounds, &ink, NULL, NULL))
+                continue;
+            int c = glyphs[i].vertical_column;
+            if (c < 0 || c >= columns)
+                continue;
+            ColumnBand *band = &bands[c];
+            band->left = band->have ? FFMIN(band->left, bounds.x_min) : bounds.x_min;
+            band->right = band->have ? FFMAX(band->right, bounds.x_max) : bounds.x_max;
+            band->have = true;
+        }
+    }
+    int previous = -1;
+    double shift = 0.0;
+    for (int c = 0; c < columns; c++) {
+        if (!bands[c].have)
+            continue;
+        if (previous >= 0) {
+            ColumnBand *prev = &bands[previous];
+            double needed = state->vertical_direction == 1 ?
+                bands[c].right + shift + 1.0 - prev->left :
+                prev->right + 1.0 - bands[c].left - shift;
+            if (needed > 0.0)
+                shift += (state->vertical_direction == 1 ? -1 : 1) * ceil(needed);
+        }
+        bands[c].shift = shift;
+        bands[c].left += shift;
+        bands[c].right += shift;
+        previous = c;
+    }
+    for (int i = 0; i < text->length; i++) {
+        GlyphInfo *root = &text->glyphs[i];
+        if (root->skip || root->vertical_column >= columns)
+            continue;
+        int32_t dx = double_to_d6(bands[root->vertical_column].shift);
+        for (GlyphInfo *g = root; g; g = g->next)
+            g->pos.x += dx;
+    }
+    free(bands);
+    position_furi_groups(state);
     return true;
 }
 
@@ -7770,6 +8015,8 @@ static void collect_furi_line_bands(RenderContext *state, FuriLineBand *bands)
 
 static bool expand_furi_interline_clearance(RenderContext *state)
 {
+    if (state->native_vertical)
+        return true;
     TextInfo *text = &state->text_info;
     int n = text->n_lines;
     bool strict = furi_has_strict_spacing(text);
@@ -7839,6 +8086,8 @@ static bool furi_group_visual_bbox(FuriGroup *group,
 
 static bool expand_furi_line_metrics(RenderContext *state)
 {
+    if (state->native_vertical)
+        return true;
     TextInfo *text_info = &state->text_info;
     if (!furi_reserves_vertical_space(text_info))
         return true;
@@ -12032,7 +12281,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         double max_height = y2scr_sub(state,
             render_priv->track->PlayResY - MarginV) -
             y2scr_top(state, MarginV);
-        if (!ass_vertical_layout(state, max_height)) {
+        if (!ass_vertical_layout(state, max_height) ||
+                !layout_vertical_furi_groups(state)) {
             ass_shaper_cleanup(state->shaper, text_info);
             free_render_context(state);
             release_chat_scene(chat, chat_cached);
@@ -12161,6 +12411,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     // Ruby always contributes to horizontal alignment and occupied width.
     // furichangepos controls only vertical line/block reservation.
     ASS_DRect placement_bounds = render_bbox;
+    if (state->native_vertical && !reserve_furi)
+        placement_bounds = bbox;
     if (!reserve_furi) {
         placement_bounds.y_min = bbox.y_min;
         placement_bounds.y_max = bbox.y_max;

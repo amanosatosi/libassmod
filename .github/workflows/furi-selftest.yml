@@ -16,11 +16,11 @@ jobs:
       - name: Configure sanitizers
         run: meson setup build -Dtest=enabled -Db_sanitize=address,undefined -Db_lundef=false -Ddefault_library=static
       - name: Build furigana tests
-        run: meson compile -C build furi_unit
+        run: meson compile -C build furi_unit native_vertical_furigana_unit native_vertical_render_unit native_vertical_layout_unit
       - name: Run parser and layout regressions
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: meson test -C build --no-rebuild --print-errorlogs 'furi-*'
+        run: meson test -C build --no-rebuild --print-errorlogs 'furi-*' 'native-vertical-*'
       - name: Upload test log
         if: always()
         uses: actions/upload-artifact@v4

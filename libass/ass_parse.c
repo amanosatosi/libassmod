@@ -3324,10 +3324,15 @@ static void process_furi_base_karaoke(RenderContext *state,
         return;
     }
 
+    bool vertical = text_info->native_vertical;
     int32_t x_start = text_info->glyphs[start].pos.x;
-    int32_t x_end = x_start + group->base_width;
+    int32_t x_end_vertical;
+    if (vertical)
+        vertical_karaoke_bounds(text_info->glyphs + start,
+            text_info->glyphs + end, &x_start, &x_end_vertical);
+    int32_t x_end = vertical ? x_end_vertical : x_start + group->base_width;
     double frz = fmod(text_info->glyphs[start].frz, 360);
-    bool reverse = frz > 90 && frz < 270;
+    bool reverse = !vertical && frz > 90 && frz < 270;
     text_info->glyphs[start].starts_new_run = true;
     for (int i = start; i < end; i++) {
         for (GlyphInfo *info = &text_info->glyphs[i]; info;
@@ -3340,8 +3345,8 @@ static void process_furi_base_karaoke(RenderContext *state,
             info->effect_timing = 0;
             info->furi_base_karaoke = true;
             info->furi_base_reverse = reverse;
-            info->furi_base_start = x_start - info->pos.x;
-            info->furi_base_end = x_end - info->pos.x;
+            info->furi_base_start = x_start - (vertical ? info->pos.y : info->pos.x);
+            info->furi_base_end = x_end - (vertical ? info->pos.y : info->pos.x);
         }
     }
     if (end < text_info->length)

@@ -1,0 +1,15 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,sans-serif,80,&H00FFFFFF,&H000000FF,&H00303030,&H80000000,0,0,0,0,100,100,0,0,1,2,3,5,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an5\pos(960,540)\vert1\vdir1\furichangepos0}<漢字|かんじ|カンジ>\N<日本語|にほんご>
+Dialogue: 0,0:00:05.00,0:00:10.00,Default,,0,0,0,,{\an5\pos(960,540)\vert1\vdir2\furichangepos2}<漢字|かんじ|カンジ>\N<文字||もじ>
+Dialogue: 0,0:00:10.00,0:00:15.00,Default,,0,0,0,,{\an5\pos(960,540)\vert1\vdir1}<漢字|{\kf200}かん{\kf100}じ|{\k0}カンジ>\N{\furistyle2}<時|とてもながいよみかた>

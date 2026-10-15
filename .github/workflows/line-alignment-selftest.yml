@@ -16,11 +16,11 @@ jobs:
       - name: Configure sanitizers
         run: meson setup build -Dtest=enabled -Db_sanitize=address,undefined -Db_lundef=false -Ddefault_library=static
       - name: Build alignment and ruby regressions
-        run: meson compile -C build tan_unit curved_text_unit native_vertical_layout_unit native_vertical_render_unit furi_unit
+        run: meson compile -C build tan_unit curved_text_unit native_vertical_layout_unit native_vertical_render_unit native_vertical_furigana_unit furi_unit
       - name: Run geometry regressions
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: meson test -C build --no-rebuild --print-errorlogs text-anchor-alignment curved-text-render native-vertical-layout native-vertical-render 'furi-*'
+        run: meson test -C build --no-rebuild --print-errorlogs text-anchor-alignment curved-text-render native-vertical-layout native-vertical-render native-vertical-furigana 'furi-*'
       - name: Upload test log
         if: always()
         uses: actions/upload-artifact@v4

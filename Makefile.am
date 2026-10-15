@@ -91,3 +91,6 @@ check-art-compare: compare/compare
 		./run-all.sh '$(abs_top_builddir)'/compare/compare ; \
 	fi
 endif
+
+EXTRA_DIST += test/native_vertical_furigana_selftest.c test/fonts/native-vertical-furi.ttf \
+              samples/native-vertical-furigana.ass

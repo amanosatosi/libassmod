@@ -480,6 +480,7 @@ typedef struct glyph_info {
     double curved_angle;        // local curved-baseline rotation, degrees
     bool curved_karaoke;        // successful path placement of progressive karaoke
     bool native_vertical;       // Mangetsu owns this glyph's vertical placement
+    int vertical_column;        // layout column, separate from ASS metric line
     double z;                   // 3D translation along camera Z
     bool ortho;                 // orthographic projection toggle
     double fax, fay;            // text shearing
