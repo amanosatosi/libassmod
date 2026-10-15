@@ -93,4 +93,5 @@ check-art-compare: compare/compare
 endif
 
 EXTRA_DIST += test/native_vertical_furigana_selftest.c test/fonts/native-vertical-furi.ttf \
+              test/fonts/NotoSansMyanmar-Regular.ttf test/fonts/NotoSansMyanmar-OFL.txt \
               samples/native-vertical-furigana.ass

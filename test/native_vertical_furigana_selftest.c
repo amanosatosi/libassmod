@@ -21,7 +21,7 @@ static void release(Frame *f) { free(f->p); f->p = NULL; }
 static bool load_font(ASS_Library *lib, const char *path)
 {
     FILE *file = path ? fopen(path, "rb") : NULL;
-    if (!file) return false;
+    if (!file) { fprintf(stderr,"cannot load native ruby font fixture: %s\n",path?path:"(unset)"); return false; }
     bool ok = !fseek(file, 0, SEEK_END);
     long n = ok ? ftell(file) : -1;
     ok = n > 0 && n <= INT_MAX && !fseek(file, 0, SEEK_SET);
