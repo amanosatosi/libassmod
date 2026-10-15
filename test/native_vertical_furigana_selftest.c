@@ -244,6 +244,10 @@ int main(void)
             "{" VERT "}\\<漢字\\|かんじ\\|カンジ\\|字\\>",rgba,true,"malformed group literal");
         pair(lib,r,"{" ANCHOR "}<漢字|かんじ|カンジ>",
             "{" ANCHOR "\\vert0}<漢字|かんじ|カンジ>",rgba,true,"horizontal vert0 compatibility");
+        pair(lib,r,"{" VERT "\\furichangepos0}<漢字|かんじ>",
+            "{" VERT "\\furichangepos1}<漢字|かんじ>",rgba,false,"block anchors occupied ruby band");
+        pair(lib,r,"{" VERT "\\furichangepos0}<漢字|かんじ>",
+            "{" VERT "\\furichangepos2}<漢字|かんじ>",rgba,true,"strict retains compact single-column base anchor");
         pair(lib,r,"{" VERT "}漢字", "{" VERT "\\furis90\\furichangepos2}漢字",
              rgba,true,"ordinary vertical metrics unchanged");
         pair(lib,r,"{" VERT "}<漢字|かんじ>","{" VERT "\\furis0\\r}<漢字|かんじ>",
@@ -255,8 +259,15 @@ int main(void)
         pair(lib,r,"{" VERT "}<日本語|にほんご>Latin<漢字||မြန်မာ>",
             "{" VERT "\\furifsp4}<日本語|にほんご>Latin<漢字||မြန်မာ>",rgba,false,"mixed scripts and ruby spacing");
     }
+    uint8_t image[] = {255,255,255,255, 20,180,240,128};
+    check(ass_set_tag_image_rgba(r,"vertical.png",ASS_TAG_IMAGE_FORMAT_PNG,2,1,8,image)==0,
+          "image fill fixture registration");
+    pair(lib,r,"{" VERT "}<漢字|\\<か\\|ん\\>じ>",
+        "{" VERT "}<漢字|かんじ>",true,false,"escaped reading delimiters remain ink");
+    pair(lib,r,"{" VERT "}<漢字|かんじ>{\\1c&H00FF00&\\furis70}<文字||もじ>",
+        "{" VERT "}<漢字|かんじ><文字||もじ>",true,false,"mid-event style captured per group");
     const char *paint[]={"\\bord3\\shad4","\\2bord3\\10bord1\\10bc&HFF0000&",
-        "\\1gra(0,$0,$200)","\\1pgrd(0,0,640,480,0,&HFF0000&,&H0000FF&)",
+        "\\1img(vertical.png)","\\3img(vertical.png)\\bord3","\\1gra(0,$0,$200)","\\1pgrd(0,0,640,480,0,&HFF0000&,&H0000FF&)",
         "\\clip(280,190,365,290)","\\fad(1000,1000)","\\blur2\\frz15",
         "\\t(0,1000,\\fscx120\\fscy110)","\\u1\\5c&HFF0000&"};
     for(size_t i=0;i<sizeof(paint)/sizeof(paint[0]);i++) {

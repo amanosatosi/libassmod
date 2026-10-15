@@ -324,7 +324,8 @@ static bool vertical_layout(RenderContext *state, TextInfo *text,
         /* Ruby spacing follows its own screen-Y scale; it must not inherit
          * the event's \vsp or horizontal ASS letter-spacing advance. */
         if (reading)
-            spacing = root->hspacing * state->screen_scale_y * root->scale_y;
+            spacing = root->hspacing * state->screen_scale_y *
+                      root->scale_y * root->scale_fix;
         measure_unit(unit, text->glyphs, spacing);
         i = unit->end;
     }

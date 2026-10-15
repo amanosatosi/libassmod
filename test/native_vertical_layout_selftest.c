@@ -334,6 +334,29 @@ int main(void)
                          "ta changed completed block bounds");
     }
 
+    /* Reading sidecars use the exact native cluster geometry without
+     * applying event wrapping, vsp, ta or column progression to the reading. */
+    static const uint32_t ruby[] = {0x304b, 0x3093, 0x3058};
+    init(f, ruby, 3, 0, 1);
+    f->glyphs[0].font_size = 20;
+    f->glyphs[1].font_size = 30;
+    f->glyphs[2].font_size = 15;
+    f->glyphs[0].fill_bbox.y_min = -12 * 64;
+    f->glyphs[1].fill_bbox.y_min = -24 * 64;
+    f->glyphs[2].fill_bbox.y_min = -12 * 64;
+    f->state.vertical_spacing = 100;
+    FuriGroup reading = {.glyphs = f->glyphs, .event_text = f->text, .length = 3};
+    ok &= expect(ass_vertical_layout_reading(&f->state, &reading),
+                 "native reading layout allocation");
+    ok &= expect(center_y(&f->glyphs[0]) < center_y(&f->glyphs[1]) &&
+                 center_y(&f->glyphs[1]) < center_y(&f->glyphs[2]),
+                 "native reading did not preserve top-to-bottom source order");
+    ok &= expect(f->glyphs[0].cluster_advance.y != f->glyphs[1].cluster_advance.y &&
+                 f->glyphs[0].cluster_advance.x == 0 &&
+                 f->glyphs[2].vertical_column == 0,
+                 "native reading assumed equal advances or inherited wrapping");
+    ok &= expect(ink_top(&f->glyphs[1]) - ink_bottom(&f->glyphs[0]) < 10,
+                 "native reading inherited event vsp");
     free(f);
     return ok ? 0 : 1;
 }
