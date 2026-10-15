@@ -3192,15 +3192,39 @@ static void vertical_karaoke_bounds(const GlyphInfo *start,
                                     const GlyphInfo *end,
                                     int32_t *top, int32_t *bottom)
 {
+    bool ruby = false;
     *top = INT_MAX;
     *bottom = INT_MIN;
     for (const GlyphInfo *root = start; root < end; root++) {
+        ruby |= root->is_furi || root->is_furi_base;
         if (root->skip)
             continue;
         *top = FFMIN(*top, root->pos.y);
         int64_t edge = (int64_t) root->pos.y + root->cluster_advance.y;
         edge = FFMAX(INT_MIN, FFMIN(edge, INT_MAX));
         *bottom = FFMAX(*bottom, (int32_t) edge);
+    }
+    /* Ruby projection spans visible native ink, rather than horizontal
+     * baselines repurposed as Y origins. Ordinary vertical ASS karaoke keeps
+     * its established cell-boundary contract. */
+    int32_t ink_top = INT_MAX, ink_bottom = INT_MIN;
+    for (const GlyphInfo *root = start; ruby && root < end; root++) {
+        if (root->skip)
+            continue;
+        for (const GlyphInfo *g = root; g; g = g->next) {
+            if (g->bbox.x_min >= g->bbox.x_max || g->bbox.y_min >= g->bbox.y_max)
+                continue;
+            int32_t y0 = g->curved_angle == -90.0 ? g->bbox.x_min : g->bbox.y_min;
+            int32_t y1 = g->curved_angle == -90.0 ? g->bbox.x_max : g->bbox.y_max;
+            int64_t lo = (int64_t) g->pos.y + y0;
+            int64_t hi = (int64_t) g->pos.y + y1;
+            ink_top = FFMIN(ink_top, (int32_t) FFMAX(INT_MIN, FFMIN(lo, INT_MAX)));
+            ink_bottom = FFMAX(ink_bottom, (int32_t) FFMAX(INT_MIN, FFMIN(hi, INT_MAX)));
+        }
+    }
+    if (ruby && ink_top < ink_bottom) {
+        *top = ink_top;
+        *bottom = ink_bottom;
     }
     if (*top == INT_MAX)
         *top = *bottom = 0;

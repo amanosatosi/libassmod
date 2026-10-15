@@ -207,6 +207,22 @@ static void karaoke(ASS_Library *lib,ASS_Renderer *r,bool rgba)
     check(render(lib,r,text,200,rgba,false,&a),"vertical ruby karaoke render");
     Bounds red=bounds(&a,NULL,0,0,W),blue=bounds(&a,NULL,2,0,W);
     check(red.count && blue.count && red.y<blue.y,"ruby/base karaoke wipe top to bottom");
+    /* At one third of the total reading span the second base glyph must still
+     * be waiting. This distinguishes an ink projection from a displaced
+     * horizontal baseline used as the vertical range's origin. */
+    Frame control={0};
+    render(lib,r,"{" VERT "}漢字",200,rgba,false,&control);
+    Bounds base=bounds(&control,NULL,-1,0,W);
+    int split=(base.y0+base.y1)/2;
+    bool lower_waits=true; unsigned waiting=0;
+    for(int y=split;y<base.y1;y++) for(int x=base.x0;x<base.x1;x++) {
+        size_t k=4*((size_t)y*W+x);
+        if(!control.p[k+3]) continue;
+        if(a.p[k] > a.p[k+2]) lower_waits=false;
+        if(a.p[k+2] > a.p[k]) waiting++;
+    }
+    check(lower_waits && waiting,"internal ruby karaoke maps to base ink span");
+    release(&control);
     check(render(lib,r,"{" VERT "}<漢字|{\\k0}{\\kf100}かんじ|{\\kf100}カンジ>",
         500,rgba,false,&b),"empty and independent two-sided karaoke segments");
     red=bounds(&b,NULL,0,0,W);blue=bounds(&b,NULL,2,0,W);
