@@ -244,8 +244,8 @@ int main(void)
             "{" VERT "}\\<漢字\\|かんじ\\|カンジ\\|字\\>",rgba,true,"malformed group literal");
         pair(lib,r,"{" ANCHOR "}<漢字|かんじ|カンジ>",
             "{" ANCHOR "\\vert0}<漢字|かんじ|カンジ>",rgba,true,"horizontal vert0 compatibility");
-        pair(lib,r,"{" VERT "\\furichangepos0}<漢字|かんじ>",
-            "{" VERT "\\furichangepos1}<漢字|かんじ>",rgba,false,"block anchors occupied ruby band");
+        pair(lib,r,"{" VERT "\\furis150\\furichangepos0}<漢字|かんじ>",
+            "{" VERT "\\furis150\\furichangepos1}<漢字|かんじ>",rgba,false,"block anchors occupied ruby band");
         pair(lib,r,"{" VERT "\\furichangepos0}<漢字|かんじ>",
             "{" VERT "\\furichangepos2}<漢字|かんじ>",rgba,true,"strict retains compact single-column base anchor");
         pair(lib,r,"{" VERT "}漢字", "{" VERT "\\furis90\\furichangepos2}漢字",
