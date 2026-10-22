@@ -133,12 +133,11 @@ fake_installed_headers = []
 subdir('ass')
 
 libass_name = 'ass'
-libass_name_prefix = 'lib'
-libass_version = libass_so_version
 if host_system == 'windows' and get_option('windows-mangetsu-dll')
     libass_name = 'mangetsu'
-    libass_name_prefix = ''
-    libass_version = ''
+    kwargs += {'name_prefix': ''}
+else
+    kwargs += {'version': libass_so_version}
 endif
 
 libass = library(
@@ -146,8 +145,6 @@ libass = library(
     libass_src,
     config_h,
     link_with: libass_link_with,
-    version: libass_version,
-    name_prefix: libass_name_prefix,
     # This emulates the GNU libtool compat/current versioning computation
     darwin_versions: [
         '@0@'.format(libass_lt_current + 1),
