@@ -102,7 +102,9 @@ static void frontier(ASS_Library *lib, ASS_Renderer *r, int layer,
         if (y[0] == y[3] && !y[2]) { red++; if (x[0] != x[3] || x[2]) ok = false; }
         if (y[2] == y[3] && !y[0]) { blue++; if (x[2] != x[3] || x[0]) ok = false; }
     }
-    if (!ok || !red || !blue) {
+    // Ink may finish before the full advance, so a late frontier can already
+    // have no waiting pixels. The midpoint must exercise both paint sources.
+    if (!ok || !(red + blue) || (time == 500 && (!red || !blue))) {
         fprintf(stderr, "layer %d frontier (%s, %lldms, %s): red=%u blue=%u\n", layer, rgba ? "RGBA" : "legacy", time, text, red, blue);
         failures++;
     }
