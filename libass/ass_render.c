@@ -3594,6 +3594,71 @@ static void scan_line_border_style_override(RenderContext *state, char *text)
     }
 }
 
+const ASS_FuriganaStyle ass_native_furigana_style = {
+    .enabled = true, .scale_x = 50.0, .scale_y = 50.0,
+    .auto_placement = true, .change_pos = FURI_POSITION_COMPACT,
+};
+
+/* Shared by normal resets and the load-time metadata compiler. No font
+ * lookup, event allocation or actor state is needed here. */
+void ass_init_style_extension_state(RenderContext *state, const ASS_Style *style)
+{
+    state->bs4_box_mode = state->border_style == 4;
+    state->box_extra_x = 0;
+    state->box_extra_y = 0;
+    state->box_corner_radius = 0;
+    state->box_paint_dirty = true;
+    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
+        ass_mangetsu_gradient_layer_reset(&state->box_border_color[i]);
+        ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[i]);
+        state->box_border_layers[i] = (BorderLayerState) {
+            .enabled = false,
+            .has_color = false,
+            .has_alpha = false,
+            .size_x = 0,
+            .size_y = 0,
+            .color = style->BackColour,
+        };
+        ass_gradient_values_reset(&state->box_border_layers[i].gradient,
+                                  style->BackColour);
+    }
+    state->border_x = style->Outline;
+    state->border_y = style->Outline;
+    state->border_layers[0] = (BorderLayerState) {
+        .enabled = style->Outline > 0,
+        .has_color = true,
+        .has_alpha = true,
+        .size_x = style->Outline,
+        .size_y = style->Outline,
+        .color = style->OutlineColour,
+    };
+    state->border_layers[0].gradient = state->gradient.layer[2];
+    for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++) {
+        state->border_layers[i] = (BorderLayerState) {
+            .enabled = false,
+            .has_color = false,
+            .has_alpha = false,
+            .size_x = 0,
+            .size_y = 0,
+            .color = style->OutlineColour,
+        };
+        ass_gradient_values_reset(&state->border_layers[i].gradient,
+                                  style->OutlineColour);
+    }
+    state->furi_defaults = &ass_native_furigana_style;
+    state->furi_enabled = ass_native_furigana_style.enabled;
+    state->furi_scale_x = ass_native_furigana_style.scale_x;
+    state->furi_scale_y = ass_native_furigana_style.scale_y;
+    state->furi_hspacing = ass_native_furigana_style.hspacing;
+    state->furi_style = ass_native_furigana_style.style;
+    state->furi_offset_x = ass_native_furigana_style.offset_x;
+    state->furi_offset_y = ass_native_furigana_style.offset_y;
+    state->furi_auto_placement = ass_native_furigana_style.auto_placement;
+    state->furi_position_explicit = ass_native_furigana_style.position_explicit;
+    state->furi_place_auto = ass_native_furigana_style.place_auto;
+    state->furi_change_pos = ass_native_furigana_style.change_pos;
+}
+
 /**
  * \brief partially reset render_context to style values
  * Works like {\r}: resets some style overrides
@@ -3605,6 +3670,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     ASS_Style *script_style = render_priv->track->styles + state->event->Style;
     const char *active_style_name = style ? style->Name : script_style->Name;
 
+    int extension_sid = (style ? style : script_style) - render_priv->track->styles;
     style = handle_selective_style_overrides(state, style);
 
     /* Warp/curve alignment resets with style. Logical-line \ta decisions
@@ -3648,48 +3714,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
 
     state->border_style = state->line_border_style_set ?
         state->line_border_style : style->BorderStyle;
-    state->bs4_box_mode = state->border_style == 4;
-    state->box_extra_x = 0;
-    state->box_extra_y = 0;
-    state->box_corner_radius = 0;
-    state->box_paint_dirty = true;
-    for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
-        ass_mangetsu_gradient_layer_reset(&state->box_border_color[i]);
-        ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[i]);
-        state->box_border_layers[i] = (BorderLayerState) {
-            .enabled = false,
-            .has_color = false,
-            .has_alpha = false,
-            .size_x = 0,
-            .size_y = 0,
-            .color = style->BackColour,
-        };
-        ass_gradient_values_reset(&state->box_border_layers[i].gradient,
-                                  style->BackColour);
-    }
-    state->border_x = style->Outline;
-    state->border_y = style->Outline;
-    state->border_layers[0] = (BorderLayerState) {
-        .enabled = style->Outline > 0,
-        .has_color = true,
-        .has_alpha = true,
-        .size_x = style->Outline,
-        .size_y = style->Outline,
-        .color = style->OutlineColour,
-    };
-    state->border_layers[0].gradient = state->gradient.layer[2];
-    for (int i = 1; i < ASS_BORDER_LAYERS_MAX; i++) {
-        state->border_layers[i] = (BorderLayerState) {
-            .enabled = false,
-            .has_color = false,
-            .has_alpha = false,
-            .size_x = 0,
-            .size_y = 0,
-            .color = style->OutlineColour,
-        };
-        ass_gradient_values_reset(&state->border_layers[i].gradient,
-                                  style->OutlineColour);
-    }
+    ass_init_style_extension_state(state, style);
     state->scale_x = style->ScaleX;
     state->scale_y = style->ScaleY;
     state->object_scale = 1.0;
@@ -3697,17 +3722,6 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->hspacing = style->Spacing;
     state->fsvp = 0;
     state->fshp = 0;
-    state->furi_enabled = true;
-    state->furi_scale_x = 50.0;
-    state->furi_scale_y = 50.0;
-    state->furi_hspacing = 0.0;
-    state->furi_style = 0;
-    state->furi_offset_x = 0.0;
-    state->furi_offset_y = 0.0;
-    state->furi_auto_placement = true;
-    state->furi_position_explicit = false;
-    state->furi_place_auto = false;
-    state->furi_change_pos = FURI_POSITION_COMPACT;
     state->be = 0;
     state->blur_x = style->Blur;
     state->blur_y = style->Blur;
@@ -3734,6 +3748,9 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     memset(state->chat_side, 0, sizeof(state->chat_side));
     state->chat_receipt = (ASS_ChatReceipt) {.mark = 2};
     state->chat_reset_serial++;
+    if (render_priv->track->parser_priv &&
+            render_priv->track->parser_priv->style_extensions)
+        ass_apply_style_extension(state, extension_sid);
     capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
     state->chat_bubble = (ChatBubbleStyle) {

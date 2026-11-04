@@ -859,10 +859,9 @@ void ass_utf16be_to_utf8(char *dst, size_t dst_size, uint8_t *src, size_t src_si
  * \param track track
  * \param name style name
  * \return index in track->styles
- * Returns 0 if no styles found => expects at least 1 style.
- * Parsing code always adds "Default" style in the beginning.
+ * Returns -1 on no match, without falling back to Default.
  */
-int ass_lookup_style(ASS_Track *track, char *name)
+int ass_lookup_style_strict(ASS_Track *track, char *name)
 {
     int i;
     // '*' seem to mean literally nothing;
@@ -877,6 +876,14 @@ int ass_lookup_style(ASS_Track *track, char *name)
         if (strcmp(track->styles[i].Name, name) == 0)
             return i;
     }
+    return -1;
+}
+
+int ass_lookup_style(ASS_Track *track, char *name)
+{
+    int i = ass_lookup_style_strict(track, name);
+    if (i >= 0)
+        return i;
     i = track->default_style;
     ass_msg(track->library, MSGL_WARN,
             "[%p]: Warning: no style named '%s' found, using '%s'",

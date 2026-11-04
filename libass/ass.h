@@ -816,6 +816,35 @@ int ass_process_mangetsu_colorcoding_line(ASS_Track *track, const char *name,
                                           int is_comment, int is_top_block);
 
 /**
+ * \brief Feed one initial Mangetsu metadata comment for an embedded host.
+ *
+ * Accepts mangetsu-style and the existing Actor Colorcoding metadata, using
+ * the same policies as full ASS text loading. Call after defining styles and
+ * before rendering events. The caller must enforce the shared contiguous
+ * initial metadata block, closing it at unrelated comments or dialogue. This
+ * function does not infer comment types from ass_process_chunk() packets.
+ *
+ * Style targets are resolved strictly; unknown targets warn and remain
+ * unapplied. Accepted metadata is compiled/copied into track-owned storage;
+ * input strings may be released immediately after this call. Updating style
+ * metadata requires a new render pass and must not race rendering.
+ *
+ * \param track target track
+ * \param style ASS Style field (required for mangetsu-style)
+ * \param name ASS Name/Actor field (required for actor declarations)
+ * \param effect ASS Effect field
+ * \param text ASS Text field
+ * \param is_comment 1 only for an ASS Comment event
+ * \param is_top_block 1 only while the initial metadata block is active
+ * \return 1 if recognized (including ignored unknown style targets), 0 if
+ *         unrelated or outside the block, -1 on allocation/track errors
+ */
+int ass_process_mangetsu_metadata_line(ASS_Track *track, const char *style,
+                                      const char *name, const char *effect,
+                                      const char *text, int is_comment,
+                                      int is_top_block);
+
+/**
  * \brief Parse a chunk of subtitle stream data. A chunk contains exactly one
  * event in Matroska format.  See the Matroska specification for details.
  * In later libass versions (since LIBASS_VERSION==0x01300001), using this

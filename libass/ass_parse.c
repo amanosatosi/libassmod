@@ -24,12 +24,14 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
+#include <stddef.h>
 
 #include "ass_library.h"
 #include "ass_render.h"
 #include "ass_parse.h"
 #include "ass_string.h"
 #include "ass_rnd.h"
+#include "ass_priv.h"
 
 #define MAX_VALID_NARGS 33
 #define CURVED_TEXT_MAX_PATH_BYTES 65536
@@ -1364,6 +1366,210 @@ static bool tag_name_matches(char *p, char *name_end, const char *name)
             strcmp(name, "fn"))
         return false;
     return true;
+}
+
+/* Load-time compiled sparse patches. Offsets come only from this internal
+ * allowlist, never from subtitle input. No strings, pointers or complete
+ * rendering states survive compilation. RGB and alpha remain independent. */
+typedef struct {
+    size_t offset, size;
+    uint32_t mask;
+    unsigned char value[sizeof(GradientValues)];
+} StyleExtensionValue;
+
+struct ass_style_extension {
+    int n_values;
+    ASS_FuriganaStyle furigana;
+    StyleExtensionValue values[];
+};
+
+#define EXT_VALUE(field, bits) {offsetof(RenderContext, field), \
+    sizeof(((RenderContext *) 0)->field), bits, {0}}
+#define EXT_FIELD(field) EXT_VALUE(field, 0)
+#define EXT_RGB(field) EXT_VALUE(field, 0xFFFFFF00u)
+#define EXT_ALPHA(field) EXT_VALUE(field, 0xFFu)
+#define EXT_BORDER(field) \
+    EXT_FIELD(field.enabled), EXT_FIELD(field.has_color), \
+    EXT_FIELD(field.has_alpha), EXT_FIELD(field.has_blur), \
+    EXT_FIELD(field.has_be), EXT_FIELD(field.size_x), EXT_FIELD(field.size_y), \
+    EXT_FIELD(field.blur), EXT_FIELD(field.be), \
+    EXT_RGB(field.color), EXT_ALPHA(field.color), EXT_FIELD(field.gradient)
+#define EXT_LAYER(n) EXT_BORDER(border_layers[n]), EXT_BORDER(box_border_layers[n])
+static const StyleExtensionValue extension_fields[] = {
+    EXT_FIELD(furi_enabled), EXT_FIELD(furi_scale_x), EXT_FIELD(furi_scale_y),
+    EXT_FIELD(furi_hspacing), EXT_FIELD(furi_style), EXT_FIELD(furi_offset_x),
+    EXT_FIELD(furi_offset_y), EXT_FIELD(furi_auto_placement),
+    EXT_FIELD(furi_position_explicit), EXT_FIELD(furi_place_auto),
+    EXT_FIELD(furi_change_pos), EXT_FIELD(bs4_box_mode),
+    EXT_FIELD(box_extra_x), EXT_FIELD(box_extra_y), EXT_FIELD(box_corner_radius),
+    EXT_FIELD(border_x), EXT_FIELD(border_y),
+    EXT_LAYER(0), EXT_LAYER(1), EXT_LAYER(2), EXT_LAYER(3), EXT_LAYER(4),
+    EXT_LAYER(5), EXT_LAYER(6), EXT_LAYER(7), EXT_LAYER(8), EXT_LAYER(9),
+    EXT_RGB(c[2]), EXT_ALPHA(c[2]), EXT_FIELD(gradient.layer[2]),
+};
+#undef EXT_LAYER
+#undef EXT_BORDER
+#undef EXT_ALPHA
+#undef EXT_RGB
+#undef EXT_FIELD
+#undef EXT_VALUE
+
+#define EXTENSION_FIELDS (sizeof(extension_fields) / sizeof(extension_fields[0]))
+struct ass_style_extension_builder {
+    bool selected[EXTENSION_FIELDS];
+};
+
+static void select_extension_field(RenderContext *state, size_t offset,
+                                    uint32_t mask)
+{
+    for (size_t i = 0; i < EXTENSION_FIELDS; i++)
+        if (extension_fields[i].offset == offset && extension_fields[i].mask == mask)
+            state->style_extension_parse->selected[i] = true;
+}
+
+static void apply_extension_values(RenderContext *state,
+                                    const struct ass_style_extension *patch)
+{
+    if (!patch)
+        return;
+    for (int i = 0; i < patch->n_values; i++) {
+        const StyleExtensionValue *v = &patch->values[i];
+        unsigned char *dst = (unsigned char *) state + v->offset;
+        if (v->mask) {
+            uint32_t old, value;
+            memcpy(&old, dst, sizeof(old));
+            memcpy(&value, v->value, sizeof(value));
+            value = (old & ~v->mask) | (value & v->mask);
+            memcpy(dst, &value, sizeof(value));
+        } else {
+            memcpy(dst, v->value, v->size);
+        }
+    }
+    state->furi_defaults = &patch->furigana;
+}
+
+void ass_apply_style_extension(RenderContext *state, int sid)
+{
+    struct parser_priv *parser = state->renderer->track->parser_priv;
+    if (parser && sid >= 0 && sid < parser->n_style_extensions)
+        apply_extension_values(state, parser->style_extensions[sid]);
+}
+
+void ass_free_style_extension(ASS_Track *track, int sid)
+{
+    struct parser_priv *parser = track->parser_priv;
+    if (parser && sid >= 0 && sid < parser->n_style_extensions) {
+        free(parser->style_extensions[sid]);
+        parser->style_extensions[sid] = NULL;
+    }
+}
+
+int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
+{
+    struct parser_priv *parser = track->parser_priv;
+    if (sid < 0 || sid >= track->n_styles || !parser || !text)
+        return -1;
+    if (parser->n_style_extensions < track->n_styles) {
+        int old_size = parser->n_style_extensions;
+        if (!ASS_REALLOC_ARRAY(parser->style_extensions, track->n_styles))
+            return -1;
+        memset(parser->style_extensions + old_size, 0,
+               (track->n_styles - old_size) * sizeof(*parser->style_extensions));
+        parser->n_style_extensions = track->n_styles;
+    }
+
+    // Admitted tags never access fonts, caches, time, frame geometry or events.
+    ASS_Renderer *renderer = calloc(1, sizeof(*renderer));
+    RenderContext *state = renderer ? &renderer->state : NULL;
+    struct ass_style_extension *patch = malloc(sizeof(*patch) +
+                            EXTENSION_FIELDS * sizeof(*patch->values));
+    if (!state || !patch) {
+        free(renderer);
+        free(patch);
+        return -1;
+    }
+    ASS_Style *style = &track->styles[sid];
+    renderer->library = track->library;
+    renderer->track = track;
+    state->renderer = renderer;
+    state->style = style;
+    state->c[0] = style->PrimaryColour;
+    state->c[1] = style->SecondaryColour;
+    state->c[2] = style->OutlineColour;
+    state->c[3] = style->BackColour;
+    ass_gradient_state_reset(&state->gradient, state->c);
+    state->border_style = style->BorderStyle;
+    state->blur_x = state->blur_y = style->Blur;
+    ass_init_style_extension_state(state, style);
+
+    unsigned char native[EXTENSION_FIELDS][sizeof(GradientValues)];
+    for (size_t i = 0; i < EXTENSION_FIELDS; i++) {
+        const StyleExtensionValue *v = &extension_fields[i];
+        memcpy(native[i], (unsigned char *) state + v->offset, v->size);
+    }
+    struct ass_style_extension_builder builder = {0};
+    struct ass_style_extension *old = parser->style_extensions[sid];
+    apply_extension_values(state, old);
+    if (old)
+        for (int j = 0; j < old->n_values; j++)
+            for (size_t i = 0; i < EXTENSION_FIELDS; i++)
+                if (old->values[j].offset == extension_fields[i].offset &&
+                        old->values[j].mask == extension_fields[i].mask)
+                    builder.selected[i] = true;
+    memcpy(state->default_style.c, state->c, sizeof(state->c));
+    memcpy(state->default_style.border_layers, state->border_layers,
+           sizeof(state->border_layers));
+    state->default_style.gradient = state->gradient;
+    state->style_extension_parse = &builder;
+    state->colorcode_parse = true; // suppress column-default bookkeeping
+    for (char *p = text; *p;) {
+        if (*p == '{') {
+            char *end = strchr(p + 1, '}');
+            if (!end) {
+                ass_msg(track->library, MSGL_WARN, "Unclosed mangetsu-style block");
+                break;
+            }
+            ass_parse_override_block(state, p + 1, end);
+            p = end + 1;
+        } else {
+            p++;
+        }
+    }
+    patch->n_values = 0;
+    for (size_t i = 0; i < EXTENSION_FIELDS; i++) {
+        StyleExtensionValue v = extension_fields[i];
+        memcpy(v.value, (unsigned char *) state + v.offset, v.size);
+        bool changed;
+        if (v.mask) {
+            uint32_t a, b;
+            memcpy(&a, native[i], sizeof(a));
+            memcpy(&b, v.value, sizeof(b));
+            changed = (a & v.mask) != (b & v.mask);
+        } else {
+            changed = memcmp(native[i], v.value, v.size) != 0;
+        }
+        if (changed || builder.selected[i])
+            patch->values[patch->n_values++] = v;
+    }
+    patch->furigana = (ASS_FuriganaStyle) {
+        .enabled = state->furi_enabled,
+        .scale_x = state->furi_scale_x, .scale_y = state->furi_scale_y,
+        .hspacing = state->furi_hspacing, .style = state->furi_style,
+        .offset_x = state->furi_offset_x, .offset_y = state->furi_offset_y,
+        .auto_placement = state->furi_auto_placement,
+        .position_explicit = state->furi_position_explicit,
+        .place_auto = state->furi_place_auto, .change_pos = state->furi_change_pos,
+    };
+    ass_free_override_buffers(state);
+    free(renderer);
+    // Shrinking is optional; failed realloc leaves the valid patch intact.
+    void *small = realloc(patch, sizeof(*patch) +
+                               patch->n_values * sizeof(*patch->values));
+    if (small)
+        patch = small;
+    parser->style_extensions[sid] = patch;
+    free(old);
+    return 0;
 }
 
 static bool colorcode_tag_allowed(char *p, char *name_end)
@@ -3616,6 +3822,190 @@ void ass_apply_chat_side_style(RenderContext *state, int side)
     sync_layer1_border(state);
 }
 
+typedef struct {
+    const char *name;
+    size_t fields[3];
+    bool integer;
+    bool signed_value;
+} StyleExtensionTag;
+
+#define EXT_OFFSET(field) offsetof(RenderContext, field)
+#define EXT_TAG(name, field, integer, sign) \
+    {name, {EXT_OFFSET(field), SIZE_MAX, SIZE_MAX}, integer, sign}
+static const StyleExtensionTag style_extension_tags[] = {
+    {"furipos", {EXT_OFFSET(furi_offset_x), EXT_OFFSET(furi_offset_y),
+                 EXT_OFFSET(furi_position_explicit)}, false, true},
+    {"furis", {EXT_OFFSET(furi_scale_x), EXT_OFFSET(furi_scale_y), SIZE_MAX}, false, false},
+    EXT_TAG("furisx", furi_scale_x, false, false),
+    EXT_TAG("furisy", furi_scale_y, false, false),
+    EXT_TAG("furifsp", furi_hspacing, false, true),
+    EXT_TAG("furistyle", furi_style, true, false),
+    EXT_TAG("furiplaceauto", furi_place_auto, true, false),
+    EXT_TAG("furichangepos", furi_change_pos, true, false),
+    EXT_TAG("furiap", furi_auto_placement, true, false),
+    EXT_TAG("furi", furi_enabled, true, false),
+    {"boxp", {EXT_OFFSET(box_extra_x), EXT_OFFSET(box_extra_y), SIZE_MAX}, false, false},
+    EXT_TAG("boxpx", box_extra_x, false, false),
+    EXT_TAG("boxpy", box_extra_y, false, false),
+    EXT_TAG("boxr", box_corner_radius, false, false),
+    EXT_TAG("box", bs4_box_mode, true, false),
+};
+#undef EXT_TAG
+#undef EXT_OFFSET
+
+static bool style_extension_border_allowed(NumberedBorderTag tag)
+{
+    return tag == BORDER_TAG_SIZE || tag == BORDER_TAG_SIZE_X ||
+           tag == BORDER_TAG_SIZE_Y || tag == BORDER_TAG_COLOR ||
+           tag == BORDER_TAG_ALPHA || tag == BORDER_TAG_BLUR ||
+           tag == BORDER_TAG_BE || tag == BORDER_TAG_BOX_SIZE ||
+           tag == BORDER_TAG_BOX_COLOR || tag == BORDER_TAG_BOX_ALPHA;
+}
+
+static NumberedBorderTag style_extension_border_tag(char *p, char *end,
+                                                    int *layer,
+                                                    struct arg *inline_arg)
+{
+    NumberedBorderTag tag = parse_numbered_border_tag(p, end, layer, inline_arg);
+    static const char *const names[] = {"bbs", "bbc", "bba"};
+    static const NumberedBorderTag tags[] = {
+        BORDER_TAG_BOX_SIZE, BORDER_TAG_BOX_COLOR, BORDER_TAG_BOX_ALPHA};
+    for (int i = 0; i < 3 && tag == BORDER_TAG_NONE; i++) {
+        if (tag_name_matches(p, end, names[i])) {
+            tag = tags[i];
+            *layer = 0;
+            *inline_arg = (struct arg) {p + 3, end};
+        }
+    }
+    return tag;
+}
+
+static const StyleExtensionTag *find_style_extension_tag(char *p, char *end)
+{
+    for (size_t i = 0; i < sizeof(style_extension_tags) / sizeof(*style_extension_tags); i++)
+        if (tag_name_matches(p, end, style_extension_tags[i].name))
+            return &style_extension_tags[i];
+    return NULL;
+}
+
+static bool style_extension_name_allowed(char *p, char *end)
+{
+    if (find_style_extension_tag(p, end))
+        return true;
+    int layer;
+    struct arg arg;
+    return style_extension_border_allowed(style_extension_border_tag(p, end, &layer, &arg));
+}
+
+/* Validate metadata more strictly than historical inline tags, then let the
+ * normal override parser perform the actual rendering-state updates. This also
+ * records explicitly specified values equal to the native defaults. */
+static bool prepare_style_extension_tag(RenderContext *state, char *p,
+                                         char *name_end, char *tag_end,
+                                         struct arg *args, int nargs,
+                                         bool has_backslash)
+{
+    if (has_backslash || (*name_end == '(' && tag_end[-1] != ')'))
+        return false;
+    const StyleExtensionTag *spec = find_style_extension_tag(p, name_end);
+    int layer = -1;
+    struct arg inline_arg = {NULL, NULL};
+    NumberedBorderTag border = BORDER_TAG_NONE;
+    if (spec)
+        inline_arg = (struct arg) {p + strlen(spec->name), name_end};
+    else
+        border = style_extension_border_tag(p, name_end, &layer, &inline_arg);
+    rskip_spaces(&inline_arg.end, inline_arg.start);
+    bool has_inline = inline_arg.start < inline_arg.end;
+    if (has_inline && nargs)
+        return false;
+    struct arg arg = has_inline ? inline_arg :
+                     nargs ? args[0] : (struct arg) {NULL, NULL};
+    uint32_t color;
+    bool rgb = border == BORDER_TAG_COLOR || border == BORDER_TAG_BOX_COLOR;
+    bool alpha = border == BORDER_TAG_ALPHA || border == BORDER_TAG_BOX_ALPHA;
+    if (rgb || alpha) {
+        if (nargs > 1 || (arg.start && (rgb ?
+                !parse_ass_color_arg_strict(arg, &color) :
+                !parse_ass_alpha_arg_strict(arg, &color))))
+            return false;
+    } else {
+        int count = has_inline ? 1 : nargs;
+        if (spec && !strcmp(spec->name, "furipos") && count && count != 2)
+            return false;
+        for (int i = 0; i < count; i++) {
+            struct arg value = has_inline ? inline_arg : args[i];
+            if (spec && spec->integer) {
+                int32_t number;
+                if (!parse_int32_arg_strict(value, &number) ||
+                        (!strcmp(spec->name, "furistyle") && (number < 0 || number > 2)) ||
+                        (!strcmp(spec->name, "box") && number != 0 && number != 1))
+                    return false;
+            } else {
+                NumericOperand operand;
+                NumericDomain domain = spec && spec->signed_value ? NUM_SIGNED : NUM_NONNEGATIVE;
+                if (!parse_numeric_operand(value, domain, true, &operand))
+                    return false;
+                if (spec)
+                    for (int axis = 0; axis < 2; axis++) {
+                        if (spec->fields[axis] == SIZE_MAX)
+                            break;
+                        double current;
+                        memcpy(&current, (unsigned char *) state + spec->fields[axis],
+                               sizeof(current));
+                        if (!isfinite(resolve_numeric_operand(operand, current)))
+                            return false;
+                    }
+            }
+        }
+    }
+    if (spec) {
+        for (int i = 0; i < 3; i++)
+            if (spec->fields[i] != SIZE_MAX)
+                select_extension_field(state, spec->fields[i], 0);
+        return true;
+    }
+    bool box = border == BORDER_TAG_BOX_SIZE || border == BORDER_TAG_BOX_COLOR ||
+               border == BORDER_TAG_BOX_ALPHA;
+    size_t base = (box ? offsetof(RenderContext, box_border_layers) :
+                        offsetof(RenderContext, border_layers)) + layer * sizeof(BorderLayerState);
+#define SELECT_BORDER(member, mask) \
+    select_extension_field(state, base + offsetof(BorderLayerState, member), mask)
+    if (rgb || alpha) {
+        SELECT_BORDER(color, rgb ? 0xFFFFFF00u : 0xFFu);
+        if (rgb) SELECT_BORDER(has_color, 0);
+        else SELECT_BORDER(has_alpha, 0);
+        if (!box && !layer)
+            select_extension_field(state, offsetof(RenderContext, c[2]),
+                                   rgb ? 0xFFFFFF00u : 0xFFu);
+    } else if (border == BORDER_TAG_BLUR || border == BORDER_TAG_BE) {
+        if (border == BORDER_TAG_BLUR) {
+            SELECT_BORDER(blur, 0);
+            SELECT_BORDER(has_blur, 0);
+        } else {
+            SELECT_BORDER(be, 0);
+            SELECT_BORDER(has_be, 0);
+        }
+    } else {
+        if (border != BORDER_TAG_SIZE_Y) SELECT_BORDER(size_x, 0);
+        if (border != BORDER_TAG_SIZE_X) SELECT_BORDER(size_y, 0);
+        SELECT_BORDER(enabled, 0);
+        if (!box && !layer) {
+            if (border != BORDER_TAG_SIZE_Y)
+                select_extension_field(state, offsetof(RenderContext, border_x), 0);
+            if (border != BORDER_TAG_SIZE_X)
+                select_extension_field(state, offsetof(RenderContext, border_y), 0);
+        }
+    }
+#undef SELECT_BORDER
+    return true;
+}
+
+static const ASS_FuriganaStyle *furigana_defaults(const RenderContext *state)
+{
+    return state->furi_defaults ? state->furi_defaults : &ass_native_furigana_style;
+}
+
 char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested)
 {
@@ -3636,6 +4026,22 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             continue;
 
         char *name_end = q;
+
+        // Reject whole unsupported tags, including nested transforms, before
+        // any early handler can interpret them or execute their child tags.
+        if (state->style_extension_parse && !style_extension_name_allowed(p, name_end)) {
+            if (*q == '(') {
+                int depth = 1;
+                for (q++; q < end && depth; q++) {
+                    if (*q == '(') depth++;
+                    else if (*q == ')') depth--;
+                }
+            }
+            ass_msg(render_priv->library, MSGL_V,
+                    "Ignoring unsupported mangetsu-style tag: %.*s",
+                    (int) (name_end - p), p);
+            continue;
+        }
 
         if (state->chat_side_only_parse &&
             !chat_structural_name_is(p, name_end, "msgleft") &&
@@ -3755,6 +4161,13 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     }
                 }
             }
+        }
+
+        if (state->style_extension_parse &&
+                !prepare_style_extension_tag(state, p, name_end, q, args, nargs,
+                                             has_backslash_arg)) {
+            ass_msg(render_priv->library, MSGL_V, "Ignoring malformed mangetsu-style tag");
+            continue;
         }
 
 #define tag(name) (mystrcmp(&p, (name)) && (push_arg(args, &nargs, p, name_end), 1))
@@ -3892,14 +4305,14 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (numbered_border_tag == BORDER_TAG_IGNORE) {
             continue;
         } else if (numbered_border_tag != BORDER_TAG_NONE) {
-            if (state->colorcode_parse &&
+            if (state->colorcode_parse && !state->style_extension_parse &&
                     !colorcode_numbered_border_tag_allowed(numbered_border_tag))
                 continue;
             apply_numbered_border_tag(state, numbered_border_tag,
                                       numbered_border_layer, args, nargs,
                                       numbered_border_arg, name_end, q, pwr,
                                       nested);
-        } else if (state->colorcode_parse &&
+        } else if (state->colorcode_parse && !state->style_extension_parse &&
                    !colorcode_tag_allowed(p, name_end)) {
             continue;
         } else if (secondary_outline_color_tag) {
@@ -4223,16 +4636,21 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->soft_scale = 1.0;
             }
         } else if (tag("furiplaceauto")) {
-            state->furi_place_auto = nargs && argtoi32(*args) != 0;
+            state->furi_place_auto = nargs ? argtoi32(*args) != 0 :
+                                     furigana_defaults(state)->place_auto;
         } else if (tag("furichangepos")) {
-            int mode = nargs ? argtoi32(*args) : 0;
-            state->furi_change_pos = mode == 2 ? FURI_POSITION_STRICT :
-                mode ? FURI_POSITION_BLOCK : FURI_POSITION_COMPACT;
+            if (nargs) {
+                int mode = argtoi32(*args);
+                state->furi_change_pos = mode == 2 ? FURI_POSITION_STRICT :
+                    mode ? FURI_POSITION_BLOCK : FURI_POSITION_COMPACT;
+            } else {
+                state->furi_change_pos = furigana_defaults(state)->change_pos;
+            }
         } else if (complex_tag("furipos")) {
             if (!nargs) {
-                state->furi_offset_x = 0.0;
-                state->furi_offset_y = 0.0;
-                state->furi_position_explicit = false;
+                state->furi_offset_x = furigana_defaults(state)->offset_x;
+                state->furi_offset_y = furigana_defaults(state)->offset_y;
+                state->furi_position_explicit = furigana_defaults(state)->position_explicit;
             } else if (nargs == 2) {
                 state->furi_offset_x =
                     state->furi_offset_x * (1 - pwr) +
@@ -4243,23 +4661,27 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->furi_position_explicit = true;
             }
         } else if (tag("furifsp")) {
-            double val = nargs ? numeric_argtod(*args, state->furi_hspacing, NUM_SIGNED) : 0.0;
+            double val = nargs ? numeric_argtod(*args, state->furi_hspacing, NUM_SIGNED) :
+                                 furigana_defaults(state)->hspacing;
             state->furi_hspacing =
                 state->furi_hspacing * (1 - pwr) + val * pwr;
         } else if (tag("furistyle")) {
-            int32_t val = nargs ? argtoi32(*args) : 0;
+            int32_t val = nargs ? argtoi32(*args) : furigana_defaults(state)->style;
             if (val >= 0 && val <= 2)
                 state->furi_style = val;
         } else if (tag("furisx")) {
-            double val = nargs ? numeric_argtod(*args, state->furi_scale_x, NUM_NONNEGATIVE) : 50.0;
+            double val = nargs ? numeric_argtod(*args, state->furi_scale_x, NUM_NONNEGATIVE) :
+                                 furigana_defaults(state)->scale_x;
             val = state->furi_scale_x * (1 - pwr) + val * pwr;
             state->furi_scale_x = val < 0 ? 0 : val;
         } else if (tag("furisy")) {
-            double val = nargs ? numeric_argtod(*args, state->furi_scale_y, NUM_NONNEGATIVE) : 50.0;
+            double val = nargs ? numeric_argtod(*args, state->furi_scale_y, NUM_NONNEGATIVE) :
+                                 furigana_defaults(state)->scale_y;
             val = state->furi_scale_y * (1 - pwr) + val * pwr;
             state->furi_scale_y = val < 0 ? 0 : val;
         } else if (tag("furis")) {
-            double val = 50.0, val_y = 50.0;
+            double val = furigana_defaults(state)->scale_x;
+            double val_y = furigana_defaults(state)->scale_y;
             if (nargs)
                 numeric_argtod_pair(*args, state->furi_scale_x, state->furi_scale_y,
                                     NUM_NONNEGATIVE, &val, &val_y);
@@ -4268,10 +4690,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->furi_scale_x = x < 0 ? 0 : x;
             state->furi_scale_y = y < 0 ? 0 : y;
         } else if (tag("furiap")) {
-            int32_t val = nargs ? argtoi32(*args) : 1;
+            int32_t val = nargs ? argtoi32(*args) : furigana_defaults(state)->auto_placement;
             state->furi_auto_placement = val != 0;
         } else if (tag("furi")) {
-            int32_t val = nargs ? argtoi32(*args) : 1;
+            int32_t val = nargs ? argtoi32(*args) : furigana_defaults(state)->enabled;
             state->furi_enabled = val != 0;
         } else if (tag("fsp")) {
             double val;

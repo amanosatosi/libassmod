@@ -70,6 +70,12 @@ Mangetsu native vertical layout uses `\vert1`, with `\vtype`, `\vdir`, `\vsp`,
 and `\vcolsp` controlling per-unit layout, columns, and spacing. These layout controls
 are not animated. See [native vertical text](docs/native-vertical.md).
 
+Mangetsu style defaults can be set once with initial `Comment` events whose
+Effect is `mangetsu-style`. For example, put `{\furis70}` in a comment targeting
+your furigana style to inherit it on every dialogue using that style. This
+coexists with Actor Colorcoding; see [style extensions](docs/style-extensions.md)
+for supported tags, precedence and reset behavior.
+
 ---
 
 ### Projection & blur

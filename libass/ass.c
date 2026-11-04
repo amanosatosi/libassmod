@@ -194,10 +194,11 @@ void ass_free_track(ASS_Track *track)
         return;
 
     if (track->parser_priv) {
+        for (int sid = 0; sid < track->parser_priv->n_style_extensions; sid++)
+            ass_free_style_extension(track, sid);
         free(track->parser_priv->read_order_bitmap);
         free(track->parser_priv->fontname);
         free(track->parser_priv->fontdata);
-        free(track->parser_priv);
     }
     free(track->style_format);
     free(track->event_format);
@@ -207,6 +208,10 @@ void ass_free_track(ASS_Track *track)
             ass_free_style(track, i);
     }
     free(track->styles);
+    if (track->parser_priv) {
+        free(track->parser_priv->style_extensions);
+        free(track->parser_priv);
+    }
     if (track->events) {
         for (i = 0; i < track->n_events; ++i)
             ass_free_event(track, i);
@@ -277,6 +282,7 @@ void ass_free_style(ASS_Track *track, int sid)
 {
     ASS_Style *style = track->styles + sid;
 
+    ass_free_style_extension(track, sid);
     free(style->Name);
     free(style->FontName);
 }
@@ -608,7 +614,7 @@ static char *next_token(char **str, bool rtrim)
  * \param n_ignored number of format options to skip at the beginning
 */
 static int process_event_tail(ASS_Track *track, ASS_Event *event,
-                              char *str, int n_ignored)
+                              char *str, int n_ignored, bool metadata)
 {
     char *token;
     char *tname;
@@ -645,7 +651,9 @@ static int process_event_tail(ASS_Track *track, ASS_Event *event,
         ALIAS(Actor, Name)      // both variants are used in files
         PARSE_START
             INTVAL(Layer)
-            STYLEVAL(Style)
+        } else if (ass_strcasecmp(tname, "Style") == 0) {
+            target->Style = metadata ? ass_lookup_style_strict(track, token) :
+                                      ass_lookup_style(track, token);
             STRVAL(Name)
             STRVAL(Effect)
             INTVAL(MarginL)
@@ -717,17 +725,36 @@ static int try_process_actor_colorcode_event(ASS_Track *track, bool is_comment,
     return 1;
 }
 
-static int process_colorcode_comment(ASS_Track *track, char *str)
+static int try_process_metadata_event(ASS_Track *track, bool is_comment,
+                                      const ASS_Event *event, bool top_scan_active)
+{
+    if (!top_scan_active || !is_comment)
+        return 0;
+    if (event->Effect && !strcmp(event->Effect, "mangetsu-style")) {
+        // Unknown targets remain recognized metadata but must never use the
+        // ordinary event-style fallback to Default.
+        if (event->Style < 0 || event->Style >= track->n_styles) {
+            ass_msg(track->library, MSGL_WARN,
+                    "Ignoring mangetsu-style metadata for an unknown style");
+            return 1;
+        }
+        return ass_parse_style_extension(track, event->Style,
+                                         event->Text ? event->Text : "") < 0 ? -1 : 1;
+    }
+    return try_process_actor_colorcode_event(track, is_comment, event, top_scan_active);
+}
+
+static int process_metadata_comment(ASS_Track *track, char *str)
 {
     if (!track->event_format)
         return 0;
 
-    ASS_Event event = {0};
-    int ret = process_event_tail(track, &event, str, 0);
+    ASS_Event event = {.Style = -1};
+    int ret = process_event_tail(track, &event, str, 0, true);
     if (ret)
         goto done;
 
-    ret = try_process_actor_colorcode_event(track, true, &event, true);
+    ret = try_process_metadata_event(track, true, &event, true);
 
 done:
     free(event.Name);
@@ -749,6 +776,24 @@ int ass_process_mangetsu_colorcoding_line(ASS_Track *track, const char *name,
     event.Text = (char *) (text ? text : "");
     return try_process_actor_colorcode_event(track, is_comment == 1, &event,
                                              is_top_block == 1);
+}
+
+int ass_process_mangetsu_metadata_line(ASS_Track *track, const char *style,
+                                      const char *name, const char *effect,
+                                      const char *text, int is_comment,
+                                      int is_top_block)
+{
+    if (!track)
+        return -1;
+    if (is_comment != 1 || is_top_block != 1)
+        return 0;
+    ASS_Event event = {
+        .Style = style ? ass_lookup_style_strict(track, (char *) style) : -1,
+        .Name = (char *) (name ? name : ""),
+        .Effect = (char *) (effect ? effect : ""),
+        .Text = (char *) (text ? text : ""),
+    };
+    return try_process_metadata_event(track, true, &event, true);
 }
 
 static void set_style_alpha(ASS_Style *style, int32_t front_alpha, int32_t back_alpha)
@@ -1259,7 +1304,7 @@ static int process_events_line(ASS_Track *track, char *str)
             return -1;
         event = track->events + eid;
 
-        int ret = process_event_tail(track, event, str, 0);
+        int ret = process_event_tail(track, event, str, 0, false);
         if (!ret) {
             update_prune_ts(track, event->Start + event->Duration);
             return 0;
@@ -1272,7 +1317,7 @@ static int process_events_line(ASS_Track *track, char *str)
         if (track->parser_priv->colorcode_scan_top) {
             char *p = str + 8;
             skip_spaces(&p);
-            int ret = process_colorcode_comment(track, p);
+            int ret = process_metadata_comment(track, p);
             if (ret < 0)
                 return ret;
             if (ret > 0)
@@ -1280,7 +1325,7 @@ static int process_events_line(ASS_Track *track, char *str)
             track->parser_priv->colorcode_scan_top = 0;
             track->parser_priv->colorcode_block_closed = 1;
         }
-        // Ignore non-colorcoding Comments
+        // Ignore ordinary comments; neither metadata type creates an event.
     } else {
         track->parser_priv->colorcode_scan_top = 0;
         if (track->event_format)
@@ -1590,7 +1635,7 @@ void ass_process_chunk(ASS_Track *track, const char *data, int size,
         NEXTVAL(p, token);
         event->Layer = parse_int_header(token);
 
-        if (process_event_tail(track, event, p, 3))
+        if (process_event_tail(track, event, p, 3, false))
             break;
 
         event->Start = timecode;

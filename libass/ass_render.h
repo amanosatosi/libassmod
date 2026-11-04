@@ -564,6 +564,17 @@ typedef enum {
     FURI_POSITION_STRICT = 2,  // complete interline bands, base anchor
 } FuriPositionMode;
 
+/* Typed, immutable effective defaults. Render contexts borrow either the
+ * native constant or the active track's compiled style extension. */
+typedef struct {
+    bool enabled;
+    double scale_x, scale_y, hspacing;
+    int style;
+    double offset_x, offset_y;
+    bool auto_placement, position_explicit, place_auto;
+    FuriPositionMode change_pos;
+} ASS_FuriganaStyle;
+
 typedef struct {
     int base_start;
     int base_len;
@@ -830,6 +841,7 @@ struct render_context {
     bool furi_position_explicit;
     bool furi_place_auto;
     FuriPositionMode furi_change_pos;
+    const ASS_FuriganaStyle *furi_defaults;
     double border_x;            // outline width
     double border_y;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
@@ -921,6 +933,7 @@ struct render_context {
     ColumnStyleState column_base_style;
     ColumnStyleState default_style;
     bool colorcode_parse;
+    struct ass_style_extension_builder *style_extension_parse;
 
     // used to store RenderContext.style when doing selective style overrides
     ASS_Style override_style_temp_storage;

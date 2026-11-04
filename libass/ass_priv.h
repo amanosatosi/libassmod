@@ -66,11 +66,19 @@ struct parser_priv {
 
     uint32_t feature_flags;
 
+    // Shared initial metadata block: Actor Colorcoding and style extensions.
     int colorcode_scan_top;
     int colorcode_block_closed;
+
+    // Indexed by ASS style ID; allocated only for mangetsu-style metadata.
+    struct ass_style_extension **style_extensions;
+    int n_style_extensions;
 
     long long prune_delay;
     long long prune_next_ts;
 };
+
+int ass_parse_style_extension(ASS_Track *track, int sid, char *text);
+void ass_free_style_extension(ASS_Track *track, int sid);
 
 #endif /* LIBASS_PRIV_H */

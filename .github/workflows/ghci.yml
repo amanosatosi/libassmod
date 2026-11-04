@@ -140,7 +140,7 @@ jobs:
         if: matrix.msystem
         with:
           msystem: ${{ matrix.msystem }}
-          update: false
+          update: true
 
       - name: install deps
         run: |
@@ -155,8 +155,9 @@ jobs:
               pacman --noconfirm -S \
                       automake autoconf libtool nasm make \
                       $pre-pkg-config $pre-gcc \
-                      $pre-fribidi $pre-freetype $pre-harfbuzz $pre-fontconfig \
+                      $pre-freetype $pre-harfbuzz \
                       $pre-libpng
+              bash .github/scripts/install-mingw-render-deps.sh
               ;;
             alpine:*)
               apk add nasm ${{ matrix.cc }} musl-dev \

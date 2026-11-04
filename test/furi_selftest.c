@@ -2542,6 +2542,11 @@ int main(int argc, char **argv)
     snprintf(fit_long, sizeof(fit_long),
              "%s{\\furistyle2}LH<A|WWWW>RH", layout_prefix);
 
+    // No metadata: parameterless tags retain native defaults, including axes.
+    fail |= expect_same("{\\furis80\\furis}<A|BBBB>", "{\\furis50}<A|BBBB>");
+    fail |= expect_same("{\\furis80\\furisx}<A|BBBB>", "{\\furisx50\\furisy80}<A|BBBB>");
+    fail |= expect_same("{\\furis80\\furisy}<A|BBBB>", "{\\furisx80\\furisy50}<A|BBBB>");
+
     // Cases A/B: two- and three-glyph ruby keep a one-glyph base advance.
     fail |= expect_same_base_span(one_short, one_two);
     fail |= expect_same_base_span(one_short, one_three);

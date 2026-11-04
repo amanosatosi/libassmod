@@ -13,7 +13,9 @@ after the `[Events]` `Format:` line. A line belongs to the block only when:
 - `Effect` is `mangetsu-colorcoding` after trimming surrounding spaces
 - `Name` is non-empty
 
-Parsing stops at the first event line that does not match. Later matching
+The block may also contain [style-extension metadata](style-extensions.md)
+with Effect `mangetsu-style`, in either order. Parsing stops at the first
+event line belonging to neither recognized metadata type. Later matching
 comments elsewhere in the file are ignored as normal comments.
 
 Hosts that bypass full ASS text parsing must still pass this metadata to
@@ -22,6 +24,10 @@ Dialogue/Comment event-type field, so it cannot safely discover colorcoding
 comments by itself. Integrations that strip comment events or construct tracks
 directly should feed the top metadata block with
 `ass_process_mangetsu_colorcoding_line()` before rendering dialogue events.
+Hosts preserving several kinds of initial metadata can instead feed both actor
+and style comments through `ass_process_mangetsu_metadata_line()`. The existing
+actor-only API, marker matching and whitelist/reset rules are unchanged. The
+host must enforce one initial contiguous block for both metadata types.
 
 ```ass
 [Events]
@@ -144,10 +150,11 @@ For each dialogue line, libassmod builds state in this order:
 
 1. active ASS style
 2. native libassmod extended defaults
-3. actor colorcoding patch, if applicable
-4. the dialogue line's own inline tags
+3. active style's `mangetsu-style` defaults, if present
+4. actor colorcoding patch, if applicable
+5. the dialogue line's own inline tags
 
-Blank appearance resets return to the effective default from steps 1-3. For
+Blank appearance resets return to the effective default from steps 1-4. For
 example, if actor colorcoding sets `\fs42`, then inline `\fs` resets to `42`.
 If actor colorcoding sets `\1c&HFFB6D9&`, then inline `\1c` resets to that
 color.

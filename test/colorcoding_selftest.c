@@ -709,6 +709,17 @@ int main(void)
 
     bool ok = true;
 
+    ok &= expect_events_same(
+        lib, renderer,
+        "Comment: 0,0:00:00.00,0:00:00.00,Default,Nene,0,0,0,mangetsu-colorcoding,{\\1c&HFFB6D9&}\n"
+        "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\furis70}\n"
+        "Comment: 0,0:00:00.00,0:00:00.00,Default,Metan,0,0,0,mangetsu-colorcoding,{\\1c&H0000FF&}\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(160,180)}ActorA\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Metan,0,0,0,,{\\pos(480,180)}ActorB\n",
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Nene,0,0,0,,{\\pos(160,180)\\1c&HFFB6D9&}ActorA\n"
+        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,Metan,0,0,0,,{\\pos(480,180)\\1c&H0000FF&}ActorB\n",
+        "interleaved style metadata interrupted actor scanning or changed actor colors");
+
     ok &= expect_same(
         lib, renderer,
         "Comment: 0,0:00:00.00,9:59:59.99,Default,Nene,0,0,0,mangetsu-colorcoding,{\\fs42\\1c&HFFB6D9&}\n",

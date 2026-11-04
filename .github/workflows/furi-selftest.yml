@@ -15,15 +15,57 @@ jobs:
           sudo apt-get install -y meson ninja-build pkg-config libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev libpng-dev fonts-noto-core
       - name: Configure sanitizers
         run: meson setup build -Dtest=enabled -Db_sanitize=address,undefined -Db_lundef=false -Ddefault_library=static
-      - name: Build furigana tests
-        run: meson compile -C build furi_unit native_vertical_furigana_unit native_vertical_render_unit native_vertical_layout_unit
-      - name: Run parser and layout regressions
+      - name: Build regression tests
+        run: meson compile -C build
+      - name: Run full available regression suite
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: meson test -C build --no-rebuild --print-errorlogs 'furi-*' 'native-vertical-*'
+        run: meson test -C build --no-rebuild --print-errorlogs --num-processes 2
+      - name: Run style metadata and lifetime regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+        run: meson test -C build --no-rebuild --print-errorlogs style-extensions
       - name: Upload test log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: furi-selftest-log
           path: build/meson-logs/testlog.txt
+
+  style-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: db2865d582142717e09160550160b52126aa656b
+          path: .bench-baseline
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config nasm libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev
+      - name: Build identical release configurations on the runner
+        run: |
+          for revision in baseline candidate; do
+            source=.
+            if [ "$revision" = baseline ]; then source=.bench-baseline; fi
+            build="perf-build-$revision"
+            meson setup "$build" "$source" --buildtype=release -Ddefault_library=shared -Dtest=disabled -Dcompare=disabled -Dprofile=disabled -Dfuzz=disabled
+            meson compile -C "$build"
+            cc -std=c99 -O2 -I"$source/libass" test/style_extensions_bench.c \
+              -L"$build/libass" -Wl,-rpath,"$PWD/$build/libass" -lass -o "$build/style-bench"
+          done
+      - name: Compare warmed baseline and candidate rendering
+        run: |
+          python3 .github/scripts/compare-style-performance.py \
+            ./perf-build-baseline/style-bench ./perf-build-candidate/style-bench \
+            test/fonts/NotoSansMyanmar-Regular.ttf compare/test/font1.ttf
+      - name: Upload raw benchmark measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: style-performance
+          path: |
+            style-performance.json
+            style-performance.md

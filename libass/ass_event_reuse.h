@@ -119,7 +119,8 @@ static bool repeated_event_eligible(RenderContext *state)
         (event->Name && *event->Name) || (event->Effect && *event->Effect) ||
         state->renderer->track->colorcode.n_actors ||
         state->renderer->track->colorcode.has_applied_styles ||
-        state->border_style != 1 || state->flags || state->native_vertical ||
+        state->border_style != 1 || state->bs4_box_mode ||
+        state->flags || state->native_vertical ||
         state->chat_enabled || state->n_scroll_contexts || state->column_event ||
         state->text_info.n_furi_groups || state->clip_drawing_text.str ||
         state->distort_enabled || state->curved_path_outline ||

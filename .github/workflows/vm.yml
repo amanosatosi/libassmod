@@ -40,6 +40,7 @@ jobs:
             # telling libiconv’s header to pose as system iconv resolves the mismatch.
             CC: 'clang -DLIBICONV_PLUG=1 -fsanitize=address -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all'
             confflags: ''
+            confenv: 'PKG_CONFIG_PATH=/tmp/libass-ci-pkgconfig'
             # Leak detection appears to find false positives in libc and external libs
             ASAN_OPTIONS: detect_leaks=0
             ART_REG_SKIP: ''
@@ -130,6 +131,23 @@ jobs:
                   git nasm ca_root_nss \
                   autoconf automake libtool pkgconf \
                   freetype2 fribidi harfbuzz fontconfig png
+                # FreeType packages built on newer FreeBSD can require bzip2.pc,
+                # which FreeBSD 14's base libbz2 does not ship (ports #290368).
+                # Describe the actual base library without editing package files
+                # or removing the dependency from FreeType's metadata.
+                mkdir -p /tmp/libass-ci-pkgconfig
+                if ! pkg-config --exists bzip2; then
+                  test -f /usr/include/bzlib.h
+                  test -f /usr/lib/libbz2.so
+                  bzversion=$(bzip2 -V 2>&1 | sed -n 's/.*Version \([0-9][0-9.]*\).*/\1/p' | head -n 1)
+                  test -n "$bzversion"
+                  printf '%s\n' \
+                    'Name: bzip2' 'Description: FreeBSD base libbz2' \
+                    "Version: $bzversion" 'Libs: -lbz2' \
+                    > /tmp/libass-ci-pkgconfig/bzip2.pc
+                fi
+                PKG_CONFIG_PATH=/tmp/libass-ci-pkgconfig \
+                  pkg-config --print-errors --exists freetype2
                 ;;
               openbsd)
                 # while OpenBSD natively uses doas,
@@ -142,11 +160,24 @@ jobs:
                   fribidi harfbuzz libunibreak png
                 ;;
               haiku)
-                pkgman install -y \
-                  git nasm gcc make pkgconfig \
-                  libtool autoconf automake \
-                  freetype_devel fribidi_devel harfbuzz_devel \
-                  fontconfig_devel libunibreak_devel libpng16_devel
+                pkgman list-repos
+                # A failed automatic refresh otherwise uses stale image indexes
+                # and requests removed package versions. Refresh explicitly and
+                # retry transient mirror/checksum failures, retaining all deps.
+                for attempt in 1 2 3; do
+                  if pkgman refresh && pkgman install -y \
+                    git nasm gcc make pkgconfig \
+                    libtool autoconf automake \
+                    freetype_devel fribidi_devel harfbuzz_devel \
+                    fontconfig_devel libunibreak_devel libpng16_devel; then
+                    break
+                  fi
+                  if [ "$attempt" = 3 ]; then
+                    echo 'Haiku repository refresh/package install failed after 3 attempts' >&2
+                    exit 1
+                  fi
+                  sleep 5
+                done
                 ;;
               omnios)
                 # "ooce" extra packages are not in regular search paths.
