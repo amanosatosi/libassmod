@@ -117,8 +117,8 @@ accepted. Splitting or joining those comments does not change the result.
 **Inline dialogue remains last-valid-source-wins.** Inline \vc, \grd, or
 \img can replace inherited color paint. Image fills are still unsupported
 inside style metadata. Bare and named \r restore the target style’s compiled
-paint before the existing actor patch. Empty vector/attached gradient tags and
-attached inline 0 resets restore the inherited source for that target/channel,
+paint before the existing actor patch. Bare vector tags, empty attached
+gradient parentheses, and attached inline 0 resets restore the inherited source for that target/channel,
 when configured. Without a configured gradient, the historical reset behavior
 is unchanged. Empty positioned color tags retain their restriction to a current
 positioned source, then restore the style’s source; they do not disturb an
