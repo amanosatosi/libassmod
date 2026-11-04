@@ -3380,6 +3380,9 @@ static void capture_effective_default_state(RenderContext *state)
     style->pattern = state->pattern;
     style->image_fill = state->image_fill;
     style->blend_mode = state->blend_mode;
+    style->fshp = state->fshp;
+    style->ortho = state->ortho;
+    style->secondary_outline_color = state->secondary_outline.color;
     copy_karaoke_border_colors(&style->secondary_border, &state->secondary_border);
     memcpy(style->border_layers, state->border_layers,
            sizeof(style->border_layers));
@@ -3772,6 +3775,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->rnd_x = state->rnd_y = state->rnd_z = 0;
     state->rnd_seed = 0;
     state->needs_rgba = false;
+    state->extension_defaults = NULL;
     state->distort_enabled = false;
     state->distort_extended = false;
     state->distort = (ASS_DistortParams) {

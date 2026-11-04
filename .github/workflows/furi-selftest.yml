@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          ref: 5a1ed3d1ee2a3a0837af5d1c395d301de800046b
+          ref: 423f526228e2210b7df277662f61c0d6b37f74ad
           path: .bench-baseline
       - name: Install benchmark dependencies
         run: |

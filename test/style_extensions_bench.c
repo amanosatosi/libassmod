@@ -31,6 +31,9 @@ int main(int argc, char **argv)
     const char *workload = argv[4];
     int ruby = !strncmp(workload, "furi-", 5);
     int metadata = !strcmp(workload, "furi-metadata");
+    int gradient = !strncmp(workload, "gradient-", 9);
+    int gradient_metadata = !strcmp(workload, "gradient-metadata");
+    const char *gradient_tags = "{\\grd(45,&HFF0000&,&H0000FF&)\\1gra(0,&H00&,&H40&)}";
     if (frames <= 0 || frames > 1000000) return 1;
     ASS_Library *lib = ass_library_init();
     if (!lib) return 1;
@@ -52,23 +55,44 @@ int main(int argc, char **argv)
         "0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1\n"
         "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n%s",
         ruby ? "Noto Sans Myanmar" : "Pixel Operator Mono",
-        metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\furis70}\n" : "");
+        metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\furis70}\n" :
+        gradient_metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\grd(45,&HFF0000&,&H0000FF&)\\1gra(0,&H00&,&H40&)}\n" : "");
     for (int i = 0; i < 12; i++) {
         const char *tags = ruby ? (metadata ? "" : "{\\furis70}") :
+            !strcmp(workload, "gradient-borders") ? "{\\bord2\\2bs3\\2bgrd(45,&HFF0000&,&H0000FF&)\\3bs2\\3bgrd(0,&H00FF00&,&HFFFFFF&)}" :
+            gradient ? (gradient_metadata ? "" : gradient_tags) :
             !strcmp(workload, "vertical-inline") ? "{\\vert1\\vtype2\\vsp2\\vcolsp8}" :
             !strcmp(workload, "border-karaoke") ? "{\\bord2\\2bs3\\2bc&HFF0000&\\3bs2\\3bc&H00FF00&\\kf100}" :
             !strcmp(workload, "ordinary-overrides") ? "{\\bord2\\blur0.5\\1c&H40A0FF&}" : "";
         length += snprintf(script + length, sizeof(script) - length,
             "Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,%s%s\n", tags,
-            ruby ? "<က|စူဇူကီ> <က||ဆာတို့>" : "Ordinary ASS subtitle text with no Mangetsu metadata.");
+            ruby ? "<က|စူဇူကီ> <က||ဆာတို့>" : gradient ? "Gradient" : "Ordinary ASS subtitle text with no Mangetsu metadata.");
     }
     ASS_Track *track = ass_read_memory(lib, script, length, NULL);
     if (!track) { ass_renderer_done(renderer); ass_library_done(lib); return 1; }
-    for (int i = 0; i < 100; i++) ass_render_frame(renderer, track, i, NULL);
+    for (int i = 0; i < 100; i++) {
+        if (gradient) ass_free_images_rgba(ass_render_frame_rgba(renderer, track, i, NULL));
+        else ass_render_frame(renderer, track, i, NULL);
+    }
     uint64_t checksum = UINT64_C(1469598103934665603);
     unsigned long images = 0;
     clock_t start = clock();
     for (int i = 0; i < frames; i++) {
+        if (gradient) {
+            ASS_ImageRGBA *list = ass_render_frame_rgba(renderer, track, i, NULL);
+            for (ASS_ImageRGBA *im = list; im; im = im->next) {
+                uint32_t geometry[] = {im->dst_x, im->dst_y, im->w, im->h, im->type};
+                for (int j = 0; j < 5; j++)
+                    checksum = (checksum ^ geometry[j]) * UINT64_C(1099511628211);
+                if (im->w && im->h) {
+                    const uint8_t *pixel = im->rgba + (im->h / 2) * im->stride + 4 * (im->w / 2);
+                    for (int c = 0; c < 4; c++) checksum = (checksum ^ pixel[c]) * UINT64_C(1099511628211);
+                }
+                images++;
+            }
+            ass_free_images_rgba(list);
+            continue;
+        }
         ASS_Image *im = ass_render_frame(renderer, track, i, NULL);
         for (; im; im = im->next) {
             uint32_t geometry[] = {im->dst_x, im->dst_y, im->w, im->h, im->color};

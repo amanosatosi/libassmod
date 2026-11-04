@@ -731,6 +731,9 @@ typedef struct {
     double blur_x;
     double blur_y;
     char be;
+    double fshp;
+    bool ortho;
+    uint32_t secondary_outline_color;
 } ColumnStyleState;
 
 typedef struct {
@@ -912,6 +915,7 @@ struct render_context {
     KaraokeBorderColors secondary_border;
     PositionedAlphaMask *positioned_alpha_masks;
     int mangetsu_gradient_next_id;
+    const struct ass_style_extension *extension_defaults;
     uint32_t pattern_cycle_serial;
     CyclePalette *cycle_palettes;
     bool event_has_cycle;

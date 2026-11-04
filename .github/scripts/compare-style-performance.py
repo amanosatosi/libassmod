@@ -17,13 +17,17 @@ def main():
     frames, trials = 1000, 7
     results = {}
     for workload in ('ordinary', 'ordinary-overrides', 'furi-inline', 'furi-metadata',
-                     'vertical-inline', 'border-karaoke'):
+                     'vertical-inline', 'border-karaoke', 'gradient-inline',
+                     'gradient-metadata', 'gradient-borders'):
         samples = {'baseline': [], 'candidate': []}
         for trial in range(trials):
             order = ('baseline', 'candidate') if trial % 2 == 0 else ('candidate', 'baseline')
             for revision in order:
                 binary = baseline if revision == 'baseline' else candidate
-                run = subprocess.check_output([binary, myanmar, latin, str(frames), workload], text=True)
+                # The baseline predates gradient metadata. Render identical paint
+                # through its inline parser, rather than benchmarking ignored tags.
+                source = 'gradient-inline' if revision == 'baseline' and workload == 'gradient-metadata' else workload
+                run = subprocess.check_output([binary, myanmar, latin, str(frames), source], text=True)
                 samples[revision].append(json.loads(run))
         checksums = {s['checksum'] for runs in samples.values() for s in runs}
         if len(checksums) != 1:
@@ -41,7 +45,7 @@ def main():
     if any(s['checksum'] != inline['checksum'] for s in inherited):
         raise RuntimeError('Inherited ruby differs from inline ruby benchmark geometry')
     report = {'platform': platform.platform(), 'compiler': subprocess.check_output(['cc', '--version'], text=True),
-              'baseline_sha': '5a1ed3d1ee2a3a0837af5d1c395d301de800046b',
+              'baseline_sha': '423f526228e2210b7df277662f61c0d6b37f74ad',
               'candidate_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'cpu_affinity': affinity, 'warmup_frames': 100, 'frames': frames, 'trials': trials,
               'results': results, 'inherited_ruby': inherited}

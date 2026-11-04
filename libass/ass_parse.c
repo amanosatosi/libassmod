@@ -1380,10 +1380,30 @@ typedef struct {
     unsigned char value[sizeof(GradientValues)];
 } StyleExtensionValue;
 
+/* Canonical paint domains: fill 0..4 (2 is border 1), extra borders
+ * 6..14, box borders 15..24, waiting outline 25, global alpha 26. */
+enum { STYLE_PAINT_BORDER = 5, STYLE_PAINT_BOX = 15,
+       STYLE_PAINT_WAITING = 25, STYLE_PAINT_GLOBAL = 26,
+       STYLE_PAINT_TARGETS = 27 };
+typedef struct {
+    int target;
+    bool alpha, vector;
+    union {
+        GradientValues corners;
+        MangetsuGradientLayer gradient;
+    } value;
+} StylePaintDefault;
+
+static void apply_style_paint(RenderContext *state, const StylePaintDefault *paint);
+static bool restore_style_paint(RenderContext *state, int target, bool alpha);
+static int style_border_target(int layer) { return layer ? STYLE_PAINT_BORDER + layer : 2; }
+
 struct ass_style_extension {
     int n_values;
     ASS_FuriganaStyle furigana;
     ASS_StyleLayout layout;
+    int n_paints;
+    StylePaintDefault *paints;
     StyleExtensionValue values[];
 };
 
@@ -1402,6 +1422,7 @@ struct ass_style_extension {
 #define EXT_SECONDARY(n) EXT_VALUE(secondary_border.set, 1u << (n)), \
     EXT_RGB(secondary_border.color[n])
 static const StyleExtensionValue extension_fields[] = {
+    EXT_FIELD(fshp), EXT_FIELD(ortho),
     EXT_FIELD(furi_enabled), EXT_FIELD(furi_scale_x), EXT_FIELD(furi_scale_y),
     EXT_FIELD(furi_hspacing), EXT_FIELD(furi_style), EXT_FIELD(furi_offset_x),
     EXT_FIELD(furi_offset_y), EXT_FIELD(furi_auto_placement),
@@ -1429,6 +1450,8 @@ static const StyleExtensionValue extension_fields[] = {
 struct ass_style_extension_builder {
     bool selected[EXTENSION_FIELDS];
     unsigned layout_fields;
+    int n_paints;
+    StylePaintDefault paints[2 * STYLE_PAINT_TARGETS];
 };
 
 static void select_extension_field(RenderContext *state, size_t offset,
@@ -1471,6 +1494,9 @@ static void apply_extension_values(RenderContext *state,
         }
     }
     state->furi_defaults = &patch->furigana;
+    state->extension_defaults = patch;
+    for (int i = 0; i < patch->n_paints; i++)
+        apply_style_paint(state, &patch->paints[i]);
 }
 
 void ass_apply_style_extension(RenderContext *state, int sid)
@@ -1502,6 +1528,8 @@ void ass_free_style_extension(ASS_Track *track, int sid)
 {
     struct parser_priv *parser = track->parser_priv;
     if (parser && sid >= 0 && sid < parser->n_style_extensions) {
+        if (parser->style_extensions[sid])
+            free(parser->style_extensions[sid]->paints);
         free(parser->style_extensions[sid]);
         parser->style_extensions[sid] = NULL;
     }
@@ -1553,6 +1581,12 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
     }
     struct ass_style_extension_builder builder = {0};
     struct ass_style_extension *old = parser->style_extensions[sid];
+    state->style_extension_parse = &builder;
+    if (old) {
+        builder.n_paints = old->n_paints;
+        if (old->n_paints)
+            memcpy(builder.paints, old->paints, old->n_paints * sizeof(*old->paints));
+    }
     apply_extension_values(state, old);
     if (old) {
         apply_style_layout(state, &old->layout);
@@ -1569,6 +1603,8 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
     memcpy(state->default_style.border_layers, state->border_layers,
            sizeof(state->border_layers));
     state->default_style.gradient = state->gradient;
+    state->default_style.fshp = state->fshp;
+    state->default_style.ortho = state->ortho;
     copy_karaoke_border_colors(&state->default_style.secondary_border,
                                &state->secondary_border);
     state->style_extension_parse = &builder;
@@ -1586,6 +1622,18 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
             p++;
         }
     }
+    // Solids remain fallback assignments; they cannot erase a selected source.
+    for (int i = 0; i < builder.n_paints; i++)
+        apply_style_paint(state, &builder.paints[i]);
+    patch->n_paints = builder.n_paints;
+    patch->paints = builder.n_paints ? malloc(builder.n_paints * sizeof(*patch->paints)) : NULL;
+    if (builder.n_paints && !patch->paints) {
+        ass_free_override_buffers(state);
+        free(renderer); free(patch);
+        return -1;
+    }
+    if (builder.n_paints)
+        memcpy(patch->paints, builder.paints, builder.n_paints * sizeof(*patch->paints));
     patch->n_values = 0;
     for (size_t i = 0; i < EXTENSION_FIELDS; i++) {
         StyleExtensionValue v = extension_fields[i];
@@ -1625,6 +1673,8 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
     if (small)
         patch = small;
     parser->style_extensions[sid] = patch;
+    if (old)
+        free(old->paints);
     free(old);
     return 0;
 }
@@ -2343,6 +2393,8 @@ static void apply_positioned_alpha_tag(RenderContext *state, char *name_end,
     if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')')
         return;
     if (q == name_end + 2) {
+        if (!nested && restore_style_paint(state, STYLE_PAINT_GLOBAL, true))
+            return;
         /* Match positioned color gradients: nested resets are ignored. */
         if (!nested)
             state->positioned_alpha_mask = NULL;
@@ -2384,6 +2436,8 @@ static bool apply_mangetsu_positioned_gradient_tag(
         /* Reset only an active positioned source, never unrelated paint. */
         if (!nested && dst->active &&
                 dst->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+            if (restore_style_paint(state, is_border ? style_border_target(layer) : layer, false))
+                return true;
             if (is_border)
                 disable_mangetsu_border_gradient_layer(state, layer);
             else
@@ -2459,6 +2513,8 @@ static void apply_secondary_outline_color(RenderContext *state,
                                           double pwr)
 {
     if (!nargs) {
+        if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
+            return;
         state->secondary_outline = (KaraokeOutlinePaint) {0};
         const KaraokeBorderColors *defaults = &state->default_style.secondary_border;
         if (defaults->set & 1u) {
@@ -2490,7 +2546,11 @@ static void apply_secondary_outline_vector(RenderContext *state,
 {
     KaraokeOutlinePaint *paint = &state->secondary_outline;
     if (!nargs) {
+        if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
+            return;
         if (paint->type != KARAOKE_OUTLINE_UNSET) {
+            if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
+                return;
             paint->type = KARAOKE_OUTLINE_SOLID;
             ass_gradient_values_disable_color(&paint->vector,
                                               paint->color, 1.0);
@@ -2523,6 +2583,8 @@ static void apply_secondary_outline_gradient(RenderContext *state,
     if (*name_end != '(') {
         if (nargs && parse_mangetsu_gradient_reset_arg(args[0]) && !nested &&
                 paint->type != KARAOKE_OUTLINE_UNSET) {
+            if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
+                return;
             paint->type = KARAOKE_OUTLINE_SOLID;
             ass_mangetsu_gradient_layer_reset(&paint->gradient);
         }
@@ -2535,6 +2597,8 @@ static void apply_secondary_outline_gradient(RenderContext *state,
         raw_end--;
     if (raw_start == raw_end) {
         if (!nested && paint->type != KARAOKE_OUTLINE_UNSET) {
+            if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
+                return;
             paint->type = KARAOKE_OUTLINE_SOLID;
             ass_mangetsu_gradient_layer_reset(&paint->gradient);
         }
@@ -2543,6 +2607,8 @@ static void apply_secondary_outline_gradient(RenderContext *state,
     struct arg raw_arg = {raw_start, raw_end};
     if (parse_mangetsu_gradient_reset_arg(raw_arg)) {
         if (!nested && paint->type != KARAOKE_OUTLINE_UNSET) {
+            if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
+                return;
             paint->type = KARAOKE_OUTLINE_SOLID;
             ass_mangetsu_gradient_layer_reset(&paint->gradient);
         }
@@ -2655,6 +2721,8 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
             raw_end--;
         if (raw_start == raw_end) {
             if (nested)
+                return true;
+            if (restore_style_paint(state, is_border ? style_border_target(layer) : layer, is_alpha))
                 return true;
             if (is_alpha) {
                 if (is_border)
@@ -2785,6 +2853,8 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
         inline_arg : (nargs ? args[0] : (struct arg) { NULL, NULL });
     if (arg.start && parse_mangetsu_gradient_reset_arg(arg)) {
         if (nested)
+            return true;
+        if (restore_style_paint(state, is_border ? style_border_target(layer) : layer, is_alpha))
             return true;
         if (is_alpha) {
             if (is_border)
@@ -2993,6 +3063,138 @@ static void copy_gradient_color(GradientValues *dst, const GradientValues *src)
         dst->color[i] = src->color[i];
 }
 
+static void copy_gradient_alpha(GradientValues *dst, const GradientValues *src)
+{
+    dst->alpha_enabled = src->alpha_enabled;
+    memcpy(dst->alpha, src->alpha, sizeof(dst->alpha));
+}
+
+static void style_paint_slots(RenderContext *state, int target, bool alpha,
+                              GradientValues **vector, MangetsuGradientLayer **rich)
+{
+    *vector = NULL;
+    if (target < 5) {
+        if (target < 4) *vector = &state->gradient.layer[target];
+        *rich = target == 2 ?
+            (alpha ? &state->mangetsu_gradient.border_alpha[0] : &state->mangetsu_gradient.border[0]) :
+            (alpha ? &state->mangetsu_gradient.alpha[target] : &state->mangetsu_gradient.layer[target]);
+    } else if (target < STYLE_PAINT_BOX) {
+        int layer = target - STYLE_PAINT_BORDER;
+        *vector = &state->border_layers[layer].gradient;
+        *rich = alpha ? &state->mangetsu_gradient.border_alpha[layer] : &state->mangetsu_gradient.border[layer];
+    } else {
+        int layer = target - STYLE_PAINT_BOX;
+        *vector = &state->box_border_layers[layer].gradient;
+        *rich = alpha ? &state->box_border_alpha[layer] : &state->box_border_color[layer];
+    }
+}
+
+static void apply_style_paint(RenderContext *state, const StylePaintDefault *paint)
+{
+    int target = paint->target;
+    if (target == STYLE_PAINT_GLOBAL) {
+        // The existing immutable event snapshot prepares coordinates per renderer.
+        // The track owns only script-space data, never a frame-prepared mask.
+        if (!state->style_extension_parse)
+            ass_positioned_alpha_mask_set(state, &paint->value.gradient);
+    } else if (target == STYLE_PAINT_WAITING) {
+        init_secondary_outline_paint(state);
+        if (paint->vector) {
+            copy_gradient_color(&state->secondary_outline.vector, &paint->value.corners);
+            ass_mangetsu_gradient_layer_reset(&state->secondary_outline.gradient);
+            state->secondary_outline.type = KARAOKE_OUTLINE_VECTOR;
+        } else {
+            state->secondary_outline.gradient = paint->value.gradient;
+            state->secondary_outline.gradient.segment_id = ++state->mangetsu_gradient_next_id;
+            state->secondary_outline.type = KARAOKE_OUTLINE_GRADIENT;
+        }
+    } else {
+        GradientValues *vector;
+        MangetsuGradientLayer *rich;
+        if (target >= STYLE_PAINT_BORDER && target < STYLE_PAINT_BOX)
+            default_extra_border_color(state, target - STYLE_PAINT_BORDER);
+        style_paint_slots(state, target, paint->alpha, &vector, &rich);
+        if (paint->vector) {
+            if (paint->alpha) copy_gradient_alpha(vector, &paint->value.corners);
+            else copy_gradient_color(vector, &paint->value.corners);
+            ass_mangetsu_gradient_layer_reset(rich);
+        } else {
+            if (vector) {
+                if (paint->alpha) vector->alpha_enabled = false;
+                else vector->color_enabled = false;
+            }
+            *rich = paint->value.gradient;
+            rich->segment_id = ++state->mangetsu_gradient_next_id;
+            rich->rect = (GradientRect) {0};
+            rich->positioned_rect = (MangetsuGradientPositionedRect) {0};
+        }
+        if (target >= STYLE_PAINT_BOX) {
+            state->box_paint_dirty = true;
+        } else {
+            if (target >= STYLE_PAINT_BORDER) {
+                int layer = target - STYLE_PAINT_BORDER;
+                if (paint->alpha) state->border_layers[layer].has_alpha = true;
+                else state->border_layers[layer].has_color = true;
+            }
+            if (target == 2) sync_layer1_border(state);
+            if (target < 4) {
+                disable_image_fill_layer(state, target);
+                if (target < 2) disable_image_fill_layer(state, 1 - target);
+            }
+        }
+    }
+    mark_rgba_needed(state);
+}
+
+static bool restore_style_paint(RenderContext *state, int target, bool alpha)
+{
+    const struct ass_style_extension *patch = state->extension_defaults;
+    if (!patch || state->style_extension_parse)
+        return false;
+    for (int i = 0; i < patch->n_paints; i++) {
+        const StylePaintDefault *paint = &patch->paints[i];
+        if (paint->target != target || paint->alpha != alpha)
+            continue;
+        if (target == STYLE_PAINT_GLOBAL) {
+            state->positioned_alpha_mask = state->default_style.positioned_alpha_mask;
+        } else if (target >= STYLE_PAINT_BOX) {
+            if (target == STYLE_PAINT_WAITING)
+                state->secondary_outline.color = state->default_style.secondary_outline_color;
+            apply_style_paint(state, paint);
+        } else {
+            // Effective defaults include the actor's sparse appearance patch.
+            GradientValues *vector;
+            MangetsuGradientLayer *rich;
+            style_paint_slots(state, target, alpha, &vector, &rich);
+            const GradientValues *v = target < 4 ? &state->default_style.gradient.layer[target] :
+                target >= STYLE_PAINT_BORDER ? &state->default_style.border_layers[target - STYLE_PAINT_BORDER].gradient : NULL;
+            const MangetsuGradientState *g = &state->default_style.mangetsu_gradient;
+            int layer = target >= STYLE_PAINT_BORDER ? target - STYLE_PAINT_BORDER : 0;
+            const MangetsuGradientLayer *r = target == 2 || target >= STYLE_PAINT_BORDER ?
+                (alpha ? &g->border_alpha[layer] : &g->border[layer]) :
+                (alpha ? &g->alpha[target] : &g->layer[target]);
+            *rich = *r;
+            if (rich->active) rich->segment_id = ++state->mangetsu_gradient_next_id;
+            if (vector && v) {
+                if (alpha) copy_gradient_alpha(vector, v);
+                else copy_gradient_color(vector, v);
+            }
+            if (target == 2) sync_layer1_border(state);
+        }
+        if (target < 4) {
+            disable_image_fill_layer(state, target);
+            if (target < 2) disable_image_fill_layer(state, 1 - target);
+        }
+        if (!alpha && target < STYLE_PAINT_BOX) {
+            if (target >= STYLE_PAINT_BORDER) replace_cycle_border_paint(state, target - STYLE_PAINT_BORDER, 1);
+            else replace_cycle_base_paint(state, target, -1, 1);
+        }
+        mark_rgba_needed(state);
+        return true;
+    }
+    return false;
+}
+
 static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
                                    int layer, struct arg *args, int nargs,
                                    struct arg inline_arg, char *name_end,
@@ -3013,6 +3215,8 @@ static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
                             (border->has_color ? border->color : state->c[3]);
     if (vector) {
         if (!nargs) {
+            if (!nested && restore_style_paint(state, STYLE_PAINT_BOX + layer, alpha))
+                return;
             if (!nested) {
                 ass_mangetsu_gradient_layer_reset(dst);
                 if (alpha)
@@ -3051,6 +3255,8 @@ static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
                 raw.end--;
         }
         if (!raw.start || raw.start == raw.end || parse_mangetsu_gradient_reset_arg(raw)) {
+            if (!nested && restore_style_paint(state, STYLE_PAINT_BOX + layer, alpha))
+                return;
             if (!nested)
                 ass_mangetsu_gradient_layer_reset(dst);
             return;
@@ -3097,6 +3303,11 @@ static void apply_numbered_border_tag(RenderContext *state,
     }
     struct arg arg = (inline_arg.start && inline_arg.start < inline_arg.end) ? inline_arg :
         (nargs ? args[0] : (struct arg) { NULL, NULL });
+
+    if (!arg.start && !nested && pwr > 0 &&
+            (tag == BORDER_TAG_COLOR_GRADIENT || tag == BORDER_TAG_ALPHA_GRADIENT) &&
+            restore_style_paint(state, style_border_target(layer), tag == BORDER_TAG_ALPHA_GRADIENT))
+        return;
 
     switch (tag) {
     case BORDER_TAG_SECONDARY_COLOR: {
@@ -3237,6 +3448,8 @@ static void apply_numbered_border_tag(RenderContext *state,
                 disable_mangetsu_border_gradient_layer(state, layer);
         }
         replace_cycle_border_paint(state, layer, pwr);
+        if (!arg.start && !nested && pwr > 0)
+            restore_style_paint(state, style_border_target(layer), false);
         break;
     }
     case BORDER_TAG_ALPHA: {
@@ -3277,6 +3490,8 @@ static void apply_numbered_border_tag(RenderContext *state,
             if (!nested && pwr > 0.0)
                 disable_mangetsu_border_alpha_gradient_layer(state, layer);
         }
+        if (!arg.start && !nested && pwr > 0)
+            restore_style_paint(state, style_border_target(layer), true);
         break;
     }
     case BORDER_TAG_POSITIONED_GRADIENT:
@@ -3926,6 +4141,8 @@ typedef struct {
 #define EXT_TAG(name, field, integer, sign) \
     {name, {EXT_OFFSET(field), SIZE_MAX, SIZE_MAX}, integer, sign}
 static const StyleExtensionTag style_extension_tags[] = {
+    EXT_TAG("fshp", fshp, false, true),
+    EXT_TAG("ortho", ortho, true, false),
     EXT_TAG("q", wrap_style, true, false),
     EXT_TAG("vert", native_vertical, true, false),
     EXT_TAG("vtype", vertical_profile, true, false),
@@ -3987,9 +4204,121 @@ static const StyleExtensionTag *find_style_extension_tag(char *p, char *end)
     return NULL;
 }
 
+typedef struct {
+    int target;
+    bool alpha, vector, positioned;
+} StylePaintTag;
+
+static bool style_paint_tag(char *p, char *end, StylePaintTag *out)
+{
+    *out = (StylePaintTag) {0};
+    if (end - p == 9 && !memcmp(p, "pgrdalpha", 9)) {
+        out->target = STYLE_PAINT_GLOBAL; out->alpha = out->positioned = true;
+        return true;
+    }
+    if ((end - p == 4 && !memcmp(p, "3svc", 4)) ||
+            (end - p == 5 && !memcmp(p, "3sgrd", 5))) {
+        out->target = STYLE_PAINT_WAITING; out->vector = end - p == 4;
+        return true;
+    }
+    int layer;
+    MangetsuGradientTarget target;
+    struct arg arg = {0};
+    if (parse_mangetsu_positioned_gradient_tag(p, end, &layer, &target)) {
+        out->target = target == MANGETSU_GRADIENT_TARGET_BORDER ? style_border_target(layer) : layer;
+        out->positioned = true;
+        return true;
+    }
+    if (parse_mangetsu_fill_gradient_tag(p, end, &layer, &target, &arg)) {
+        // Only the exact family name is accepted by metadata, never a suffix.
+        if (arg.start != arg.end) return false;
+        out->target = layer == 2 ? 2 : layer;
+        out->alpha = target == MANGETSU_GRADIENT_TARGET_ALPHA;
+        return true;
+    }
+    NumberedBorderTag border = parse_numbered_border_tag(p, end, &layer, &arg);
+    if (arg.start && arg.start != end) return false;
+    switch (border) {
+    case BORDER_TAG_COLOR_GRADIENT: case BORDER_TAG_ALPHA_GRADIENT:
+    case BORDER_TAG_MANGETSU_GRADIENT: case BORDER_TAG_MANGETSU_ALPHA_GRADIENT:
+    case BORDER_TAG_POSITIONED_GRADIENT:
+        out->target = style_border_target(layer);
+        out->alpha = border == BORDER_TAG_ALPHA_GRADIENT || border == BORDER_TAG_MANGETSU_ALPHA_GRADIENT;
+        out->vector = border == BORDER_TAG_COLOR_GRADIENT || border == BORDER_TAG_ALPHA_GRADIENT;
+        out->positioned = border == BORDER_TAG_POSITIONED_GRADIENT;
+        return true;
+    case BORDER_TAG_BOX_VCOLOR: case BORDER_TAG_BOX_VALPHA:
+    case BORDER_TAG_BOX_GRADIENT: case BORDER_TAG_BOX_ALPHA_GRADIENT:
+        out->target = STYLE_PAINT_BOX + layer;
+        out->alpha = border == BORDER_TAG_BOX_VALPHA || border == BORDER_TAG_BOX_ALPHA_GRADIENT;
+        out->vector = border == BORDER_TAG_BOX_VCOLOR || border == BORDER_TAG_BOX_VALPHA;
+        return true;
+    default: break;
+    }
+    // Existing unnumbered box-border aliases target layer 1.
+    if ((end - p == 4 && (!memcmp(p, "bbvc", 4) || !memcmp(p, "bbva", 4) || !memcmp(p, "bbga", 4))) ||
+            (end - p == 5 && !memcmp(p, "bbgrd", 5))) {
+        out->target = STYLE_PAINT_BOX;
+        out->alpha = p[3] == 'a';
+        out->vector = p[2] == 'v';
+        return true;
+    }
+    char *q = p;
+    int channel = read_decimal_digit(&q, end);
+    if (channel < 0) { channel = 1; q = p; }
+    if (channel < 1 || channel > 4 || end - q != 2 || q[0] != 'v' ||
+            (q[1] != 'c' && q[1] != 'a')) return false;
+    out->target = channel - 1;
+    out->alpha = q[1] == 'a'; out->vector = true;
+    return true;
+}
+
+/* Compile only at load time, using the same numeric/vector/stop parsers as
+ * inline paint. Invalid/reset declarations do not reserve a source slot. */
+static void compile_style_paint(RenderContext *state, const StylePaintTag *tag,
+                                char *name_end, char *end, struct arg *args,
+                                int nargs, bool has_backslash)
+{
+    struct ass_style_extension_builder *builder = state->style_extension_parse;
+    for (int i = 0; i < builder->n_paints; i++)
+        if (builder->paints[i].target == tag->target && builder->paints[i].alpha == tag->alpha)
+            return;
+    if (has_backslash || *name_end != '(' || end <= name_end + 1 || end[-1] != ')')
+        goto invalid;
+    if (end == name_end + 2) return; // an empty reset isn't a gradient source
+    StylePaintDefault paint = {.target = tag->target, .alpha = tag->alpha, .vector = tag->vector};
+    if (tag->vector) {
+        if (nargs < 1 || nargs > 4) goto invalid;
+        uint32_t colors[4]; uint8_t alphas[4];
+        if (tag->alpha && tag->target < STYLE_PAINT_BOX) {
+            if (!parse_vector_alpha_args(args, nargs, alphas)) goto invalid;
+        } else for (int i = 0; i < nargs; i++) {
+            uint32_t value;
+            if (tag->alpha ? !parse_ass_alpha_arg_strict(args[i], &value) :
+                             !parse_ass_color_arg_strict(args[i], &value)) goto invalid;
+            colors[i] = value; alphas[i] = value;
+        }
+        if (tag->alpha) ass_gradient_values_apply_alpha(&paint.value.corners, alphas, nargs, 1);
+        else ass_gradient_values_apply_color(&paint.value.corners, colors, nargs, 1);
+    } else {
+        struct arg raw = {name_end + 1, end - 1};
+        if (parse_mangetsu_gradient_reset_arg(raw)) return;
+        bool valid = tag->positioned ? parse_mangetsu_positioned_gradient_raw_args(raw.start, raw.end, &paint.value.gradient, tag->alpha) :
+            tag->alpha ? parse_mangetsu_alpha_gradient_raw_args(raw.start, raw.end, &paint.value.gradient) :
+                         parse_mangetsu_gradient_raw_args(raw.start, raw.end, &paint.value.gradient);
+        if (!valid) goto invalid;
+    }
+    builder->paints[builder->n_paints++] = paint;
+    apply_style_paint(state, &paint);
+    return;
+invalid:
+    ass_msg(state->renderer->library, MSGL_V, "Ignoring malformed mangetsu-style gradient");
+}
+
 static bool style_extension_name_allowed(char *p, char *end)
 {
-    if (find_style_extension_tag(p, end))
+    StylePaintTag paint;
+    if (style_paint_tag(p, end, &paint) || find_style_extension_tag(p, end))
         return true;
     int layer;
     struct arg arg;
@@ -4031,6 +4360,8 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
             return false;
     } else {
         int count = has_inline ? 1 : nargs;
+        if (spec && (!strcmp(spec->name, "fshp") || !strcmp(spec->name, "ortho")) && count > 1)
+            return false;
         if (spec && !strcmp(spec->name, "furipos") && count && count != 2)
             return false;
         for (int i = 0; i < count; i++) {
@@ -4039,7 +4370,8 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
                 int32_t number;
                 if (!parse_int32_arg_strict(value, &number) ||
                         (!strcmp(spec->name, "furistyle") && (number < 0 || number > 2)) ||
-                        (!strcmp(spec->name, "box") && number != 0 && number != 1))
+                        (!strcmp(spec->name, "box") && number != 0 && number != 1) ||
+                        (!strcmp(spec->name, "ortho") && number != 0 && number != 1))
                     return false;
                 if ((!strcmp(spec->name, "q") && (number < 0 || number > 3)) ||
                     (!strcmp(spec->name, "vert") && number != 0 && number != 1) ||
@@ -4276,6 +4608,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     }
                 }
             }
+        }
+
+        StylePaintTag style_paint;
+        if (state->style_extension_parse && style_paint_tag(p, name_end, &style_paint)) {
+            compile_style_paint(state, &style_paint, name_end, q, args, nargs, has_backslash_arg);
+            continue;
         }
 
         if (state->style_extension_parse &&
@@ -4831,7 +5169,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs)
                 val = state->fshp * (1 - pwr) + numeric_argtod(*args, state->fshp, NUM_SIGNED) * pwr;
             else
-                val = 0;
+                val = state->default_style.fshp;
             state->fshp = val;
         } else if (tag("fs")) {
             double val = 0;
@@ -5005,7 +5343,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("ortho")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val == 0 || val == 1))
-                val = 0;
+                val = state->default_style.ortho;
             state->ortho = !!val;
         } else if (tag("fn")) {
             char *start = args->start;
@@ -5373,6 +5711,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                         args, nargs, mangetsu_fill_arg, pwr,
                                         nested);
         } else if (tag("vc") || tag("1vc")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 0, false))
+                continue;
             if (nargs) {
                 uint32_t vals[4];
                 int cnt = FFMIN(nargs, 4);
@@ -5392,6 +5732,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             replace_cycle_base_paint(state, 0, -1, pwr);
         } else if (tag("2vc")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 1, false))
+                continue;
             if (nargs) {
                 uint32_t vals[4];
                 int cnt = FFMIN(nargs, 4);
@@ -5411,6 +5753,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             replace_cycle_base_paint(state, 1, -1, pwr);
         } else if (tag("3vc")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 2, false))
+                continue;
             if (nargs) {
                 uint32_t vals[4];
                 int cnt = FFMIN(nargs, 4);
@@ -5429,6 +5773,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             replace_cycle_base_paint(state, 2, -1, pwr);
         } else if (tag("4vc")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 3, false))
+                continue;
             if (nargs) {
                 uint32_t vals[4];
                 int cnt = FFMIN(nargs, 4);
@@ -5446,6 +5792,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 ass_gradient_disable_color(&state->gradient, 3, state->c[3], pwr);
             }
         } else if (tag("va") || tag("1va")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 0, true))
+                continue;
             if (nargs) {
                 uint8_t alpha_vals[4];
                 if (!parse_vector_alpha_args(args, nargs, alpha_vals))
@@ -5465,6 +5813,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                            _a(state->c[0]), pwr);
             }
         } else if (tag("2va")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 1, true))
+                continue;
             if (nargs) {
                 uint8_t alpha_vals[4];
                 if (!parse_vector_alpha_args(args, nargs, alpha_vals))
@@ -5484,6 +5834,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                            _a(state->c[1]), pwr);
             }
         } else if (tag("3va")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 2, true))
+                continue;
             if (nargs) {
                 uint8_t alpha_vals[4];
                 if (!parse_vector_alpha_args(args, nargs, alpha_vals))
@@ -5502,6 +5854,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                            _a(state->c[2]), pwr);
             }
         } else if (tag("4va")) {
+            if (!nargs && !nested && pwr > 0 && restore_style_paint(state, 3, true))
+                continue;
             if (nargs) {
                 uint8_t alpha_vals[4];
                 if (!parse_vector_alpha_args(args, nargs, alpha_vals))
@@ -5547,6 +5901,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_image_fill_layer(state, 0);
             replace_cycle_base_paint(state, 0, -1, pwr);
             column_default(COLUMN_STYLE_COLOR0);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 0, false);
         } else if (tag("2c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
@@ -5565,6 +5920,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 disable_image_fill_layer(state, 1);
             replace_cycle_base_paint(state, 1, -1, pwr);
             column_default(COLUMN_STYLE_COLOR1);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 1, false);
         } else if (state->chat_enabled && tag("msgtitlegbc")) {
             if (nargs) {
                 change_color(&state->chat_title.background,
@@ -5656,6 +6012,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 sync_layer1_border(state);
                 column_default(COLUMN_STYLE_COLOR2);
             }
+            if (!state->chat_enabled && !nargs && !nested && pwr > 0)
+                restore_style_paint(state, 2, false);
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
@@ -5669,6 +6027,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (pwr >= 1.0)
                 disable_image_fill_layer(state, 3);
             column_default(COLUMN_STYLE_COLOR3);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 3, false);
         } else if (tag("1a")) {
             if (nargs) {
                 uint32_t val;
@@ -5683,6 +6042,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nested && pwr > 0.0)
                 disable_mangetsu_alpha_gradient_layer(state, 0);
             column_default(COLUMN_STYLE_ALPHA0);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 0, true);
         } else if (tag("2a")) {
             if (nargs) {
                 uint32_t val;
@@ -5697,6 +6057,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nested && pwr > 0.0)
                 disable_mangetsu_alpha_gradient_layer(state, 1);
             column_default(COLUMN_STYLE_ALPHA1);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 1, true);
         } else if (tag("3a")) {
             uint32_t val;
             if (state->chat_enabled) {
@@ -5714,6 +6075,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                                        nested);
             if (!state->chat_enabled)
                 column_default(COLUMN_STYLE_ALPHA2);
+            if (!state->chat_enabled && !nargs && !nested && pwr > 0)
+                restore_style_paint(state, 2, true);
         } else if (tag("4a")) {
             if (nargs) {
                 uint32_t val;
@@ -5728,6 +6091,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nested && pwr > 0.0)
                 disable_mangetsu_alpha_gradient_layer(state, 3);
             column_default(COLUMN_STYLE_ALPHA3);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 3, true);
         } else if (tag("5a")) {
             if (nargs) {
                 uint32_t val;
