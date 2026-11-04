@@ -56,22 +56,57 @@ Examples:
 
 ## Extra Padding
 
-```ass
-\boxp<N>
-\boxpx<N>
-\boxpy<N>
-```
+Scalar tags keep their symmetric behavior:
 
-- `\boxp<N>` adds `N` pixels of extra padding to all sides.
-- `\boxpx<N>` adds `N` pixels of extra horizontal padding to both left and
-  right.
-- `\boxpy<N>` adds `N` pixels of extra vertical padding to both top and bottom.
-- Padding affects the local box rectangle only when box mode is active.
-- The box remains one clean rectangle; padding is not applied per glyph or per
-  fragment.
-- `\r` resets extra padding to zero.
+~~~ass
+\boxp10
+\boxpx10
+\boxpy10
+~~~
 
-Negative values are clamped to zero. Invalid or bare padding tags are ignored.
+These set all sides, left/right, or top/bottom respectively. Asymmetric forms are:
+
+~~~ass
+\boxp(left,right,top,bottom)
+\boxpx(left,right)
+\boxpy(top,bottom)
+~~~
+
+The order is **left, right, top, bottom**, not CSS ordering. Parenthesized forms
+require exactly four or two arguments. The single-value syntax is \boxp10;
+\boxp(10) is ignored, as are single-argument parenthesized axis forms.
+
+~~~ass
+{\boxp10\boxpx(5,20)}Left=5, right=20, top=10, bottom=10
+{\boxp(5,10,15,20)\boxpy(8,12)}Left=5, right=10, top=8, bottom=12
+~~~
+
+Each side uses the existing nonnegative relative-number domain: unsigned values
+are absolute, and signed or ~-prefixed signed operands are relative. For example,
+\boxp(5,10,15,20)\boxpx(~+3,~-2) produces 8,8,15,20. A scalar relative tag
+resolves against each affected side independently. Results below zero clamp to
+zero. Every operand must be finite and valid before any side changes; wrong
+arity, empty fields, unclosed tuples and malformed operands leave the previous
+padding intact. Bare padding tags remain no-ops.
+
+Padding changes the local box rectangle, not glyph layout or the event anchor.
+It is captured with the first visible content, then applied before rotation,
+projection, shear, scaling and distortion. Box rings, radius and paint use that
+same padded rectangle; normal clips still apply in frame space. Existing inline
+transform evaluation is preserved; padding tags do not introduce a new animation
+interpolation model.
+
+All forms are supported in initial mangetsu-style comments:
+
+~~~ass
+Comment: 0,0:00:00.00,0:00:00.00,Sign,,0,0,0,mangetsu-style,{\boxp(10,20,5,15)\boxr8\bbs2}
+~~~
+
+Declarations merge per side. Later scalar/axis tags update only their affected
+sides, and explicit inline values take precedence. Bare and named \r reset to
+the destination style's padding defaults, or zero without metadata. Gradients
+and Actor Colorcoding keep their existing independent precedence. See
+[style extensions](style-extensions.md) for loading and host integration.
 
 ## Local Geometry, Transforms, and Clips
 

@@ -58,15 +58,25 @@ int main(int argc, char **argv)
         metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\furis70}\n" :
         gradient_metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\grd(45,&HFF0000&,&H0000FF&)\\1gra(0,&H00&,&H40&)}\n" : "");
     for (int i = 0; i < 12; i++) {
-        const char *tags = ruby ? (metadata ? "" : "{\\furis70}") :
+        const char *tags = !strcmp(workload, "box-scalar") ? "{\\bs4\\boxp10\\boxpx12\\boxpy8}" :
+            !strcmp(workload, "box-asymmetric") ? "{\\an5\\pos(960,540)\\bs4\\boxp(8,16,4,12)\\1a&HFF&\\3a&HFF&}" :
+            !strcmp(workload, "box-asymmetric-reference") ? "{\\an5\\pos(964,544)\\bs4\\boxpx12\\boxpy8\\1a&HFF&\\3a&HFF&}" :
+            !strcmp(workload, "ta-multiline") ? "{\\ta7}" :
+            !strcmp(workload, "ta-explicit") ? "{\\ta7}" :
+            !strcmp(workload, "gradient-box-complex") ? "{\\bs4\\boxp10\\boxr6\\bbs2\\2bbs2\\bbgrd(45,&HFF0000&,&H0000FF&)\\4grd(0,&H00FF00&,&HFFFFFF&)\\frx20\\fry15\\frz25\\fax.1}" :
+            ruby ? (metadata ? "" : "{\\furis70}") :
             !strcmp(workload, "gradient-borders") ? "{\\bord2\\2bs3\\2bgrd(45,&HFF0000&,&H0000FF&)\\3bs2\\3bgrd(0,&H00FF00&,&HFFFFFF&)}" :
             gradient ? (gradient_metadata ? "" : gradient_tags) :
             !strcmp(workload, "vertical-inline") ? "{\\vert1\\vtype2\\vsp2\\vcolsp8}" :
             !strcmp(workload, "border-karaoke") ? "{\\bord2\\2bs3\\2bc&HFF0000&\\3bs2\\3bc&H00FF00&\\kf100}" :
             !strcmp(workload, "ordinary-overrides") ? "{\\bord2\\blur0.5\\1c&H40A0FF&}" : "";
+        const char *content = !strcmp(workload, "ta-multiline") ? "A\\NLONGEST LINE OF TEXT\\NShort" :
+            !strcmp(workload, "ta-explicit") ? "A\\N{\\ta7}LONGEST LINE OF TEXT\\N{\\ta7}Short" :
+            !strncmp(workload, "box-", 4) ? "BOX" :
+            ruby ? "<က|စူဇူကီ> <က||ဆာတို့>" : gradient ? "Gradient" : "Ordinary ASS subtitle text with no Mangetsu metadata.";
         length += snprintf(script + length, sizeof(script) - length,
             "Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,%s%s\n", tags,
-            ruby ? "<က|စူဇူကီ> <က||ဆာတို့>" : gradient ? "Gradient" : "Ordinary ASS subtitle text with no Mangetsu metadata.");
+            content);
     }
     ASS_Track *track = ass_read_memory(lib, script, length, NULL);
     if (!track) { ass_renderer_done(renderer); ass_library_done(lib); return 1; }
@@ -95,6 +105,8 @@ int main(int argc, char **argv)
         }
         ASS_Image *im = ass_render_frame(renderer, track, i, NULL);
         for (; im; im = im->next) {
+            if ((im->color & 255) == 255)
+                continue;
             uint32_t geometry[] = {im->dst_x, im->dst_y, im->w, im->h, im->color};
             for (int j = 0; j < 5; j++)
                 checksum = (checksum ^ geometry[j]) * UINT64_C(1099511628211);

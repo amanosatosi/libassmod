@@ -3639,8 +3639,7 @@ const ASS_FuriganaStyle ass_native_furigana_style = {
 void ass_init_style_extension_state(RenderContext *state, const ASS_Style *style)
 {
     state->bs4_box_mode = state->border_style == 4;
-    state->box_extra_x = 0;
-    state->box_extra_y = 0;
+    state->box_padding = (BoxPadding) {0};
     state->box_corner_radius = 0;
     state->box_paint_dirty = true;
     for (int i = 0; i < ASS_BORDER_LAYERS_MAX; i++) {
@@ -3883,6 +3882,8 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->vertical_profile = 0;
     state->vertical_direction = 0;
     state->logical_line_start = 0;
+    state->inherited_line_alignment = 0;
+    state->logical_line_alignment_set = false;
     state->line_alignment_alloc_failed = false;
     state->vertical_spacing = 0.0;
     state->vertical_column_spacing = 0.0;
@@ -5921,8 +5922,7 @@ static bool append_glyph_to_target(RenderContext *state,
                 return false;
             *paint = (BS4Paint) {
                 .next = state->box_paints,
-                .extra_x = state->box_extra_x,
-                .extra_y = state->box_extra_y,
+                .padding = state->box_padding,
                 .radius = state->box_corner_radius,
                 .shadow_x = state->shadow_x,
                 .shadow_y = state->shadow_y,
@@ -6497,14 +6497,17 @@ static bool append_chat_literal(RenderContext *state, const char *text)
     return true;
 }
 
+static void set_line_alignment_range(RenderContext *state, int alignment);
+
 static void finish_alignment_line(RenderContext *state)
 {
-    if (state->n_line_alignments) {
-        LineAlignment *last = &state->line_alignments[state->n_line_alignments - 1];
-        if (last->start == state->logical_line_start)
-            last->end = state->text_info.length;
-    }
     state->logical_line_start = state->text_info.length;
+    state->logical_line_alignment_set = false;
+    // A later ta on the previous line changes inheritance, while that line
+    // retains its first selection. Otherwise its sparse range just continues.
+    if (state->inherited_line_alignment && state->n_line_alignments &&
+            state->line_alignments[state->n_line_alignments - 1].alignment != state->inherited_line_alignment)
+        set_line_alignment_range(state, state->inherited_line_alignment);
 }
 
 static bool append_chat_break(RenderContext *state)
@@ -8640,11 +8643,18 @@ static void apply_baseline_rotation(RenderContext *state,
     }
 }
 
-void ass_select_line_alignment(RenderContext *state, int alignment)
+static void set_line_alignment_range(RenderContext *state, int alignment)
 {
     int count = state->n_line_alignments;
-    if (count && state->line_alignments[count - 1].start == state->logical_line_start)
-        return;
+    if (count) {
+        LineAlignment *last = &state->line_alignments[count - 1];
+        if (last->start == state->logical_line_start) {
+            last->alignment = alignment;
+            return;
+        }
+        if (last->alignment == alignment && last->end == INT_MAX)
+            return;
+    }
     if (count == state->max_line_alignments) {
         int capacity = state->max_line_alignments;
         if (capacity > INT_MAX / 2) {
@@ -8658,10 +8668,21 @@ void ass_select_line_alignment(RenderContext *state, int alignment)
         }
         state->max_line_alignments = capacity;
     }
+    if (count)
+        state->line_alignments[count - 1].end = state->logical_line_start;
     state->line_alignments[state->n_line_alignments++] = (LineAlignment) {
         .start = state->logical_line_start, .end = INT_MAX,
         .alignment = alignment,
     };
+}
+
+void ass_select_line_alignment(RenderContext *state, int alignment)
+{
+    state->inherited_line_alignment = alignment;
+    if (state->logical_line_alignment_set)
+        return;
+    state->logical_line_alignment_set = true;
+    set_line_alignment_range(state, alignment);
 }
 
 int ass_line_alignment(const RenderContext *state, int glyph_index)
@@ -11434,20 +11455,20 @@ static void add_background(RenderContext *state, EventImages *event_images,
         box->shadow_x * state->border_scale_x * scale_x / par : 0.0;
     double shadow_y = box->shadow_y > 0.0 ?
         box->shadow_y * state->border_scale_y * scale_y : 0.0;
-    double extra_x = FFMAX(0.0, box->extra_x) *
-        state->border_scale_x * scale_x / par;
-    double extra_y = FFMAX(0.0, box->extra_y) *
-        state->border_scale_y * scale_y;
+    double padding_left = FFMAX(0.0, box->padding.left) * state->border_scale_x * scale_x / par;
+    double padding_right = FFMAX(0.0, box->padding.right) * state->border_scale_x * scale_x / par;
+    double padding_top = FFMAX(0.0, box->padding.top) * state->border_scale_y * scale_y;
+    double padding_bottom = FFMAX(0.0, box->padding.bottom) * state->border_scale_y * scale_y;
 
     TextInfo *text_info = &state->text_info;
     double fill_left = geometry->layout_bounds.x_min -
-        text_info->border_x / par - shadow_x - extra_x;
+        text_info->border_x / par - shadow_x - padding_left;
     double fill_right = geometry->layout_bounds.x_max +
-        text_info->border_x / par + shadow_x + extra_x;
+        text_info->border_x / par + shadow_x + padding_right;
     double fill_top = geometry->layout_bounds.y_min - text_info->border_top -
-        shadow_y - extra_y;
+        shadow_y - padding_top;
     double fill_bottom = geometry->layout_bounds.y_max + text_info->border_bottom +
-        shadow_y + extra_y;
+        shadow_y + padding_bottom;
     if (!isfinite(fill_left) || !isfinite(fill_top) ||
         !isfinite(fill_right) || !isfinite(fill_bottom) ||
         !(fill_left < fill_right) || !(fill_top < fill_bottom))

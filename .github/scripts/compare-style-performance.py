@@ -18,15 +18,17 @@ def main():
     results = {}
     for workload in ('ordinary', 'ordinary-overrides', 'furi-inline', 'furi-metadata',
                      'vertical-inline', 'border-karaoke', 'gradient-inline',
-                     'gradient-metadata', 'gradient-borders'):
+                     'gradient-metadata', 'gradient-borders', 'box-scalar',
+                     'box-asymmetric', 'ta-multiline', 'gradient-box-complex'):
         samples = {'baseline': [], 'candidate': []}
         for trial in range(trials):
             order = ('baseline', 'candidate') if trial % 2 == 0 else ('candidate', 'baseline')
             for revision in order:
                 binary = baseline if revision == 'baseline' else candidate
-                # The baseline predates gradient metadata. Render identical paint
-                # through its inline parser, rather than benchmarking ignored tags.
-                source = 'gradient-inline' if revision == 'baseline' and workload == 'gradient-metadata' else workload
+                # Match new geometry/layout against equivalent old syntax.
+                reference = {'box-asymmetric': 'box-asymmetric-reference',
+                             'ta-multiline': 'ta-explicit'}
+                source = reference.get(workload, workload) if revision == 'baseline' else workload
                 run = subprocess.check_output([binary, myanmar, latin, str(frames), source], text=True)
                 samples[revision].append(json.loads(run))
         checksums = {s['checksum'] for runs in samples.values() for s in runs}
@@ -45,7 +47,7 @@ def main():
     if any(s['checksum'] != inline['checksum'] for s in inherited):
         raise RuntimeError('Inherited ruby differs from inline ruby benchmark geometry')
     report = {'platform': platform.platform(), 'compiler': subprocess.check_output(['cc', '--version'], text=True),
-              'baseline_sha': '423f526228e2210b7df277662f61c0d6b37f74ad',
+              'baseline_sha': '014ed134c36b45f5ce2d4173964f02a221f0ad3b',
               'candidate_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'cpu_affinity': affinity, 'warmup_frames': 100, 'frames': frames, 'trials': trials,
               'results': results, 'inherited_ruby': inherited}

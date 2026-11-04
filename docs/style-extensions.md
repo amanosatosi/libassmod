@@ -46,9 +46,12 @@ The supported set contains typed event-layout defaults and persistent, pointer-f
 | `\1bbs`…`\10bbs`, `\Nbbc`, `\Nbba` | Box-border layer defaults, N=1…10 |
 
 All admitted tags use the existing Mangetsu override parser and rendering
-semantics. In particular, `\boxp10` sets padding on both axes; `\boxpx10\boxpy20`
-sets them separately. `\boxp(10,20,5,5)` still uses its first argument for both
-axes, as the current inline tag does; it does **not** define four-sided padding.
+semantics. `\boxp10` sets all four sides; `\boxpx10\boxpy20` sets the two axes
+symmetrically. `\boxp(10,20,5,15)` sets left, right, top and bottom independently.
+`\boxpx(10,20)` and `\boxpy(5,15)` update their corresponding pairs. Tuples
+require exactly four or two operands; `\boxp(10)` is not a scalar alias.
+Padding declarations merge per side and support relative operands. Invalid
+tuples leave all previously valid sides intact. See [box tags](box-tags.md).
 Choose the appropriate ordinary ASS BorderStyle for your box as usual.
 
 Native border layers 2…10 add rings outside earlier layers. Setting only a
@@ -248,7 +251,7 @@ readings, karaoke, separately fed host metadata and track/style ownership.
 The furigana workflow builds and runs the full available Meson suite under
 ASan/UBSan, then reruns the metadata/ownership test with leak detection enabled.
 
-Its performance job builds this revision and baseline `423f526` with the same
+Its performance job builds this revision and baseline `014ed13` with the same
 release compiler, dependencies and attached fonts. A public-API harness excludes
 loading/font setup, warms 100 frames, then measures CPU time for 1000 frames
 containing 12 active events. Seven trials alternate revision order on one CPU.
@@ -260,7 +263,9 @@ checksums must agree. The job publishes medians, percentage changes and every
 raw sample. Shared-runner timing is informational and must be reviewed before
 claiming that a regression has been ruled out.
 
-The gradient-metadata benchmark renders the baseline through equivalent inline
-tags because that revision cannot inherit gradients. Gradient workloads use
+The padding/alignment benchmarks compare new asymmetric geometry and inherited
+logical alignment against equivalent scalar-positioned boxes and explicit
+per-line alignment on the baseline. Existing gradient metadata is supported
+on both revisions. Gradient workloads use
 RGBA and verify geometry plus sampled pixel checksums; ordinary/furigana
 workloads retain the existing legacy harness. Raw trial results are published.

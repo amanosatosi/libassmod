@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ass.h"
+#include "ass_render.h"
 
 typedef struct {
     int count;
@@ -279,10 +280,10 @@ static bool test_per_line_alignment(ASS_Library *lib, ASS_Renderer *renderer)
         first_missing, (int[]) {2, 1, 3});
     const char *middle_missing[] = {"{\\ta7}", "", "{\\ta9}"};
     ok &= expect_per_line_geometry(lib, renderer, 8, true, "", "WW",
-        middle_missing, lcr_alignment);
+        middle_missing, (int[]) {1, 1, 3});
     const char *tan_fallback[] = {"{\\ta9}", "", "{\\ta5}"};
     ok &= expect_per_line_geometry(lib, renderer, 5, true, "\\tan7", "WW",
-        tan_fallback, (int[]) {3, 1, 2});
+        tan_fallback, (int[]) {3, 3, 2});
     // A flat curve makes each line's along-path placement measurable while
     // retaining the global curved attachment selected by ctan5.
     ok &= expect_per_line_geometry(lib, renderer, 5, true,
@@ -329,7 +330,7 @@ static bool test_per_line_alignment(ASS_Library *lib, ASS_Renderer *renderer)
         {"{\\ta7\\N\\ta9}AB\\N{\\ta9}CD",
          "{\\ta7}AB\\N{\\ta9}CD"},
         {"{\\ta7}ABC\\N\\N{\\ta9}DEF\\N",
-         "{\\ta7}ABC\\N{\\ta5}\\N{\\ta9}DEF\\N"},
+         "{\\ta7}ABC\\N{\\ta7}\\N{\\ta9}DEF\\N"},
         {"{\\q1}ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN "
          "ELEVEN TWELVE THIRTEEN{\\ta9}\\N{\\ta7}END",
          "{\\q1\\ta9}ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN "
@@ -380,6 +381,13 @@ int main(void)
 
     bool ok = true;
     ok &= test_per_line_alignment(lib, renderer);
+    RenderSig leak_probe;
+    ok &= render_case(lib, renderer,
+        "{\\ta7\\ta3}A\\NBBB\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,A\\NBBB", &leak_probe);
+    if (renderer->state.inherited_line_alignment != 0) {
+        fprintf(stderr, "ta inherited state leaked into the second dialogue event\n");
+        ok = false;
+    }
 
     ok &= expect_same(
         lib, renderer,
@@ -481,15 +489,15 @@ int main(void)
 
     ok &= expect_same(lib, renderer,
         "{\\an7\\ta2\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort",
-        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
-        "ta did not keep the first valid override");
+        "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\N{\\ta3}short",
+        "ta did not keep the first choice and inherit the latest choice");
     ok &= expect_same(lib, renderer,
         "{\\an7\\ta0\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
         "{\\an7\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
         "invalid ta prevented a later valid override");
     ok &= expect_same(lib, renderer,
         "{\\an7\\ta2\\r\\ta3\\pos(320,180)}LONG FIRST LINE\\Nshort",
-        "{\\an7\\r\\ta2\\pos(320,180)}LONG FIRST LINE\\Nshort",
+        "{\\an7\\r\\ta2\\pos(320,180)}LONG FIRST LINE\\N{\\ta3}short",
         "style reset erased the line's first ta decision");
     ok &= expect_same(lib, renderer,
         "{\\an7\\t(0,1000,\\ta2)\\pos(320,180)}LONG FIRST LINE\\Nshort",

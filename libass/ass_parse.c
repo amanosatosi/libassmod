@@ -240,6 +240,46 @@ static inline void push_arg(struct arg *args, int *nargs, char *start, char *end
     }
 }
 
+/* Padding updates are atomic: no side changes until every operand resolves.
+ * Scalar tags preserve their relative-number behavior; tuples use L,R,T,B. */
+static bool parse_box_padding(const BoxPadding *current, int axis,
+                              char *name_end, char *tag_end,
+                              struct arg *args, int nargs, BoxPadding *result)
+{
+    bool tuple = *name_end == '(';
+    int first = axis == 2 ? 2 : 0;
+    int count = axis ? 2 : 4;
+    if (tuple) {
+        if (nargs != count || tag_end <= name_end + 1 || tag_end[-1] != ')')
+            return false;
+        int commas = 0;
+        for (char *p = name_end + 1; p < tag_end - 1; p++)
+            commas += *p == ',';
+        if (commas != count - 1)
+            return false;
+    } else if (nargs != 1) {
+        return false;
+    }
+    NumericOperand scalar;
+    if (!tuple && !parse_numeric_operand(args[0], NUM_NONNEGATIVE, true, &scalar))
+        return false;
+    *result = *current;
+    double *sides[] = {&result->left, &result->right, &result->top, &result->bottom};
+    for (int i = 0; i < count; i++) {
+        double value;
+        if (tuple) {
+            if (!numeric_arg_strict(args[i], *sides[first + i], NUM_NONNEGATIVE, &value))
+                return false;
+        } else {
+            value = resolve_numeric_operand(scalar, *sides[first + i]);
+            if (!isfinite(value))
+                return false;
+        }
+        *sides[first + i] = FFMAX(value, 0.0);
+    }
+    return true;
+}
+
 /**
  * \brief Check if starting part of (*p) matches sample.
  * If true, shift p to the first symbol after the matching part.
@@ -1428,7 +1468,8 @@ static const StyleExtensionValue extension_fields[] = {
     EXT_FIELD(furi_offset_y), EXT_FIELD(furi_auto_placement),
     EXT_FIELD(furi_position_explicit), EXT_FIELD(furi_place_auto),
     EXT_FIELD(furi_change_pos), EXT_FIELD(bs4_box_mode),
-    EXT_FIELD(box_extra_x), EXT_FIELD(box_extra_y), EXT_FIELD(box_corner_radius),
+    EXT_FIELD(box_padding.left), EXT_FIELD(box_padding.right),
+    EXT_FIELD(box_padding.top), EXT_FIELD(box_padding.bottom), EXT_FIELD(box_corner_radius),
     EXT_FIELD(border_x), EXT_FIELD(border_y),
     EXT_LAYER(0), EXT_LAYER(1), EXT_LAYER(2), EXT_LAYER(3), EXT_LAYER(4),
     EXT_LAYER(5), EXT_LAYER(6), EXT_LAYER(7), EXT_LAYER(8), EXT_LAYER(9),
@@ -4161,9 +4202,6 @@ static const StyleExtensionTag style_extension_tags[] = {
     EXT_TAG("furichangepos", furi_change_pos, true, false),
     EXT_TAG("furiap", furi_auto_placement, true, false),
     EXT_TAG("furi", furi_enabled, true, false),
-    {"boxp", {EXT_OFFSET(box_extra_x), EXT_OFFSET(box_extra_y), SIZE_MAX}, false, false},
-    EXT_TAG("boxpx", box_extra_x, false, false),
-    EXT_TAG("boxpy", box_extra_y, false, false),
     EXT_TAG("boxr", box_corner_radius, false, false),
     EXT_TAG("box", bs4_box_mode, true, false),
 };
@@ -4317,10 +4355,18 @@ invalid:
     ass_msg(state->renderer->library, MSGL_V, "Ignoring malformed mangetsu-style gradient");
 }
 
+static int box_padding_axis(char *p, char *end)
+{
+    if (tag_name_matches(p, end, "boxpx")) return 1;
+    if (tag_name_matches(p, end, "boxpy")) return 2;
+    if (tag_name_matches(p, end, "boxp")) return 0;
+    return -1;
+}
+
 static bool style_extension_name_allowed(char *p, char *end)
 {
     StylePaintTag paint;
-    if (style_paint_tag(p, end, &paint) || find_style_extension_tag(p, end))
+    if (box_padding_axis(p, end) >= 0 || style_paint_tag(p, end, &paint) || find_style_extension_tag(p, end))
         return true;
     int layer;
     struct arg arg;
@@ -4337,6 +4383,23 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
 {
     if (has_backslash || (*name_end == '(' && tag_end[-1] != ')'))
         return false;
+    int padding_axis = box_padding_axis(p, name_end);
+    if (padding_axis >= 0) {
+        struct arg inline_arg = {p + (padding_axis ? 5 : 4), name_end};
+        rskip_spaces(&inline_arg.end, inline_arg.start);
+        bool has_inline = inline_arg.start < inline_arg.end;
+        if (has_inline && nargs) return false;
+        BoxPadding value;
+        if (!parse_box_padding(&state->box_padding, padding_axis, name_end, tag_end,
+                               has_inline ? &inline_arg : args, has_inline ? 1 : nargs, &value))
+            return false;
+        const size_t sides[] = {offsetof(RenderContext, box_padding.left), offsetof(RenderContext, box_padding.right),
+                                offsetof(RenderContext, box_padding.top), offsetof(RenderContext, box_padding.bottom)};
+        int first = padding_axis == 2 ? 2 : 0;
+        for (int i = first; i < first + (padding_axis ? 2 : 4); i++)
+            select_extension_field(state, sides[i], 0);
+        return true;
+    }
     const StyleExtensionTag *spec = find_style_extension_tag(p, name_end);
     int layer = -1;
     struct arg inline_arg = {NULL, NULL};
@@ -6133,31 +6196,22 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             struct arg arg = nargs ? args[0] : (struct arg) { NULL, NULL };
             apply_box_border_tag(state, BORDER_TAG_BOX_ALPHA, 0, arg, pwr, nested);
         } else if (tag("boxpx")) {
-            state->box_paint_dirty = true;
-            if (nargs) {
-                double val;
-                if (numeric_arg_strict(*args, state->box_extra_x, NUM_NONNEGATIVE, &val))
-                    state->box_extra_x = FFMAX(val, 0);
+            BoxPadding value;
+            if (parse_box_padding(&state->box_padding, 1, name_end, q, args, nargs, &value)) {
+                state->box_padding = value;
+                state->box_paint_dirty = true;
             }
         } else if (tag("boxpy")) {
-            state->box_paint_dirty = true;
-            if (nargs) {
-                double val;
-                if (numeric_arg_strict(*args, state->box_extra_y, NUM_NONNEGATIVE, &val))
-                    state->box_extra_y = FFMAX(val, 0);
+            BoxPadding value;
+            if (parse_box_padding(&state->box_padding, 2, name_end, q, args, nargs, &value)) {
+                state->box_padding = value;
+                state->box_paint_dirty = true;
             }
         } else if (tag("boxp")) {
-            state->box_paint_dirty = true;
-            if (nargs) {
-                NumericOperand operand;
-                if (!parse_numeric_operand(*args, NUM_NONNEGATIVE, true, &operand))
-                    continue;
-                double x = resolve_numeric_operand(operand, state->box_extra_x);
-                double y = resolve_numeric_operand(operand, state->box_extra_y);
-                if (isfinite(x) && isfinite(y)) {
-                    state->box_extra_x = FFMAX(x, 0);
-                    state->box_extra_y = FFMAX(y, 0);
-                }
+            BoxPadding value;
+            if (parse_box_padding(&state->box_padding, 0, name_end, q, args, nargs, &value)) {
+                state->box_padding = value;
+                state->box_paint_dirty = true;
             }
         } else if (tag("boxr")) {
             state->box_paint_dirty = true;

@@ -309,11 +309,16 @@ typedef struct {
     GradientValues gradient;
 } BorderLayerState;
 
+typedef struct {
+    double left, right, top, bottom;
+} BoxPadding;
+
 /* Event-box paint is shared by glyphs from the same override state. Keeping
  * these large stop tables out of GlyphInfo avoids ten more gradients per glyph. */
 typedef struct bs4_paint {
     struct bs4_paint *next;
-    double extra_x, extra_y, radius, shadow_x, shadow_y;
+    BoxPadding padding;
+    double radius, shadow_x, shadow_y;
     BorderLayerState borders[ASS_BORDER_LAYERS_MAX];
     MangetsuGradientLayer color[ASS_BORDER_LAYERS_MAX];
     MangetsuGradientLayer alpha[ASS_BORDER_LAYERS_MAX];
@@ -848,9 +853,11 @@ struct render_context {
 
     int alignment;              // object anchor; if zero, style value will be used
     int text_alignment;         // text horizontal alignment; vertical follows alignment
-    LineAlignment *line_alignments; // sparse first-valid \ta selections
+    LineAlignment *line_alignments; // sparse inherited \ta ranges
     int n_line_alignments, max_line_alignments;
     int logical_line_start;
+    int inherited_line_alignment; // latest valid ta; event-local, zero until set
+    bool logical_line_alignment_set; // first explicit choice on this line
     bool line_alignment_alloc_failed;
     int warp_text_alignment;    // explicit \wtan visual warped-block anchor; 0 = legacy
     int justify;                // justify instructions
@@ -892,8 +899,7 @@ struct render_context {
     bool line_border_style_set;
     int line_border_style;
     bool bs4_box_mode;
-    double box_extra_x;
-    double box_extra_y;
+    BoxPadding box_padding;
     double box_corner_radius;
     BorderLayerState box_border_layers[ASS_BORDER_LAYERS_MAX];
     MangetsuGradientLayer box_border_color[ASS_BORDER_LAYERS_MAX];

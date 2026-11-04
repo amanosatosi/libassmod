@@ -202,6 +202,41 @@ static bool corner_is_empty(const Mask *mask)
         !mask->pixels[y1 * WIDTH + x1];
 }
 
+static bool asymmetric_padding(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    static Mask base, padded;
+    const struct {const char *tags; int l, r, t, b;} cases[] = {
+        {"\\boxp10", 10,10,10,10}, {"\\boxpx10",10,10,0,0}, {"\\boxpy10",0,0,10,10},
+        {"\\boxp(10,20,5,15)",10,20,5,15}, {"\\boxpx(10,20)",10,20,0,0},
+        {"\\boxpy(5,15)",0,0,5,15}, {"\\boxp10\\boxpx(5,20)",5,20,10,10},
+        {"\\boxp(5,10,15,20)\\boxpy(8,12)",5,10,8,12},
+        {"\\boxp(5,10,15,20)\\boxp~+2",7,12,17,22},
+        {"\\boxp(5,10,15,20)\\boxpx(~+3,~-2)",8,8,15,20},
+        {"\\boxp7\\boxp(10)",7,7,7,7}, {"\\boxp7\\boxpx(1,nan)",7,7,7,7},
+        {"\\boxp7\\boxp(,1,2,3,4)",7,7,7,7},
+    };
+    bool ok = true;
+    for (int rgba = 0; rgba < 2; rgba++) for (int anchor = 1; anchor <= 9; anchor++) {
+        char a[1024], b[1024];
+        snprintf(a, sizeof(a), "{\\an%d\\pos(320,180)\\bs4\\bord0\\shad0\\1a&HFF&\\3a&HFF&\\4a&H00&}BOX", anchor);
+        bool have_base = rgba ? render_rgba(lib, renderer, a, 1, 0, &base) : render_legacy(lib, renderer, a, 1, 0, &base);
+        for (size_t i = 0; i < sizeof(cases)/sizeof(*cases); i++) {
+            snprintf(b, sizeof(b), "{\\an%d\\pos(320,180)\\bs4\\bord0\\shad0\\1a&HFF&\\3a&HFF&\\4a&H00&%s}BOX", anchor, cases[i].tags);
+            bool have = rgba ? render_rgba(lib, renderer, b, 1, 0, &padded) : render_legacy(lib, renderer, b, 1, 0, &padded);
+            bool correct = have_base && have && has_coverage(&base) && has_coverage(&padded) &&
+                base.min_x - padded.min_x == cases[i].l && padded.max_x - base.max_x == cases[i].r &&
+                base.min_y - padded.min_y == cases[i].t && padded.max_y - base.max_y == cases[i].b;
+            if (!correct) {
+                fprintf(stderr,"padding bounds an%d RGBA%d %s: got %d,%d,%d,%d expected %d,%d,%d,%d\n",
+                    anchor,rgba,cases[i].tags,base.min_x-padded.min_x,padded.max_x-base.max_x,
+                    base.min_y-padded.min_y,padded.max_y-base.max_y,cases[i].l,cases[i].r,cases[i].t,cases[i].b);
+                ok = false;
+            }
+        }
+    }
+    return ok;
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -228,7 +263,7 @@ int main(void)
     static Mask rotated, clipped, inverse, vector_clip, perspective, distorted;
     static Mask anim_start, anim_mid, anim_end, anim_again, rgba;
     static Mask style_box, line_box, box_on, box_off, rings, canonical, expected;
-    bool ok = true;
+    bool ok = asymmetric_padding(lib, renderer);
 
     ok &= render_legacy(lib, renderer, base, 1, 0, &flat);
     ok &= render_legacy(lib, renderer,
