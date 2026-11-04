@@ -146,3 +146,15 @@ legacy `ASS_Image` carries masks and solid fallback colors only.
 
 See `samples/position-gradient.ass` for horizontal, vertical, diagonal,
 arbitrary-angle, movement, rotation, fallback, and reset examples.
+
+## Style metadata
+
+Positioned color families and the independent `\pgrdalpha` field can be stored
+in initial `mangetsu-style` comments. They retain script/frame coordinates;
+attached gradients keep their own domains. The first valid gradient per target
+and color/alpha channel wins across metadata comments, while inline dialogue
+retains last-valid-source-wins. An empty positioned-color reset acts only on a
+current positioned source and restores that style’s configured source, if any.
+`\pgrdalpha()` restores its inherited global field. Frame-prepared masks remain
+event-owned; track defaults own only copied script-space data. See
+[style extensions](style-extensions.md) for resets and host ingestion.

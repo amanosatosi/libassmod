@@ -82,14 +82,14 @@ static void hash_number(uint64_t *hash, uint32_t value)
 /* Include geometry, colors and actual raster pixels in both output backends.
  * References use the existing inline implementation, not a metadata parser
  * mock. A nonempty frame and the separate 50-vs-70 check prevent vacuous passes. */
-static bool snapshot(ASS_Renderer *renderer, ASS_Track *track, bool rgba,
-                      uint64_t *hash)
+static bool snapshot_at(ASS_Renderer *renderer, ASS_Track *track, bool rgba,
+                         uint64_t *hash, long long time)
 {
     *hash = UINT64_C(1469598103934665603);
     uint64_t coverage = 0;
     int change;
     if (rgba) {
-        ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, 500, &change);
+        ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, time, &change);
         for (ASS_ImageRGBA *im = images; im; im = im->next) {
             hash_number(hash, im->type);
             hash_number(hash, im->dst_x);
@@ -105,7 +105,7 @@ static bool snapshot(ASS_Renderer *renderer, ASS_Track *track, bool rgba,
         }
         ass_free_images_rgba(images);
     } else {
-        ASS_Image *images = ass_render_frame(renderer, track, 500, &change);
+        ASS_Image *images = ass_render_frame(renderer, track, time, &change);
         for (ASS_Image *im = images; im; im = im->next) {
             hash_number(hash, im->type);
             hash_number(hash, im->dst_x);
@@ -124,20 +124,25 @@ static bool snapshot(ASS_Renderer *renderer, ASS_Track *track, bool rgba,
     return coverage > 0;
 }
 
+static bool snapshot(ASS_Renderer *renderer, ASS_Track *track, bool rgba, uint64_t *hash)
+{
+    return snapshot_at(renderer, track, rgba, hash, 500);
+}
+
 typedef struct {
     const char *label, *metadata, *style, *actor, *text;
     const char *reference_metadata, *reference;
 } Case;
 
-static int compare(ASS_Library *lib, ASS_Renderer *renderer, const Case *c)
+static int compare_at(ASS_Library *lib, ASS_Renderer *renderer, const Case *c, long long time)
 {
     ASS_Track *actual = load(lib, c->metadata, c->style, c->actor, c->text);
     ASS_Track *reference = load(lib, c->reference_metadata, c->style, c->actor, c->reference);
     int failed = !actual || !reference;
     for (int rgba = 0; !failed && rgba < 2; rgba++) {
         uint64_t a, b;
-        if (!snapshot(renderer, actual, rgba, &a) ||
-                !snapshot(renderer, reference, rgba, &b) || a != b) {
+        if (!snapshot_at(renderer, actual, rgba, &a, time) ||
+                !snapshot_at(renderer, reference, rgba, &b, time) || a != b) {
             fprintf(stderr, "%s (%s)\n", c->label, rgba ? "RGBA" : "legacy");
             failed = 1;
         }
@@ -149,6 +154,11 @@ static int compare(ASS_Library *lib, ASS_Renderer *renderer, const Case *c)
     ass_free_track(actual);
     ass_free_track(reference);
     return failed;
+}
+
+static int compare(ASS_Library *lib, ASS_Renderer *renderer, const Case *c)
+{
+    return compare_at(lib, renderer, c, 500);
 }
 
 static bool add_font(ASS_Library *lib, const char *path)
@@ -256,6 +266,7 @@ int main(int argc, char **argv)
     if (ass_set_tag_image_rgba(renderer, "style-test.png", ASS_TAG_IMAGE_FORMAT_PNG, 1, 1, 4, image)) return 1;
 
     static const Case cases[] = {
+        {"rich defaults avoid ordinary event memoization", "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\grd(0,&HFF0000&,&H0000FF&)\\pgrdalpha(0,0,640,360,0,&H00&,&HAA&)}\n", "Default", "", "{\\pos(320,180)}က က\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\pos(320,180)}က က", "", "{\\pos(320,180)\\grd(0,&HFF0000&,&H0000FF&)\\pgrdalpha(0,0,640,360,0,&H00&,&HAA&)}က က\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\pos(320,180)\\grd(0,&HFF0000&,&H0000FF&)\\pgrdalpha(0,0,640,360,0,&H00&,&HAA&)}က က"},
         {"fshp inherited 0", "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\fshp0}\n", "Default", "", "က\\Nက", "", "{\\fshp0}က\\Nက"},
         {"fshp inherited 5", "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\fshp5}\n", "Default", "", "က\\Nက", "", "{\\fshp5}က\\Nက"},
         {"fshp inherited -5", "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\fshp-5}\n", "Default", "", "က\\Nက", "", "{\\fshp-5}က\\Nက"},
@@ -689,6 +700,14 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++)
         failed |= compare(lib, renderer, &cases[i]);
     failed |= host_metadata(lib, renderer);
+    static const Case moving = {
+        "positioned inherited fields across seeking",
+        META("Default", "\\pgrd(0,0,640,360,45,&HFF0000&,&H0000FF&)\\pgrdalpha(0,0,640,360,0,&H00&,&HAA&)"),
+        "Default", "", "{\\move(100,100,500,250,0,1000)}က က", "",
+        "{\\pgrd(0,0,640,360,45,&HFF0000&,&H0000FF&)\\pgrdalpha(0,0,640,360,0,&H00&,&HAA&)\\move(100,100,500,250,0,1000)}က က"};
+    const long long seek_times[] = {900, 100, 500, 900};
+    for (int i = 0; i < 4; i++) failed |= compare_at(lib, renderer, &moving, seek_times[i]);
+
 
     // A script-level nonzero WrapStyle remains the fallback without metadata.
     ASS_Track *script_wrap = load(lib, "", "Default", "", "{\\q2\\q}" LONG_TEXT);
@@ -761,6 +780,27 @@ int main(int argc, char **argv)
             free(replacement.FontName);
             failed = 1;
         }
+    }
+    if (baselines) for (int i = 0; i < 8; i++) {
+        ASS_Track *owned = load(lib, META("Default", "\\grd(0,&HFF0000&,&H0000FF&)\\pgrdalpha(0,0,640,360,0,&H00&,&HAA&)"), "Default", "", RUBY);
+        if (!owned) { failed = 1; continue; }
+        uint64_t before = 0, after = 0;
+        failed |= !snapshot(renderer, owned, true, &before);
+        for (int j = 0; j < 4; j++)
+            failed |= ass_process_mangetsu_metadata_line(owned, "Default", "", "mangetsu-style",
+                "{\\grd(90,&H00FF00&,&HFFFFFF&)\\pgrdalpha(0,0,640,360,90,&HFF&,&H00&)}", 1, 1) != 1;
+        failed |= !snapshot(renderer, owned, true, &after) || before != after;
+        int sid = owned->events[0].Style;
+        ASS_Style replacement = owned->styles[sid];
+        replacement.Name = copy_string(replacement.Name);
+        replacement.FontName = copy_string(replacement.FontName);
+        if (replacement.Name && replacement.FontName) {
+            ass_free_style(owned, sid);
+            owned->styles[sid] = replacement;
+            failed |= !snapshot(renderer, owned, false, &after) || after != b;
+        } else { free(replacement.Name); free(replacement.FontName); failed = 1; }
+        ass_free_track(owned);
+        failed |= !snapshot(renderer, native, false, &after) || after != b;
     }
     ass_free_track(scaled);
     ass_free_track(native);

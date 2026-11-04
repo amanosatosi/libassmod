@@ -60,3 +60,10 @@ ordinary phase-1 furigana karaoke. Empty `\kO` segments advance time without
 acquiring a base region, ownership can continue beyond `>`, and karaoke tags
 in the base side remain ignored. RTL reveal ownership follows visual shaping;
 only `\kf` has an internal directional sweep.
+
+The existing layer-1 waiting sources `\3svc` and `\3sgrd` also support
+`mangetsu-style` inheritance. Their first valid metadata source wins across
+comments; inline sources remain last-valid-source-wins. Empty waiting-paint
+resets restore the active style’s inherited waiting source when configured.
+Color selection is independent of the active outline’s alpha. Layers 2–10
+continue to offer flat waiting `\Nbsc` only.

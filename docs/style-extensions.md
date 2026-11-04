@@ -28,6 +28,8 @@ The supported set contains typed event-layout defaults and persistent, pointer-f
 
 | Tags | Meaning |
 | --- | --- |
+| `\fshp` | Signed extra line spacing; relative operands resolve against the current default |
+| `\ortho0`, `\ortho1` | Perspective (default) or orthographic projection |
 | `\q0`…`\q3` | Initial wrapping mode (script `WrapStyle` when absent) |
 | `\vert0`, `\vert1`, `\vtype0`…`\vtype3`, `\vdir0`…`\vdir2` | Initial native vertical layout, unit policy and column direction |
 | `\vsp`, `\vcolsp` | Initial vertical unit and column spacing |
@@ -59,7 +61,9 @@ Comment: 0,0:00:00.00,0:00:00.00,Box,,0,0,0,mangetsu-style,{\boxpx10\boxpy5\boxr
 
 Text must contain override blocks in braces. Plain text is ignored. Multiple
 blocks and declarations merge in source order, property by property. Later
-assignments win, including assignments back to a native default. Existing
+scalar assignments win, including assignments back to a native default.
+**Gradients are the exception:** the first valid source wins independently for
+each target’s color and alpha, across the entire initial metadata block. Existing
 relative numeric operands resolve once during loading against the style and
 earlier declarations; they are not accumulated again on each frame.
 
@@ -67,8 +71,68 @@ Unknown, malformed and unsupported tags are ignored, with verbose diagnostics
 when enabled. Unsupported parenthesized tags are skipped as whole units:
 `\t(\furis20)` does not apply its child tag. Event timing, positioning,
 transforms, fading, clipping, drawing, karaoke, font tags, standard ASS
-appearance tags and gradient/image/pattern definitions are not metadata
-properties in this initial implementation. They remain available inline.
+appearance tags, image fills (`\img` and numbered forms), and pattern
+definitions are not metadata properties. The gradient families below are supported. They remain available inline.
+
+## Gradient defaults and source selection
+
+The existing gradient grammars and renderer are used, with these metadata families:
+
+| Family | Supported tags |
+| --- | --- |
+| Attached color / alpha | \grd, \1grd…\5grd / \1gra…\5gra |
+| Four-corner color / alpha | \vc, \1vc…\4vc / \va, \1va…\4va |
+| Positioned color | \pgrd, \1pgrd…\5pgrd |
+| Native border color / alpha | \Nbgrd, \Nbvc, \Nbpgrd / \Nbga, \Nbva; N=1…10 |
+| Box-border color / alpha | \Nbbgrd, \Nbbvc / \Nbbga, \Nbbva; N=1…10 |
+| Waiting layer-1 outline | \3svc, \3sgrd (color; active outline alpha) |
+| Global positioned alpha | \pgrdalpha (independent RGBA field) |
+
+Unnumbered box aliases (\bbgrd, \bbga, \bbvc, \bbva) select box ring 1.
+See [gradient targets and rendering limits](gradient-support.md) and
+[positioned fields](position-gradient.md) for argument syntax, limits,
+coordinate spaces and fallback behavior. These tags do not enable a disabled
+native or box ring; give it a size as usual. There are no new inline tags or
+new higher-layer waiting gradient families.
+
+For every target, **first valid gradient source wins in metadata**. This includes
+repeated tags from the same family, different gradient families, and declarations
+in later comments. Color and alpha select independently. Aliases share a slot:
+\grd/\1grd, \3grd/\1bgrd/\3vc/\1bvc, and their alpha counterparts
+cannot compete as independent sources. Fill, secondary fill, shadow/BS4 fill,
+decorations, extra native rings, box rings, waiting outline and global alpha
+retain independent slots. Invalid or malformed sources do not claim a slot.
+Empty/zero gradient resets in metadata declare no source and do not clear a
+previous winner. Later solid border colors/alpha remain fallback assignments;
+they do not erase a winning gradient or reserve its slot.
+
+~~~ass
+Comment: 0,0:00:00.00,0:00:00.00,Sign,,0,0,0,mangetsu-style,{\fshp5\ortho1\grd(45,&HFF0000&,&H0000FF&)}
+Comment: 0,0:00:00.00,0:00:00.00,Sign,,0,0,0,mangetsu-style,{\vc(&HFFFFFF&,&H000000&,&HFFFFFF&,&H000000&)\1gra(0,&H00&,&H80&)}
+~~~
+
+Here the attached color wins over the later vector color; alpha is independently
+accepted. Splitting or joining those comments does not change the result.
+
+**Inline dialogue remains last-valid-source-wins.** Inline \vc, \grd, or
+\img can replace inherited color paint. Image fills are still unsupported
+inside style metadata. Bare and named \r restore the target style’s compiled
+paint before the existing actor patch. Empty vector/attached gradient tags and
+attached inline 0 resets restore the inherited source for that target/channel,
+when configured. Without a configured gradient, the historical reset behavior
+is unchanged. Empty positioned color tags retain their restriction to a current
+positioned source, then restore the style’s source; they do not disturb an
+unrelated current attached/vector source. Empty \pgrdalpha() restores the
+inherited global field. Waiting-outline resets restore its inherited paint.
+Resetting one channel preserves the other channel. Effective fill/native-border
+reset defaults include applicable Actor Colorcoding patches, including an actor
+solid source replacing the style gradient. The actor whitelist is unchanged.
+
+All varying RGB paint requires RGBA or automatic host rendering. Legacy ASS_Image
+output keeps the existing solid fallback and cannot express varying RGB; it is
+not a gradient-capable output format. Attached domains follow the existing
+rendered bounds; positioned fields remain in script/frame coordinates through
+movement, scrolling, transforms and clipping.
 
 ## Inheritance, Actor Colorcoding and resets
 
@@ -78,6 +142,13 @@ Dialogue state is initialized in this order:
 2. The active style's compiled extension defaults.
 3. The existing Actor Colorcoding patch, when applicable.
 4. Explicit dialogue override tags, including normal inline animation.
+
+Parameterless `\fshp` restores the effective style line spacing (zero without
+metadata); `\fshp` is distinct from `\fsvp`, `\fsp` and native `\vsp`.
+It accepts signed and relative numeric operands using the existing line-height
+calculation. Parameterless `\ortho` restores the style projection mode (0
+without metadata). Metadata accepts only integers 0 and 1; both properties
+follow bare and named appearance resets. Explicit dialogue values win.
 
 Thus `\furis50` overrides an inherited 70 in its normal inline scope. Bare `\r`
 restores the dialogue's original style and its extensions. `\rOtherStyle`
@@ -131,7 +202,13 @@ or reparses extension comments. Freeing styles or tracks frees their patches.
 Flushing dialogue packets retains the owning track's style defaults. Typed
 layout defaults are applied before font selection and shaping, once per event
 initialization, and are excluded from appearance resets. Typed furigana defaults live in the compiled patch; dialogue resets borrow an
-immutable pointer, with a shared native constant for unextended styles.
+immutable pointer, with a shared native constant for unextended styles. Rich
+paint uses a separate sparse, track-owned array of typed sources with copied
+stops/coordinates. No parser text is retained. Only selected paint records are
+applied; unextended styles allocate/copy no new rich paint arrays. Global alpha
+uses the existing event-owned immutable mask snapshot so frame preparation
+does not mutate track defaults. Style replacement and track destruction free
+the owned paint records.
 
 Standard ASS style records and the public style/track layouts are unchanged.
 Files remain ordinary ASS, and other renderers ignore these comments and use
@@ -171,13 +248,19 @@ readings, karaoke, separately fed host metadata and track/style ownership.
 The furigana workflow builds and runs the full available Meson suite under
 ASan/UBSan, then reruns the metadata/ownership test with leak detection enabled.
 
-Its performance job builds this revision and baseline `5a1ed3d` with the same
+Its performance job builds this revision and baseline `423f526` with the same
 release compiler, dependencies and attached fonts. A public-API harness excludes
 loading/font setup, warms 100 frames, then measures CPU time for 1000 frames
 containing 12 active events. Seven trials alternate revision order on one CPU.
 It measures ordinary ASS, ordinary ASS with standard overrides, and inline
 furigana, inherited furigana, native vertical layout, and multi-border karaoke
-without secondary sources; inherited furigana is also compared with inline furigana. Geometry
+without secondary sources, inline/inherited RGBA gradients and native multi-border
+RGBA gradients; inherited furigana is also compared with inline furigana. Geometry
 checksums must agree. The job publishes medians, percentage changes and every
 raw sample. Shared-runner timing is informational and must be reviewed before
 claiming that a regression has been ruled out.
+
+The gradient-metadata benchmark renders the baseline through equivalent inline
+tags because that revision cannot inherit gradients. Gradient workloads use
+RGBA and verify geometry plus sampled pixel checksums; ordinary/furigana
+workloads retain the existing legacy harness. Raw trial results are published.

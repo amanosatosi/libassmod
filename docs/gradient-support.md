@@ -14,6 +14,7 @@ opaque, `FF` transparent). Color and alpha sources remain independent.
 | Ordinary shadow or BS4 fill | `\4vc` / `\4va` | `\4grd` / `\4gra` | `\4pgrd` color |
 | BS4 outward rings 1–10 | `\Nbbvc` / `\Nbbva` | `\Nbbgrd` / `\Nbbga` | None |
 | Underline and strikeout | No dedicated fifth vector family | `\5grd` / `\5gra` | `\5pgrd` color |
+| Global positioned alpha | None | None | `\pgrdalpha` (whole-event mask) |
 | Waiting first karaoke outline | `\3svc` (color) | `\3sgrd` (color); first-outline alpha | None |
 
 Box layer-1 aliases are `\bbvc`, `\bbva`, `\bbgrd`, `\bbga`. Box fill
@@ -53,10 +54,11 @@ together with their fallback alpha; explicit fifth-channel decoration paint
 continues through both waiting and active phases. Box-ring solid overrides
 inside `\t` interpolate the existing gradient stops toward the solid value.
 
-Existing layout restrictions still apply: native vertical furigana placement
-is unavailable; curved events with furigana, semantic columns, or scrolling
+Existing layout restrictions still apply: curved events with furigana, semantic columns, or scrolling
 fall back to normal layout; semantic columns ignore karaoke timing. Gradients
-do not enable unsupported layout combinations or positioned alpha fields. Image fills and pattern paint keep their
+do not enable unsupported layout combinations. Native vertical furigana keeps
+its existing native layout and region ownership. Global positioned alpha is a
+separate whole-event field; there are no numbered positioned-alpha tags. Image fills and pattern paint keep their
 existing precedence; no image, cycle, or polka tags are added for box rings.
 
 `test/gradient_surface_selftest.c` compares actual target pixels and masks for
@@ -111,3 +113,20 @@ comparisons retain exact equality where the geometry and allocation are equal.
 Global positioned opacity is available through [`\pgrdalpha`](positioned-alpha.md).
 It combines with existing alpha on non-box surfaces, preserves paint outside
 its fixed rectangle, and excludes all box backgrounds and borders.
+
+## Reusable style paint
+
+All families in the table can be declared in `mangetsu-style` comments, including
+`\pgrdalpha`, with the same inline argument grammar and limits. **Metadata uses
+first-valid-source-wins per target and color/alpha channel**, across comments.
+Aliases share a source slot; malformed declarations and empty/zero resets do
+not reserve one. Solid fallback colors do not compete with gradients. Inline
+dialogue keeps last-valid-source-wins and can replace inherited paint with
+another gradient, a solid, or an image. Images remain excluded from metadata.
+
+Bare/named `\r` restore style paint before the actor appearance patch. Empty
+gradient tags restore inherited paint for their own channel when configured;
+positioned-color resets still require a current positioned source. Other
+channels and unextended files retain existing behavior. See [style extensions](style-extensions.md)
+for the complete family list, effective actor precedence, load-time ownership
+and embedded-host metadata ingestion. RGBA remains necessary for varying RGB.

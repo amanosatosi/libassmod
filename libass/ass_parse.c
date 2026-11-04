@@ -2549,8 +2549,6 @@ static void apply_secondary_outline_vector(RenderContext *state,
         if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
             return;
         if (paint->type != KARAOKE_OUTLINE_UNSET) {
-            if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
-                return;
             paint->type = KARAOKE_OUTLINE_SOLID;
             ass_gradient_values_disable_color(&paint->vector,
                                               paint->color, 1.0);
@@ -3054,6 +3052,9 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
     default:
         break;
     }
+    if (!arg.start && !nested && pwr > 0 &&
+            (tag == BORDER_TAG_BOX_COLOR || tag == BORDER_TAG_BOX_ALPHA))
+        restore_style_paint(state, STYLE_PAINT_BOX + layer, tag == BORDER_TAG_BOX_ALPHA);
 }
 
 static void copy_gradient_color(GradientValues *dst, const GradientValues *src)
@@ -4211,6 +4212,7 @@ typedef struct {
 
 static bool style_paint_tag(char *p, char *end, StylePaintTag *out)
 {
+    rskip_spaces(&end, p);
     *out = (StylePaintTag) {0};
     if (end - p == 9 && !memcmp(p, "pgrdalpha", 9)) {
         out->target = STYLE_PAINT_GLOBAL; out->alpha = out->positioned = true;
@@ -5887,6 +5889,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             if (!nested && pwr > 0.0)
                 disable_mangetsu_gradient_layer(state, 4);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 4, false);
         } else if (tag("c") || tag("1c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
@@ -6106,6 +6109,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
             if (!nested && pwr > 0.0)
                 disable_mangetsu_alpha_gradient_layer(state, 4);
+            if (!nargs && !nested && pwr > 0) restore_style_paint(state, 4, true);
         } else if (tag_name_matches(p, name_end, "bbvc") ||
                    tag_name_matches(p, name_end, "bbva") ||
                    tag_name_matches(p, name_end, "bbgrd") ||
