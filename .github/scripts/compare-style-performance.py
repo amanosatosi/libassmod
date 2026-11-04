@@ -16,7 +16,8 @@ def main():
         os.sched_setaffinity(0, {affinity})
     frames, trials = 1000, 7
     results = {}
-    for workload in ('ordinary', 'ordinary-overrides', 'furi-inline'):
+    for workload in ('ordinary', 'ordinary-overrides', 'furi-inline', 'furi-metadata',
+                     'vertical-inline', 'border-karaoke'):
         samples = {'baseline': [], 'candidate': []}
         for trial in range(trials):
             order = ('baseline', 'candidate') if trial % 2 == 0 else ('candidate', 'baseline')
@@ -35,13 +36,12 @@ def main():
         results[workload] = {'samples': samples, 'median_cpu_seconds': medians,
                             'median_absolute_deviation_percent': mad_percent,
                             'change_percent': 100 * (medians['candidate'] / medians['baseline'] - 1)}
-    inherited = [json.loads(subprocess.check_output(
-        [candidate, myanmar, latin, str(frames), 'furi-metadata'], text=True)) for _ in range(trials)]
+    inherited = results['furi-metadata']['samples']['candidate']
     inline = results['furi-inline']['samples']['candidate'][0]
     if any(s['checksum'] != inline['checksum'] for s in inherited):
         raise RuntimeError('Inherited ruby differs from inline ruby benchmark geometry')
     report = {'platform': platform.platform(), 'compiler': subprocess.check_output(['cc', '--version'], text=True),
-              'baseline_sha': 'db2865d582142717e09160550160b52126aa656b',
+              'baseline_sha': '5a1ed3d1ee2a3a0837af5d1c395d301de800046b',
               'candidate_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'cpu_affinity': affinity, 'warmup_frames': 100, 'frames': frames, 'trials': trials,
               'results': results, 'inherited_ruby': inherited}

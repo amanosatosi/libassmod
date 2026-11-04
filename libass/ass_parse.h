@@ -39,6 +39,7 @@ void ass_update_font(RenderContext *state);
 extern const ASS_FuriganaStyle ass_native_furigana_style;
 void ass_init_style_extension_state(RenderContext *state, const ASS_Style *style);
 void ass_apply_style_extension(RenderContext *state, int sid);
+void ass_apply_style_layout(RenderContext *state, int sid);
 void ass_apply_chat_side_style(RenderContext *state, int side);
 void ass_apply_transition_effects(RenderContext *state);
 void ass_process_karaoke_effects(RenderContext *state);

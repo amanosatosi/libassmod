@@ -22,6 +22,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <string.h>
 #include <fribidi.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -238,6 +239,20 @@ typedef struct {
     MangetsuGradientLayer gradient;
 } KaraokeOutlinePaint;
 
+/* Flat waiting colors share active layer alpha. No per-layer gradients. */
+typedef struct {
+    uint32_t set;
+    uint32_t color[ASS_BORDER_LAYERS_MAX];
+} KaraokeBorderColors;
+
+static inline void copy_karaoke_border_colors(KaraokeBorderColors *dst,
+                                              const KaraokeBorderColors *src)
+{
+    dst->set = src->set;
+    if (src->set)
+        memcpy(dst->color, src->color, sizeof(dst->color));
+}
+
 typedef struct {
     bool active;
     uint32_t color;
@@ -381,6 +396,7 @@ typedef struct {
     TextPatternPaint pattern;
     ImageFillState image_fill;
     KaraokeOutlinePaint secondary_outline;
+    KaraokeBorderColors secondary_border;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
     uint32_t base_c[4];
     int fade;
@@ -455,6 +471,7 @@ typedef struct glyph_info {
     PositionedAlphaMask *positioned_alpha_mask;
     TextPatternPaint pattern;
     KaraokeOutlinePaint secondary_outline;
+    KaraokeBorderColors secondary_border;
     ImageFillState image_fill;
     ASS_BlendMode blend_mode;
     int line;
@@ -575,6 +592,22 @@ typedef struct {
     FuriPositionMode change_pos;
 } ASS_FuriganaStyle;
 
+enum {
+    STYLE_LAYOUT_WRAP = 1 << 0,
+    STYLE_LAYOUT_VERTICAL = 1 << 1,
+    STYLE_LAYOUT_PROFILE = 1 << 2,
+    STYLE_LAYOUT_DIRECTION = 1 << 3,
+    STYLE_LAYOUT_SPACING = 1 << 4,
+    STYLE_LAYOUT_COLUMNS = 1 << 5,
+};
+
+typedef struct {
+    unsigned fields;
+    int wrap, profile, direction;
+    bool vertical;
+    double spacing, columns;
+} ASS_StyleLayout;
+
 typedef struct {
     int base_start;
     int base_len;
@@ -692,6 +725,7 @@ typedef struct {
     double border_x;
     double border_y;
     BorderLayerState border_layers[ASS_BORDER_LAYERS_MAX];
+    KaraokeBorderColors secondary_border;
     double shadow_x;
     double shadow_y;
     double blur_x;
@@ -875,6 +909,7 @@ struct render_context {
     PositionedAlphaMask *positioned_alpha_mask;
     TextPatternPaint pattern;
     KaraokeOutlinePaint secondary_outline;
+    KaraokeBorderColors secondary_border;
     PositionedAlphaMask *positioned_alpha_masks;
     int mangetsu_gradient_next_id;
     uint32_t pattern_cycle_serial;
@@ -984,6 +1019,7 @@ struct render_context {
     unsigned italic;
     int treat_family_as_pattern;
     int wrap_style;
+    int initial_wrap_style; // effective initial style; survives appearance resets
     int font_encoding;
 
     // combination of ASS_OVERRIDE_BIT_* flags that apply right now

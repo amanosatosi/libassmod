@@ -24,10 +24,14 @@ styles are ignored with a warning instead of modifying the fallback style.
 
 ## Supported properties
 
-The initial set deliberately contains persistent, pointer-free defaults:
+The supported set contains typed event-layout defaults and persistent, pointer-free appearance defaults:
 
 | Tags | Meaning |
 | --- | --- |
+| `\q0`…`\q3` | Initial wrapping mode (script `WrapStyle` when absent) |
+| `\vert0`, `\vert1`, `\vtype0`…`\vtype3`, `\vdir0`…`\vdir2` | Initial native vertical layout, unit policy and column direction |
+| `\vsp`, `\vcolsp` | Initial vertical unit and column spacing |
+| `\1bsc`…`\10bsc` | Flat waiting karaoke border colors; `\1bsc` aliases `\3sc` inline |
 | `\furi`, `\furis`, `\furisx`, `\furisy` | Enable furigana and set reading scale |
 | `\furifsp`, `\furistyle` | Reading spacing and style |
 | `\furipos(x,y)`, `\furiap` | Reading offset and automatic placement |
@@ -84,11 +88,30 @@ furigana controls restore the active style's spacing, placement, enabled state
 and layout policy as well. Explicit `\furis50` remains an explicit 50%, even
 when the inherited value is 70%. Without metadata the native 50% defaults and
 other native furigana defaults are unchanged. Border size/color empty resets
-use the effective defaults already used by the normal parser.
+use the effective defaults already used by the normal parser. Parameterless
+`\Nbsc` restores the active style’s waiting color for that layer, or unsets
+it when none is configured. `\r` and named resets restore these appearance
+defaults too; layers remain disabled until their size is enabled. Waiting
+paint inherits the active layer’s alpha, fade and alpha gradients.
+
+Wrapping and vertical controls select the **initial event layout** separately
+from appearance. Neither bare nor named `\r` changes them. Inline `\q`
+overrides wrapping; an empty or invalid inline `\q` restores the initial
+style’s wrapping default (or script `WrapStyle`). Metadata only accepts modes
+0–3. Vertical inline controls override the inherited values before visible
+text, and retain their usual restrictions after text or inside transforms.
+Parameterless vertical controls keep their existing inline native-default
+semantics; they are not appearance-style resets. See [native vertical layout](native-vertical.md).
+
+```ass
+Comment: 0,0:00:00.00,0:00:00.00,Vertical,,0,0,0,mangetsu-style,{\q2\vert1\vtype3\vdir2\vsp2\vcolsp8}
+Comment: 0,0:00:00.00,0:00:00.00,Karaoke,,0,0,0,mangetsu-style,{\2bs3\2bc&HFFFFFF&\2bsc&HFF0000&}
+```
 
 Actor Colorcoding keeps its existing syntax, actor matching and reset policy.
 Its color patch takes priority where both metadata systems specify a border
-color. Adding `\furis70` does not touch any actor colors. Without an actor
+color. The Actor Colorcoding whitelist is unchanged: `\Nbsc` and event-layout
+controls are not actor properties. Adding `\furis70` does not touch any actor colors. Without an actor
 style whitelist, bare `\r` reapplies the actor patch and named resets remain
 the existing escape hatch. With a whitelist, the patch applies on either
 reset only when the destination style is allowed. See
@@ -106,7 +129,8 @@ patch indexed by style ID in private track storage. Rendering applies only
 those fields, before Actor Colorcoding; it never concatenates dialogue strings
 or reparses extension comments. Freeing styles or tracks frees their patches.
 Flushing dialogue packets retains the owning track's style defaults. Typed
-furigana defaults live in the compiled patch; dialogue resets borrow an
+layout defaults are applied before font selection and shaping, once per event
+initialization, and are excluded from appearance resets. Typed furigana defaults live in the compiled patch; dialogue resets borrow an
 immutable pointer, with a shared native constant for unextended styles.
 
 Standard ASS style records and the public style/track layouts are unchanged.
@@ -147,12 +171,13 @@ readings, karaoke, separately fed host metadata and track/style ownership.
 The furigana workflow builds and runs the full available Meson suite under
 ASan/UBSan, then reruns the metadata/ownership test with leak detection enabled.
 
-Its performance job builds this revision and pre-feature `db2865d` with the same
+Its performance job builds this revision and baseline `5a1ed3d` with the same
 release compiler, dependencies and attached fonts. A public-API harness excludes
 loading/font setup, warms 100 frames, then measures CPU time for 1000 frames
 containing 12 active events. Seven trials alternate revision order on one CPU.
 It measures ordinary ASS, ordinary ASS with standard overrides, and inline
-furigana; inherited furigana is also compared with inline furigana. Geometry
+furigana, inherited furigana, native vertical layout, and multi-border karaoke
+without secondary sources; inherited furigana is also compared with inline furigana. Geometry
 checksums must agree. The job publishes medians, percentage changes and every
 raw sample. Shared-runner timing is informational and must be reviewed before
 claiming that a regression has been ruled out.

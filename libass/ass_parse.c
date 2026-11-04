@@ -1245,6 +1245,7 @@ typedef enum {
     BORDER_TAG_BLUR,
     BORDER_TAG_BE,
     BORDER_TAG_COLOR,
+    BORDER_TAG_SECONDARY_COLOR,
     BORDER_TAG_ALPHA,
     BORDER_TAG_COLOR_GRADIENT,
     BORDER_TAG_ALPHA_GRADIENT,
@@ -1324,6 +1325,8 @@ static NumberedBorderTag parse_numbered_border_tag(char *p, char *name_end,
         tag = BORDER_TAG_BLUR;
     else if (match_border_suffix(q, name_end, "bbe", &arg_start))
         tag = BORDER_TAG_BE;
+    else if (match_border_suffix(q, name_end, "bsc", &arg_start))
+        tag = BORDER_TAG_SECONDARY_COLOR;
     else if (match_border_suffix(q, name_end, "bsx", &arg_start))
         tag = BORDER_TAG_SIZE_X;
     else if (match_border_suffix(q, name_end, "bsy", &arg_start))
@@ -1380,6 +1383,7 @@ typedef struct {
 struct ass_style_extension {
     int n_values;
     ASS_FuriganaStyle furigana;
+    ASS_StyleLayout layout;
     StyleExtensionValue values[];
 };
 
@@ -1395,6 +1399,8 @@ struct ass_style_extension {
     EXT_FIELD(field.blur), EXT_FIELD(field.be), \
     EXT_RGB(field.color), EXT_ALPHA(field.color), EXT_FIELD(field.gradient)
 #define EXT_LAYER(n) EXT_BORDER(border_layers[n]), EXT_BORDER(box_border_layers[n])
+#define EXT_SECONDARY(n) EXT_VALUE(secondary_border.set, 1u << (n)), \
+    EXT_RGB(secondary_border.color[n])
 static const StyleExtensionValue extension_fields[] = {
     EXT_FIELD(furi_enabled), EXT_FIELD(furi_scale_x), EXT_FIELD(furi_scale_y),
     EXT_FIELD(furi_hspacing), EXT_FIELD(furi_style), EXT_FIELD(furi_offset_x),
@@ -1406,7 +1412,12 @@ static const StyleExtensionValue extension_fields[] = {
     EXT_LAYER(0), EXT_LAYER(1), EXT_LAYER(2), EXT_LAYER(3), EXT_LAYER(4),
     EXT_LAYER(5), EXT_LAYER(6), EXT_LAYER(7), EXT_LAYER(8), EXT_LAYER(9),
     EXT_RGB(c[2]), EXT_ALPHA(c[2]), EXT_FIELD(gradient.layer[2]),
+    EXT_SECONDARY(0), EXT_SECONDARY(1), EXT_SECONDARY(2), EXT_SECONDARY(3),
+    EXT_SECONDARY(4), EXT_SECONDARY(5), EXT_SECONDARY(6), EXT_SECONDARY(7),
+    EXT_SECONDARY(8), EXT_SECONDARY(9),
+    EXT_FIELD(secondary_outline.type), EXT_RGB(secondary_outline.color),
 };
+#undef EXT_SECONDARY
 #undef EXT_LAYER
 #undef EXT_BORDER
 #undef EXT_ALPHA
@@ -1417,11 +1428,25 @@ static const StyleExtensionValue extension_fields[] = {
 #define EXTENSION_FIELDS (sizeof(extension_fields) / sizeof(extension_fields[0]))
 struct ass_style_extension_builder {
     bool selected[EXTENSION_FIELDS];
+    unsigned layout_fields;
 };
 
 static void select_extension_field(RenderContext *state, size_t offset,
                                     uint32_t mask)
 {
+    static const struct {size_t offset; unsigned flag;} layout_fields[] = {
+        {offsetof(RenderContext, wrap_style), STYLE_LAYOUT_WRAP},
+        {offsetof(RenderContext, native_vertical), STYLE_LAYOUT_VERTICAL},
+        {offsetof(RenderContext, vertical_profile), STYLE_LAYOUT_PROFILE},
+        {offsetof(RenderContext, vertical_direction), STYLE_LAYOUT_DIRECTION},
+        {offsetof(RenderContext, vertical_spacing), STYLE_LAYOUT_SPACING},
+        {offsetof(RenderContext, vertical_column_spacing), STYLE_LAYOUT_COLUMNS},
+    };
+    for (size_t i = 0; i < sizeof(layout_fields) / sizeof(*layout_fields); i++)
+        if (offset == layout_fields[i].offset) {
+            state->style_extension_parse->layout_fields |= layout_fields[i].flag;
+            return;
+        }
     for (size_t i = 0; i < EXTENSION_FIELDS; i++)
         if (extension_fields[i].offset == offset && extension_fields[i].mask == mask)
             state->style_extension_parse->selected[i] = true;
@@ -1453,6 +1478,24 @@ void ass_apply_style_extension(RenderContext *state, int sid)
     struct parser_priv *parser = state->renderer->track->parser_priv;
     if (parser && sid >= 0 && sid < parser->n_style_extensions)
         apply_extension_values(state, parser->style_extensions[sid]);
+}
+
+static void apply_style_layout(RenderContext *state, const ASS_StyleLayout *layout)
+{
+    if (layout->fields & STYLE_LAYOUT_WRAP) state->wrap_style = layout->wrap;
+    if (layout->fields & STYLE_LAYOUT_VERTICAL) state->native_vertical = layout->vertical;
+    if (layout->fields & STYLE_LAYOUT_PROFILE) state->vertical_profile = layout->profile;
+    if (layout->fields & STYLE_LAYOUT_DIRECTION) state->vertical_direction = layout->direction;
+    if (layout->fields & STYLE_LAYOUT_SPACING) state->vertical_spacing = layout->spacing;
+    if (layout->fields & STYLE_LAYOUT_COLUMNS) state->vertical_column_spacing = layout->columns;
+}
+
+void ass_apply_style_layout(RenderContext *state, int sid)
+{
+    struct parser_priv *parser = state->renderer->track->parser_priv;
+    if (parser && sid >= 0 && sid < parser->n_style_extensions &&
+            parser->style_extensions[sid])
+        apply_style_layout(state, &parser->style_extensions[sid]->layout);
 }
 
 void ass_free_style_extension(ASS_Track *track, int sid)
@@ -1500,6 +1543,7 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
     ass_gradient_state_reset(&state->gradient, state->c);
     state->border_style = style->BorderStyle;
     state->blur_x = state->blur_y = style->Blur;
+    state->wrap_style = track->WrapStyle;
     ass_init_style_extension_state(state, style);
 
     unsigned char native[EXTENSION_FIELDS][sizeof(GradientValues)];
@@ -1510,6 +1554,11 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
     struct ass_style_extension_builder builder = {0};
     struct ass_style_extension *old = parser->style_extensions[sid];
     apply_extension_values(state, old);
+    if (old) {
+        apply_style_layout(state, &old->layout);
+        builder.layout_fields = old->layout.fields;
+    }
+    state->initial_wrap_style = state->wrap_style;
     if (old)
         for (int j = 0; j < old->n_values; j++)
             for (size_t i = 0; i < EXTENSION_FIELDS; i++)
@@ -1520,6 +1569,8 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
     memcpy(state->default_style.border_layers, state->border_layers,
            sizeof(state->border_layers));
     state->default_style.gradient = state->gradient;
+    copy_karaoke_border_colors(&state->default_style.secondary_border,
+                               &state->secondary_border);
     state->style_extension_parse = &builder;
     state->colorcode_parse = true; // suppress column-default bookkeeping
     for (char *p = text; *p;) {
@@ -1559,6 +1610,12 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
         .auto_placement = state->furi_auto_placement,
         .position_explicit = state->furi_position_explicit,
         .place_auto = state->furi_place_auto, .change_pos = state->furi_change_pos,
+    };
+    patch->layout = (ASS_StyleLayout) {
+        .fields = builder.layout_fields, .wrap = state->wrap_style,
+        .vertical = state->native_vertical, .profile = state->vertical_profile,
+        .direction = state->vertical_direction, .spacing = state->vertical_spacing,
+        .columns = state->vertical_column_spacing,
     };
     ass_free_override_buffers(state);
     free(renderer);
@@ -2403,6 +2460,14 @@ static void apply_secondary_outline_color(RenderContext *state,
 {
     if (!nargs) {
         state->secondary_outline = (KaraokeOutlinePaint) {0};
+        const KaraokeBorderColors *defaults = &state->default_style.secondary_border;
+        if (defaults->set & 1u) {
+            init_secondary_outline_paint(state);
+            state->secondary_outline.color = defaults->color[0];
+        }
+        state->secondary_border.set = (state->secondary_border.set & ~1u) |
+                                      (defaults->set & 1u);
+        state->secondary_border.color[0] = defaults->color[0];
         return;
     }
 
@@ -2415,6 +2480,8 @@ static void apply_secondary_outline_color(RenderContext *state,
     ass_gradient_values_disable_color(&state->secondary_outline.vector,
                                       state->secondary_outline.color, 1.0);
     ass_mangetsu_gradient_layer_reset(&state->secondary_outline.gradient);
+    state->secondary_border.set |= 1u;
+    state->secondary_border.color[0] = state->secondary_outline.color;
 }
 
 static void apply_secondary_outline_vector(RenderContext *state,
@@ -3032,6 +3099,32 @@ static void apply_numbered_border_tag(RenderContext *state,
         (nargs ? args[0] : (struct arg) { NULL, NULL });
 
     switch (tag) {
+    case BORDER_TAG_SECONDARY_COLOR: {
+        if (!layer) {
+            struct arg values[1];
+            int count = arg.start ? 1 : 0;
+            if (count) values[0] = arg;
+            apply_secondary_outline_color(state, values, count, pwr);
+        } else if (!arg.start) {
+            const KaraokeBorderColors *defaults = &state->default_style.secondary_border;
+            uint32_t bit = 1u << layer;
+            state->secondary_border.set = (state->secondary_border.set & ~bit) |
+                                          (defaults->set & bit);
+            state->secondary_border.color[layer] = defaults->color[layer];
+        } else {
+            uint32_t color;
+            if (!parse_ass_color_arg(arg, &color))
+                return;
+            uint32_t current = state->secondary_border.set & (1u << layer) ?
+                state->secondary_border.color[layer] : state->border_layers[layer].color;
+            change_color(&current, color, pwr);
+            if (pwr > 0) {
+                state->secondary_border.color[layer] = current;
+                state->secondary_border.set |= 1u << layer;
+            }
+        }
+        break;
+    }
     case BORDER_TAG_BOX_VCOLOR:
     case BORDER_TAG_BOX_VALPHA:
     case BORDER_TAG_BOX_GRADIENT:
@@ -3833,6 +3926,12 @@ typedef struct {
 #define EXT_TAG(name, field, integer, sign) \
     {name, {EXT_OFFSET(field), SIZE_MAX, SIZE_MAX}, integer, sign}
 static const StyleExtensionTag style_extension_tags[] = {
+    EXT_TAG("q", wrap_style, true, false),
+    EXT_TAG("vert", native_vertical, true, false),
+    EXT_TAG("vtype", vertical_profile, true, false),
+    EXT_TAG("vdir", vertical_direction, true, false),
+    EXT_TAG("vsp", vertical_spacing, false, true),
+    EXT_TAG("vcolsp", vertical_column_spacing, false, true),
     {"furipos", {EXT_OFFSET(furi_offset_x), EXT_OFFSET(furi_offset_y),
                  EXT_OFFSET(furi_position_explicit)}, false, true},
     {"furis", {EXT_OFFSET(furi_scale_x), EXT_OFFSET(furi_scale_y), SIZE_MAX}, false, false},
@@ -3857,7 +3956,7 @@ static bool style_extension_border_allowed(NumberedBorderTag tag)
 {
     return tag == BORDER_TAG_SIZE || tag == BORDER_TAG_SIZE_X ||
            tag == BORDER_TAG_SIZE_Y || tag == BORDER_TAG_COLOR ||
-           tag == BORDER_TAG_ALPHA || tag == BORDER_TAG_BLUR ||
+           tag == BORDER_TAG_ALPHA || tag == BORDER_TAG_SECONDARY_COLOR || tag == BORDER_TAG_BLUR ||
            tag == BORDER_TAG_BE || tag == BORDER_TAG_BOX_SIZE ||
            tag == BORDER_TAG_BOX_COLOR || tag == BORDER_TAG_BOX_ALPHA;
 }
@@ -3922,7 +4021,8 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
     struct arg arg = has_inline ? inline_arg :
                      nargs ? args[0] : (struct arg) {NULL, NULL};
     uint32_t color;
-    bool rgb = border == BORDER_TAG_COLOR || border == BORDER_TAG_BOX_COLOR;
+    bool rgb = border == BORDER_TAG_COLOR || border == BORDER_TAG_BOX_COLOR ||
+               border == BORDER_TAG_SECONDARY_COLOR;
     bool alpha = border == BORDER_TAG_ALPHA || border == BORDER_TAG_BOX_ALPHA;
     if (rgb || alpha) {
         if (nargs > 1 || (arg.start && (rgb ?
@@ -3940,6 +4040,11 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
                 if (!parse_int32_arg_strict(value, &number) ||
                         (!strcmp(spec->name, "furistyle") && (number < 0 || number > 2)) ||
                         (!strcmp(spec->name, "box") && number != 0 && number != 1))
+                    return false;
+                if ((!strcmp(spec->name, "q") && (number < 0 || number > 3)) ||
+                    (!strcmp(spec->name, "vert") && number != 0 && number != 1) ||
+                    (!strcmp(spec->name, "vtype") && (number < 0 || number > 3)) ||
+                    (!strcmp(spec->name, "vdir") && (number < 0 || number > 2)))
                     return false;
             } else {
                 NumericOperand operand;
@@ -3963,6 +4068,16 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
         for (int i = 0; i < 3; i++)
             if (spec->fields[i] != SIZE_MAX)
                 select_extension_field(state, spec->fields[i], 0);
+        return true;
+    }
+    if (border == BORDER_TAG_SECONDARY_COLOR) {
+        select_extension_field(state, offsetof(RenderContext, secondary_border.set), 1u << layer);
+        select_extension_field(state, offsetof(RenderContext, secondary_border.color) +
+                               layer * sizeof(uint32_t), 0xFFFFFF00u);
+        if (!layer) {
+            select_extension_field(state, offsetof(RenderContext, secondary_outline.type), 0);
+            select_extension_field(state, offsetof(RenderContext, secondary_outline.color), 0xFFFFFF00u);
+        }
         return true;
     }
     bool box = border == BORDER_TAG_BOX_SIZE || border == BORDER_TAG_BOX_COLOR ||
@@ -4332,7 +4447,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 int32_t value = nargs ? argtoi32(*args) : 0;
                 if (value == 0 || value == 1) {
                     state->native_vertical = value != 0;
-                    ass_update_font(state);
+                    if (!state->style_extension_parse)
+                        ass_update_font(state);
                 }
             }
         } else if (tag("vtype")) {
@@ -5808,7 +5924,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("q")) {
             int32_t val = argtoi32(*args);
             if (!nargs || !(val >= 0 && val <= 3))
-                val = render_priv->track->WrapStyle;
+                val = state->initial_wrap_style;
             state->wrap_style = val;
         } else if (tag("fe")) {
             int32_t val;

@@ -129,3 +129,7 @@ vertical_chars = set(range(33, 127)) | {ord(c) for c in
     "漢字かんじカンジ日本語にほんご文字もじ時とてもながいよみかた「」、。မြန်မာနိုင်ငံဆာတို့စူဇူကီ"}
 font("native-vertical-furi.ttf", "Native Vertical Furi", 1000, 800, 200,
      -100, 50, 200, 50, vertical_chars)
+
+# Independent karaoke fixture: strong RTL text plus native vertical probes.
+font("karaoke-border.ttf", "Karaoke Border", 1000, 800, 200,
+     -100, 50, 200, 50, vertical_chars | {ord(c) for c in "אבגד"})

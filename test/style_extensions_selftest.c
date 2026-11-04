@@ -9,6 +9,9 @@
 #include "ass.h"
 
 #define RUBY "<က|စူဇူကီ>"
+#define LONG_TEXT "က က က က က က က က က က က က က က က က က က က က က က က က က က က က က က"
+#define VERTICAL_TEXT "<日本語|にほんご>Latin<漢字||ဆာတို့>"
+#define VERTICAL_LONG VERTICAL_TEXT VERTICAL_TEXT VERTICAL_TEXT
 #define META(style, tags) \
     "Comment: 0,8:00:00.00,0:00:00.00," style ",,0,0,0,mangetsu-style,{" tags "}\n"
 #define ACTOR(name, tags) \
@@ -44,6 +47,7 @@ static char *script(const char *metadata, const char *style,
         "Style: Default,Noto Sans Myanmar,42,&H00FFFFFF,&H00FFFFFF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,5,20,20,20,1\n"
         "Style: Other,Noto Sans Myanmar,42,&H0000FF00,&H00FFFFFF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,5,20,20,20,1\n"
         "Style: Box,Noto Sans Myanmar,42,&H00FFFFFF,&H00FFFFFF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,4,2,0,5,20,20,20,1\n"
+        "Style: Vertical,Native Vertical Furi,42,&H00FFFFFF,&H00FFFFFF,&H80000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,5,20,20,20,1\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
     size_t size = sizeof(header) + strlen(metadata) + strlen(style) +
@@ -232,11 +236,11 @@ static int host_metadata(ASS_Library *lib, ASS_Renderer *renderer)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) return 1;
+    if (argc != 4) return 1;
     ASS_Library *lib = ass_library_init();
     if (!lib) return 1;
     ass_set_message_cb(lib, message, NULL);
-    if (!add_font(lib, argv[1]) || !add_font(lib, argv[2])) {
+    if (!add_font(lib, argv[1]) || !add_font(lib, argv[2]) || !add_font(lib, argv[3])) {
         ass_library_done(lib);
         return 1;
     }
@@ -249,6 +253,31 @@ int main(int argc, char **argv)
     ass_set_fonts(renderer, NULL, "Pixel Operator Mono", ASS_FONTPROVIDER_NONE, NULL, 1);
 
     static const Case cases[] = {
+        {"wrapping q0", META("Default", "\\q0"), "Default", "", LONG_TEXT, "", "{\\q0}" LONG_TEXT},
+        {"wrapping q1", META("Default", "\\q1"), "Default", "", LONG_TEXT, "", "{\\q1}" LONG_TEXT},
+        {"wrapping q2", META("Default", "\\q2"), "Default", "", LONG_TEXT, "", "{\\q2}" LONG_TEXT},
+        {"wrapping q3", META("Default", "\\q3"), "Default", "", LONG_TEXT, "", "{\\q3}" LONG_TEXT},
+        {"inline wrapping overrides", META("Default", "\\q2"), "Default", "", "{\\q0}" LONG_TEXT, "", "{\\q0}" LONG_TEXT},
+        {"bare q restores initial style", META("Default", "\\q2"), "Default", "", "{\\q0\\q}" LONG_TEXT, "", "{\\q2}" LONG_TEXT},
+        {"bare q without metadata", "", "Default", "", "{\\q2\\q}" LONG_TEXT, "", "{\\q0}" LONG_TEXT},
+        {"appearance reset does not reflow wrap", META("Default", "\\q2"), "Default", "", "{\\q1\\r}" LONG_TEXT, "", "{\\q1}" LONG_TEXT},
+        {"named appearance reset ignores target layout", META("Default", "\\q2") META("Other", "\\q1"), "Default", "", "{\\rOther}" LONG_TEXT, "", "{\\rOther\\q2}" LONG_TEXT},
+        {"bare q after named reset uses initial layout", META("Default", "\\q2") META("Other", "\\q1"), "Default", "", "{\\rOther\\q0\\q}" LONG_TEXT, "", "{\\rOther\\q2}" LONG_TEXT},
+        {"vertical defaults", META("Vertical", "\\vert1\\vtype3\\vdir2\\vsp2\\vcolsp8"), "Vertical", "", VERTICAL_TEXT, "", "{\\vert1\\vtype3\\vdir2\\vsp2\\vcolsp8}" VERTICAL_TEXT},
+        {"vertical profile automatic", META("Vertical", "\\vert1\\vtype0"), "Vertical", "", VERTICAL_TEXT, "", "{\\vert1\\vtype0}" VERTICAL_TEXT},
+        {"vertical profile CJK", META("Vertical", "\\vert1\\vtype1"), "Vertical", "", VERTICAL_TEXT, "", "{\\vert1\\vtype1}" VERTICAL_TEXT},
+        {"vertical profile Latin", META("Vertical", "\\vert1\\vtype2"), "Vertical", "", VERTICAL_TEXT, "", "{\\vert1\\vtype2}" VERTICAL_TEXT},
+        {"vertical leftward columns", META("Vertical", "\\vert1\\vdir1\\vsp3\\vcolsp12"), "Vertical", "", VERTICAL_LONG, "", "{\\vert1\\vdir1\\vsp3\\vcolsp12}" VERTICAL_LONG},
+        {"vertical actor color coexists", RED META("Default", "\\vert1\\vtype3\\furis70"), "Default", "Nene", RUBY, RED, "{\\vert1\\vtype3\\furis70}" RUBY},
+        {"vertical Myanmar shaping", META("Default", "\\vert1\\vtype3\\vsp2"), "Default", "", RUBY, "", "{\\vert1\\vtype3\\vsp2}" RUBY},
+        {"vertical q2 wrapping", META("Vertical", "\\vert1\\q2"), "Vertical", "", VERTICAL_LONG, "", "{\\vert1\\q2}" VERTICAL_LONG},
+        {"vertical q0 wrapping", META("Vertical", "\\vert1\\q0"), "Vertical", "", VERTICAL_LONG, "", "{\\vert1\\q0}" VERTICAL_LONG},
+        {"early inline vertical override", META("Vertical", "\\vert1\\vtype3\\vdir2\\vsp2\\vcolsp8"), "Vertical", "", "{\\vert0\\vtype1\\vdir1\\vsp4\\vcolsp3}" VERTICAL_TEXT, "", "{\\vert0\\vtype1\\vdir1\\vsp4\\vcolsp3}" VERTICAL_TEXT},
+        {"late vertical controls ignored", META("Vertical", "\\vert1"), "Vertical", "", "漢{\\vert0\\vtype3\\vdir2\\vsp10\\vcolsp10}字", "", "{\\vert1}漢字"},
+        {"transformed vertical controls ignored", META("Vertical", "\\vert1"), "Vertical", "", "{\\t(0,1000,\\vert0\\vtype3\\vdir2\\vsp10\\vcolsp10)}漢字", "", "{\\vert1}漢字"},
+        {"named reset preserves vertical selection", META("Vertical", "\\vert1\\vtype3") META("Other", "\\vert0"), "Vertical", "", "{\\rOther}" RUBY, "", "{\\vert1\\vtype3\\rOther}" RUBY},
+        {"layout metadata merges properties", META("Vertical", "\\vert1\\vdir2\\q2") META("Vertical", "\\vtype3\\vsp2\\q1\\vcolsp8"), "Vertical", "", VERTICAL_TEXT, "", "{\\vert1\\vdir2\\vtype3\\vsp2\\q1\\vcolsp8}" VERTICAL_TEXT},
+        {"invalid layout metadata ignored", META("Default", "\\q4\\vert2\\vtype4\\vdir3\\vsp(nan)\\vcolsp(inf)\\vertex1"), "Default", "", LONG_TEXT, "", LONG_TEXT},
         {"inherited Burmese furigana", F70, "Default", "", RUBY, "", "{\\furis70}" RUBY},
         {"native defaults", "", "Default", "", RUBY, "", "{\\furis50}" RUBY},
         {"inline override", F70, "Default", "", "{\\furis50}" RUBY, "", "{\\furis50}" RUBY},
@@ -377,6 +406,24 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++)
         failed |= compare(lib, renderer, &cases[i]);
     failed |= host_metadata(lib, renderer);
+
+    // Prove the wrapping probes overflow, rather than comparing two identical
+    // unwrapped lines. Include both public outputs and native vertical layout.
+    for (int vertical = 0; vertical < 2; vertical++) {
+        ASS_Track *wrap = load(lib, vertical ? META("Vertical", "\\vert1\\q0") : META("Default", "\\q0"),
+                              vertical ? "Vertical" : "Default", "", vertical ? VERTICAL_LONG : LONG_TEXT);
+        ASS_Track *nowrap = load(lib, vertical ? META("Vertical", "\\vert1\\q2") : META("Default", "\\q2"),
+                                vertical ? "Vertical" : "Default", "", vertical ? VERTICAL_LONG : LONG_TEXT);
+        for (int rgba = 0; rgba < 2; rgba++) {
+            uint64_t a, b;
+            if (!wrap || !nowrap || !snapshot(renderer, wrap, rgba, &a) ||
+                    !snapshot(renderer, nowrap, rgba, &b) || a == b) {
+                fprintf(stderr, "wrapping probes must differ (vertical=%d RGBA=%d)\n", vertical, rgba);
+                failed = 1;
+            }
+        }
+        ass_free_track(wrap); ass_free_track(nowrap);
+    }
 
     ASS_Track *scaled = load(lib, F70, "Default", "", RUBY);
     ASS_Track *native = load(lib, "", "Default", "", RUBY);

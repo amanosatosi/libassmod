@@ -116,10 +116,33 @@ there are no per-layer shadow tags.
 silhouette of all enabled native border layers.
 
 Override state is persistent like normal ASS tags. `\r` resets layer 1 to the
-active style outline and disables layers 2 through 10.
+active style outline and disables layers 2 through 10, then restores any
+[style-extension](style-extensions.md) border defaults for that style.
 
 When `BorderStyle=5` / `\bs5` is active, every enabled native border layer uses
 Mangetsu geometric border generation. Layer sizes, colors, alpha, gradients,
 and ordering keep the same multi-border semantics. Extreme acute joins are
 beveled when they exceed the geometric miter limit, preventing text glyph
 spikes while preserving ordinary sharp corners.
+
+## Secondary karaoke colors
+
+`\1bsc&HBBGGRR&` through `\10bsc&HBBGGRR&` set a flat waiting color
+for the corresponding native ring. `\1bsc` is an alias for existing `\3sc`.
+Color alone never enables a ring. Active color, size, geometry, ordering, blur
+and clipping remain independent. Waiting paint inherits the active layer’s
+alpha, fades and alpha gradients; there is no separate waiting alpha.
+
+```ass
+{\bord2\3c&HFFFFFF&\3sc&HFF0000&\2bs4\2bc&H00FF00&\2bsc&H0000FF&\kf100}Karaoke
+```
+
+`\k` switches each configured ring at segment activation; `\kf` uses the
+existing directional frontier, including RTL, native vertical and furigana
+regions. `\ko`/`\kO` retain suppression/reveal behavior. Unconfigured rings
+keep their existing active paint. Parameterless `\Nbsc` restores the active
+style’s configured waiting color, or unsets it; bare and named `\r` restore
+that style’s waiting defaults. Flat waiting colors may be declared in
+`mangetsu-style` metadata. Actor Colorcoding’s whitelist remains unchanged.
+Both legacy ASS images and RGBA output support these colors. See
+[karaoke paint](karaoke-paint.md) for layer-1 gradient sources and restrictions.

@@ -142,3 +142,22 @@ See [the annotated-column sample](../samples/native-vertical-furigana.ass).
 Horizontal furigana keeps its existing placement, spacing and karaoke paths.
 Curved text paths remain horizontal layout controls and are ignored in native
 vertical mode.
+
+## Style metadata defaults
+
+The initial event layout can be selected once in the style metadata block:
+
+```ass
+Comment: 0,0:00:00.00,0:00:00.00,Vertical,,0,0,0,mangetsu-style,{\vert1\vtype3\vdir2\vsp2\vcolsp8\q2}
+```
+
+`\vert0/1`, `\vtype0`–`\vtype3`, `\vdir0`–`\vdir2`, `\vsp` and
+`\vcolsp` reuse the native engine and its Myanmar/CJK/Latin policies. Defaults
+are compiled as typed values at load time and applied before font selection,
+shaping and wrapping. Explicit inline controls before visible text override
+them. Controls after text begins or inside `\t` retain their existing
+restrictions. Bare and named `\r` reset appearance without changing the
+established layout. An empty `\q` restores the event’s initial style wrapping
+choice; absent metadata uses script `WrapStyle`. Parameterless vertical controls
+keep their existing inline native-default behavior. `\ta`/`\tan` are unchanged.
+See [style extensions](style-extensions.md) for metadata placement and compatibility.

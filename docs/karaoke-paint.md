@@ -12,8 +12,9 @@ These are the waiting counterparts of `\3c`, `\3vc`, and `\3grd`.
 They select one mutually replacing colour source: a later valid secondary
 solid, four-corner vector, or Mangetsu gradient source wins. Outline alpha
 continues to use the normal active outline alpha state. `\r` and
-`\rStyleName` unset the secondary source because ASS styles have no field for
-it. A parameterless `\3sc` unsets the opt-in state; parameterless vector or
+`\rStyleName` restore the target style’s compiled waiting-color default, or
+unset the secondary source when none is configured. A parameterless `\3sc`
+(or `\1bsc`) restores that flat default or unsets the opt-in state; parameterless vector or
 gradient tags fall back to an already configured secondary solid colour.
 
 The extension is opt-in. Without one of these tags, `\k`, `\K`/`\kf`, and
@@ -25,10 +26,21 @@ outline. Border bitmap thickness does not participate in timing. Lowercase
 `\ko` still suppresses every outline before activation and therefore ignores
 secondary outline paint while waiting.
 
-Extra numbered border layers do not have secondary public tags. They retain
-their active paint under `\k`/`\kf`; this avoids assigning ambiguous meaning
-to `\3s*` outside its existing layer-1 counterpart. They are still hidden by
-reveal karaoke as described below.
+Native layers 1–10 accept `\Nbsc&HBBGGRR&` as a flat waiting source.
+`\1bsc` aliases `\3sc`; rich `\3svc`/`\3sgrd` sources remain layer-1-only.
+Higher layers store only a color and enable bit, without per-layer gradient
+objects. Each enabled source uses the existing `\k` activation or `\kf`
+frontier, including RTL, vertical, furigana and gyaku-furi ownership. Waiting
+paint inherits that ring’s active alpha, fades and alpha gradients while
+replacing its active color source. A color never enables a disabled ring.
+Unconfigured rings retain their old active paint. `\ko` suppression and
+`\kO` reveal still apply to all rings.
+
+Flat `\Nbsc` values are supported in [style metadata](style-extensions.md).
+An empty `\Nbsc` restores the active style’s value or unsets that layer.
+Explicit inline colors win until reset; named resets use the destination style.
+Actor Colorcoding remains a separate sparse patch with its existing whitelist;
+it may override active ring colors but does not acquire waiting-color tags.
 
 ## Reveal karaoke
 

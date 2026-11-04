@@ -55,6 +55,8 @@ int main(int argc, char **argv)
         metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\furis70}\n" : "");
     for (int i = 0; i < 12; i++) {
         const char *tags = ruby ? (metadata ? "" : "{\\furis70}") :
+            !strcmp(workload, "vertical-inline") ? "{\\vert1\\vtype2\\vsp2\\vcolsp8}" :
+            !strcmp(workload, "border-karaoke") ? "{\\bord2\\2bs3\\2bc&HFF0000&\\3bs2\\3bc&H00FF00&\\kf100}" :
             !strcmp(workload, "ordinary-overrides") ? "{\\bord2\\blur0.5\\1c&H40A0FF&}" : "";
         length += snprintf(script + length, sizeof(script) - length,
             "Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,%s%s\n", tags,

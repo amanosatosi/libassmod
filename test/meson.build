@@ -362,7 +362,15 @@ style_extensions_unit = executable('style_extensions_unit',
     include_directories: incs, dependencies: deps,
     link_with: libass_for_tools, install: false)
 test('style-extensions', style_extensions_unit,
-    args: [furi_myanmar_font, furi_default_font], timeout: 120)
+    args: [furi_myanmar_font, furi_default_font,
+           join_paths(meson.current_source_dir(), 'fonts', 'native-vertical-furi.ttf')], timeout: 120)
+
+secondary_border_unit = executable('secondary_border_unit',
+    files('secondary_border_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    link_with: libass_for_tools, install: false)
+test('numbered-secondary-border', secondary_border_unit,
+    args: [join_paths(meson.current_source_dir(), 'fonts', 'karaoke-border.ttf')], timeout: 120)
 test('fad-color-fade', fad_unit)
 test('rnd-custom-decoration-lifetime', decoration_rnd_unit,
     env: {'RND_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')},

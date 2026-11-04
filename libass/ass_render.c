@@ -611,6 +611,18 @@ static bool image_fill_state_equal(const ImageFillState *a,
     return true;
 }
 
+static bool secondary_border_equal(const KaraokeBorderColors *a,
+                                    const KaraokeBorderColors *b)
+{
+    unsigned mask = a->set & ~1u; // layer 1 has the existing rich paint comparison
+    if (mask != (b->set & ~1u))
+        return false;
+    for (int i = 1; mask && i < ASS_BORDER_LAYERS_MAX; i++)
+        if ((mask & (1u << i)) && a->color[i] != b->color[i])
+            return false;
+    return true;
+}
+
 static bool secondary_outline_equal(const KaraokeOutlinePaint *a,
                                     const KaraokeOutlinePaint *b);
 
@@ -1942,6 +1954,50 @@ static ASS_Image **render_furi_base_reveal_regions(
     return tail;
 }
 
+static ASS_Image **render_karaoke_border_paint(RenderContext *state,
+    CombinedBitmapInfo *info, Bitmap *bm, uint32_t color, ASS_Image **tail,
+    ASS_ImageRGBA ***rgba_tail)
+{
+    if (info->furi_base_karaoke)
+        tail = render_furi_base_border_regions(
+            state, info, bm, color, true, tail, info->image,
+            rgba_tail);
+    else if (info->secondary_outline.type != KARAOKE_OUTLINE_UNSET &&
+             (info->effect_type == EF_KARAOKE ||
+              info->effect_type == EF_KARAOKE_KF)) {
+        uint32_t active = color;
+        uint32_t waiting = secondary_outline_color(info);
+        uint32_t left = active, right = waiting;
+        int left_layer = 2;
+        int right_layer = KARAOKE_SECONDARY_OUTLINE_LAYER;
+        if (info->effect_type == EF_KARAOKE) {
+            if (info->effect_timing <= 0) {
+                left = waiting;
+                left_layer = KARAOKE_SECONDARY_OUTLINE_LAYER;
+            }
+            right = 0;
+            right_layer = left_layer;
+        } else if (info->karaoke_reverse) {
+            left = waiting;
+            right = active;
+            left_layer = KARAOKE_SECONDARY_OUTLINE_LAYER;
+            right_layer = 2;
+        }
+        tail = render_glyph(state, info, bm, info->x, info->y,
+                            left, right,
+                            info->effect_type == EF_KARAOKE_KF ?
+                                info->effect_timing : 1000000,
+                            tail, IMAGE_TYPE_OUTLINE, info->image,
+                            left_layer, right_layer, rgba_tail);
+    } else {
+        tail = render_glyph(state, info, bm, info->x, info->y,
+                            color, 0, 1000000, tail,
+                            IMAGE_TYPE_OUTLINE, info->image, 2, 2,
+                            rgba_tail);
+    }
+    return tail;
+}
+
 static ASS_Image **render_border_layer(RenderContext *state,
                                        CombinedBitmapInfo *info,
                                        int layer, ASS_Image **tail,
@@ -1964,43 +2020,7 @@ static ASS_Image **render_border_layer(RenderContext *state,
         info->mangetsu_gradient.layer[2] = info->mangetsu_gradient.border[0];
         info->mangetsu_gradient.alpha[2] =
             info->mangetsu_gradient.border_alpha[0];
-        if (info->furi_base_karaoke)
-            tail = render_furi_base_border_regions(
-                state, info, bm, info->c[2], true, tail, info->image,
-                rgba_tail);
-        else if (info->secondary_outline.type != KARAOKE_OUTLINE_UNSET &&
-                 (info->effect_type == EF_KARAOKE ||
-                  info->effect_type == EF_KARAOKE_KF)) {
-            uint32_t active = info->c[2];
-            uint32_t waiting = secondary_outline_color(info);
-            uint32_t left = active, right = waiting;
-            int left_layer = 2;
-            int right_layer = KARAOKE_SECONDARY_OUTLINE_LAYER;
-            if (info->effect_type == EF_KARAOKE) {
-                if (info->effect_timing <= 0) {
-                    left = waiting;
-                    left_layer = KARAOKE_SECONDARY_OUTLINE_LAYER;
-                }
-                right = 0;
-                right_layer = left_layer;
-            } else if (info->karaoke_reverse) {
-                left = waiting;
-                right = active;
-                left_layer = KARAOKE_SECONDARY_OUTLINE_LAYER;
-                right_layer = 2;
-            }
-            tail = render_glyph(state, info, bm, info->x, info->y,
-                                left, right,
-                                info->effect_type == EF_KARAOKE_KF ?
-                                    info->effect_timing : 1000000,
-                                tail, IMAGE_TYPE_OUTLINE, info->image,
-                                left_layer, right_layer, rgba_tail);
-        } else {
-            tail = render_glyph(state, info, bm, info->x, info->y,
-                                info->c[2], 0, 1000000, tail,
-                                IMAGE_TYPE_OUTLINE, info->image, 2, 2,
-                                rgba_tail);
-        }
+        tail = render_karaoke_border_paint(state, info, bm, info->c[2], tail, rgba_tail);
         info->mangetsu_gradient.layer[2] = saved_mangetsu;
         info->mangetsu_gradient.alpha[2] = saved_mangetsu_alpha;
         return tail;
@@ -2024,13 +2044,24 @@ static ASS_Image **render_border_layer(RenderContext *state,
     uint32_t color = info->border_layers[layer].color;
     ass_apply_fade(&color, info->fade);
 
-    if (info->furi_base_karaoke)
+    if (info->secondary_border.set & (1u << layer)) {
+        // Borrow the existing secondary paint selector while this ring is
+        // mapped onto outline channel 2. Its active alpha/gradient is retained.
+        KaraokeOutlinePaintType saved_type = info->secondary_outline.type;
+        uint32_t saved_secondary = info->secondary_outline.color;
+        info->secondary_outline.type = KARAOKE_OUTLINE_SOLID;
+        info->secondary_outline.color = info->secondary_border.color[layer];
+        tail = render_karaoke_border_paint(state, info, bm, color, tail, rgba_tail);
+        info->secondary_outline.type = saved_type;
+        info->secondary_outline.color = saved_secondary;
+    } else if (info->furi_base_karaoke) {
         tail = render_furi_base_border_regions(
             state, info, bm, color, false, tail, info->image, rgba_tail);
-    else
+    } else {
         tail = render_glyph(state, info, bm, info->x, info->y, color,
                             0, 1000000, tail, IMAGE_TYPE_OUTLINE, info->image,
                             2, 2, rgba_tail);
+    }
 
     info->base_c[2] = saved_base;
     info->pattern.polka_face[2] = saved_polka;
@@ -3349,6 +3380,7 @@ static void capture_effective_default_state(RenderContext *state)
     style->pattern = state->pattern;
     style->image_fill = state->image_fill;
     style->blend_mode = state->blend_mode;
+    copy_karaoke_border_colors(&style->secondary_border, &state->secondary_border);
     memcpy(style->border_layers, state->border_layers,
            sizeof(style->border_layers));
 }
@@ -3694,6 +3726,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->positioned_alpha_mask = NULL;
     state->pattern = (TextPatternPaint) {0};
     state->secondary_outline = (KaraokeOutlinePaint) {0};
+    state->secondary_border.set = 0;
     for (int i = 0; i < 4; i++)
         clear_image_fill_layer(&state->image_fill.layer[i]);
     state->flags =
@@ -3863,6 +3896,10 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->curved_text_y = 0.0;
     state->line_border_style_set = false;
     state->line_border_style = 0;
+
+    if (render_priv->track->parser_priv && render_priv->track->parser_priv->style_extensions)
+        ass_apply_style_layout(state, event->Style);
+    state->initial_wrap_style = state->wrap_style;
 
     ass_apply_transition_effects(state);
     if (!state->chat_enabled)
@@ -5686,6 +5723,7 @@ static void split_style_runs_list(GlyphInfo *glyphs, int length,
                                                &info->mangetsu_gradient) ||
             last->positioned_alpha_mask != info->positioned_alpha_mask ||
             memcmp(&last->pattern, &info->pattern, sizeof(info->pattern)) ||
+            !secondary_border_equal(&last->secondary_border, &info->secondary_border) ||
             !secondary_outline_equal(&last->secondary_outline,
                                      &info->secondary_outline) ||
             !image_fill_state_equal(&last->image_fill, &info->image_fill) ||
@@ -5869,6 +5907,7 @@ static bool append_glyph_to_target(RenderContext *state,
     info->positioned_alpha_mask = state->positioned_alpha_mask;
     info->pattern = state->pattern;
     info->secondary_outline = state->secondary_outline;
+    copy_karaoke_border_colors(&info->secondary_border, &state->secondary_border);
     info->image_fill = state->image_fill;
     info->blend_mode = state->blend_mode;
     if (state->bs4_box_mode) {
@@ -9848,6 +9887,7 @@ static void render_glyph_list_to_bitmaps(RenderContext *state,
                 current_info->box_surface = info->border_style == 3;
                 current_info->pattern = info->pattern;
                 current_info->secondary_outline = info->secondary_outline;
+                copy_karaoke_border_colors(&current_info->secondary_border, &info->secondary_border);
                 current_info->image_fill = info->image_fill;
                 current_info->blend_mode = info->blend_mode;
                 memcpy(current_info->border_layers, info->border_layers,
@@ -10097,6 +10137,7 @@ static bool append_decoration_bitmap_info(RenderContext *state,
     current_info->box_surface = deco.border_style == 3;
     current_info->pattern = (TextPatternPaint) {0};
     current_info->secondary_outline = deco.secondary_outline;
+    copy_karaoke_border_colors(&current_info->secondary_border, &deco.secondary_border);
     current_info->image_fill = deco.image_fill;
     current_info->blend_mode = deco.blend_mode;
     memcpy(current_info->border_layers, deco.border_layers,
