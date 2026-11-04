@@ -13,7 +13,10 @@ on:
 
 jobs:
   ART:
-    runs-on: ${{ matrix.host_os || 'ubuntu-latest' }}
+    # Ubuntu 26.04 changed qemu-user-static into a virtual package and renamed
+    # its executables. Keep the chroot bootstrap's static-binary contract on
+    # the supported 24.04 LTS host; all target architectures remain enabled.
+    runs-on: ${{ matrix.host_os || 'ubuntu-24.04' }}
     # Run on each arch we support ASM on and furthemore
     # some additional little and big endian archs
     # ASM:    i386

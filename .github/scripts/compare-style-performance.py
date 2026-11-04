@@ -29,7 +29,11 @@ def main():
             raise RuntimeError(f'{workload}: baseline/candidate render geometry differs')
         medians = {key: statistics.median(s['cpu_seconds'] for s in runs)
                    for key, runs in samples.items()}
+        mad_percent = {key: 100 * statistics.median(abs(s['cpu_seconds'] - medians[key])
+                                                   for s in runs) / medians[key]
+                       for key, runs in samples.items()}
         results[workload] = {'samples': samples, 'median_cpu_seconds': medians,
+                            'median_absolute_deviation_percent': mad_percent,
                             'change_percent': 100 * (medians['candidate'] / medians['baseline'] - 1)}
     inherited = [json.loads(subprocess.check_output(
         [candidate, myanmar, latin, str(frames), 'furi-metadata'], text=True)) for _ in range(trials)]
@@ -42,11 +46,12 @@ def main():
               'cpu_affinity': affinity, 'warmup_frames': 100, 'frames': frames, 'trials': trials,
               'results': results, 'inherited_ruby': inherited}
     Path('style-performance.json').write_text(json.dumps(report, indent=2) + '\n')
-    lines = ['| Workload | Baseline median CPU s | Candidate median CPU s | Change |',
-             '| --- | ---: | ---: | ---: |']
+    lines = ['| Workload | Baseline median CPU s | Candidate median CPU s | Change | Baseline/candidate MAD |',
+             '| --- | ---: | ---: | ---: | ---: |']
     for name, result in results.items():
         medians = result['median_cpu_seconds']
-        lines.append(f"| {name} | {medians['baseline']:.6f} | {medians['candidate']:.6f} | {result['change_percent']:+.2f}% |")
+        mad = result['median_absolute_deviation_percent']
+        lines.append(f"| {name} | {medians['baseline']:.6f} | {medians['candidate']:.6f} | {result['change_percent']:+.2f}% | {mad['baseline']:.2f}%/{mad['candidate']:.2f}% |")
     lines.append(f"\nInherited ruby median CPU s: {statistics.median(s['cpu_seconds'] for s in inherited):.6f}")
     lines.append('\nSeven alternating trials, one CPU, 100 warmup frames, 1000 timed frames, 12 active events; raw samples attached. Timing is informational because shared runners are noisy.')
     summary = '\n'.join(lines) + '\n'

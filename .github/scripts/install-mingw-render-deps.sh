@@ -15,7 +15,10 @@ for spec in fribidi:1.0.16-1 fontconfig:2.17.1-1; do
         url="https://repo.msys2.org/mingw/mingw32/$archive"
         curl --fail --location --retry 3 --output "$directory/$archive" "$url"
         curl --fail --location --retry 3 --output "$directory/$archive.sig" "$url.sig"
-        pacman-key --verify "$directory/$archive.sig" "$directory/$archive"
+        # pacman-key enforces a Unix root UID even on Windows CI. gpgv uses
+        # the same pacman-managed trusted keyring without modifying it.
+        gpgv --keyring /etc/pacman.d/gnupg/pubring.gpg \
+            "$directory/$archive.sig" "$directory/$archive"
         pacman --noconfirm --needed -U "$directory/$archive"
     else
         echo "Required package missing from $MSYSTEM: $package" >&2
