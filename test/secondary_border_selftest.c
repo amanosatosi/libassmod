@@ -87,14 +87,14 @@ static void pair(ASS_Library *lib, ASS_Renderer *r, const char *meta,
  * at shared visible pixels against the established \3sc karaoke frontier.
  * Require both waiting and active pixels so parser-only support cannot pass. */
 static void frontier(ASS_Library *lib, ASS_Renderer *r, int layer,
-                     const char *layout, const char *text, bool rgba)
+                     const char *layout, const char *text, long long time, bool rgba)
 {
     char actual[2048], reference[2048];
     snprintf(actual, sizeof(actual), "{" PREFIX "%s\\%dbs6\\%dbc" ACTIVE "\\%dbsc" WAITING "}%s",
              layout, layer, layer, layer, text);
     snprintf(reference, sizeof(reference), "{" PREFIX "%s\\bord6\\3c" ACTIVE "\\3sc" WAITING "}%s", layout, text);
     Frame a = {0}, b = {0};
-    bool ok = render(lib, r, "", actual, 500, rgba, &a) && render(lib, r, "", reference, 500, rgba, &b);
+    bool ok = render(lib, r, "", actual, time, rgba, &a) && render(lib, r, "", reference, time, rgba, &b);
     unsigned red = 0, blue = 0;
     if (ok) for (int i = 0; i < W * H; i++) {
         uint32_t *x = a.p + 4 * i, *y = b.p + 4 * i;
@@ -103,7 +103,7 @@ static void frontier(ASS_Library *lib, ASS_Renderer *r, int layer,
         if (y[2] == y[3] && !y[0]) { blue++; if (x[2] != x[3] || x[0]) ok = false; }
     }
     if (!ok || !red || !blue) {
-        fprintf(stderr, "layer %d frontier (%s, %s): red=%u blue=%u\n", layer, rgba ? "RGBA" : "legacy", text, red, blue);
+        fprintf(stderr, "layer %d frontier (%s, %lldms, %s): red=%u blue=%u\n", layer, rgba ? "RGBA" : "legacy", time, text, red, blue);
         failures++;
     }
     free(a.p); free(b.p);
@@ -136,14 +136,21 @@ int main(int argc, char **argv)
         }
         pair(lib, r, "", "{" PREFIX "\\bord6\\3c" ACTIVE "\\1bsc" WAITING "\\kf100}WW",
              "{" PREFIX "\\bord6\\3c" ACTIVE "\\3sc" WAITING "\\kf100}WW", 500, rgba, "layer 1 alias");
-        for (int layer = 2; layer <= 3; layer++) {
-            frontier(lib, r, layer, "", "{\\kf100}WW", rgba);
-            frontier(lib, r, layer, "", "{\\kf100}אב", rgba);
-            frontier(lib, r, layer, "\\vert1\\vtype2", "{\\kf100}WW", rgba);
-            frontier(lib, r, layer, "", "<WW|{\\kf100}AB>", rgba);
-            frontier(lib, r, layer, "", "<WW||{\\kf100}AB>", rgba);
-            frontier(lib, r, layer, "\\vert1", "<漢字|{\\kf100}日本語>", rgba);
+        const long long times[] = {200, 500, 700};
+        for (int layer = 2; layer <= 3; layer++) for (int t = 0; t < 3; t++) {
+            frontier(lib, r, layer, "", "{\\kf100}WW", times[t], rgba);
+            frontier(lib, r, layer, "", "{\\kf100}אב", times[t], rgba);
+            frontier(lib, r, layer, "\\vert1\\vtype2", "{\\kf100}WW", times[t], rgba);
+            frontier(lib, r, layer, "", "<WW|{\\kf100}AB>", times[t], rgba);
+            frontier(lib, r, layer, "", "<WW||{\\kf100}AB>", times[t], rgba);
+            frontier(lib, r, layer, "\\vert1", "<漢字|{\\kf100}日本語>", times[t], rgba);
         }
+        pair(lib, r, "", "{" PREFIX "\\2bs6\\2bc" ACTIVE "\\2bsc" WAITING "\\kt50\\k100}W{\\2bsc&H00FF00&}W",
+             "{" PREFIX "\\2bs6\\2bc" WAITING "\\kt50\\k100}W{\\2bc&H00FF00&}W", 499, rgba, "inline waiting scopes split paint runs");
+        pair(lib, r, META("Default", "\\2bsc&H00FF00&\\3bsc&H00FFFF&")
+             META("Default", "\\2bs6\\3bs3\\2bc" ACTIVE "\\3bc" ACTIVE "\\2bsc" WAITING),
+             "{\\an7\\pos(150,160)\\kt50\\k100}WW",
+             "{" PREFIX "\\2bs6\\3bs3\\2bc" WAITING "\\3bc&H00FFFF&\\kt50\\k100}WW", 499, rgba, "waiting declarations merge individual layers");
         pair(lib, r, "", "{" PREFIX "\\bord3\\3c" ACTIVE "\\2bsc" WAITING "\\kf100}WW",
              "{" PREFIX "\\bord3\\3c" ACTIVE "\\kf100}WW", 500, rgba, "disabled layer stays disabled");
         pair(lib, r, "", "{" PREFIX "\\2bs6\\2bc" ACTIVE "\\2ba&H80&\\2bsc" WAITING "\\fad(1000,1000)\\kt50\\k100}WW",

@@ -407,6 +407,20 @@ int main(int argc, char **argv)
         failed |= compare(lib, renderer, &cases[i]);
     failed |= host_metadata(lib, renderer);
 
+    // A script-level nonzero WrapStyle remains the fallback without metadata.
+    ASS_Track *script_wrap = load(lib, "", "Default", "", "{\\q2\\q}" LONG_TEXT);
+    ASS_Track *script_reference = load(lib, "", "Default", "", "{\\q3}" LONG_TEXT);
+    if (script_wrap && script_reference) {
+        script_wrap->WrapStyle = script_reference->WrapStyle = 3;
+        for (int rgba = 0; rgba < 2; rgba++) {
+            uint64_t a, b;
+            if (!snapshot(renderer, script_wrap, rgba, &a) ||
+                    !snapshot(renderer, script_reference, rgba, &b) || a != b)
+                failed = 1;
+        }
+    } else failed = 1;
+    ass_free_track(script_wrap); ass_free_track(script_reference);
+
     // Prove the wrapping probes overflow, rather than comparing two identical
     // unwrapped lines. Include both public outputs and native vertical layout.
     for (int vertical = 0; vertical < 2; vertical++) {
