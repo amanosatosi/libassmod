@@ -50,8 +50,9 @@ The path is event-wide and survives `\r` style resets.
 
 ### `\ta1`–`\ta9`
 
-`\ta` selects alignment separately for each explicit subtitle line, delimited
-by `\N`, and aligns its final visual lines within the ordinary multiline block.
+`\ta` selects internal logical-line alignment and carries the latest valid
+selection across subsequent `\N` lines within the same dialogue event. It
+aligns final visual lines within the ordinary multiline block.
 Values 1/4/7 mean left, 2/5/8 mean center, and 3/6/9 mean right; the vertical
 digit component is ignored. `\an` still controls the event's `\pos`/margin
 anchor, origin, and vertical placement. For example:
@@ -63,8 +64,8 @@ anchor, origin, and vertical placement. For example:
 The block stays top-left anchored at `(400,200)`, while `short` is centered
 under the longer line. The **first valid integer 1–9 within each explicit
 line wins**, even when it appears after ordinary text: the selection applies
-to the entire line, including preceding text. Later `\ta` tags on that line
-are ignored. `\r` and `\rStyleName` do not erase the decision or allow another
+to the entire line, including preceding text. Later valid `\ta` tags on that
+line leave its choice intact but determine inheritance for following lines. `\r` and `\rStyleName` do not erase the decision or allow another
 tag to replace it. Malformed/out-of-range values do not occupy the first-win
 slot, and `\ta` inside `\t()` has no effect.
 
@@ -73,8 +74,9 @@ Only an actual `\N` in event text starts another alignment selection. Literal
 does not reset the selection: all visual lines from one logical line share
 its chosen `\ta`, each aligned independently by its own width. Lowercase `\n`
 also retains the current selection, including when WrapStyle 2 displays it
-as a line break. A new explicit line without `\ta` falls back to the global
-`\tan`/`\an` alignment; the previous line's selection never leaks into it.
+as a line break. A new explicit line without `\ta` inherits the latest valid
+selection. Before the first selection, global `\tan`/`\an` defaults apply.
+A separate dialogue event always starts with its own defaults.
 
 ```ass
 {\an8\ta7}First line\N{\ta5}Second line\N{\ta9}Third line
@@ -129,7 +131,7 @@ each logical line's `\ta` (or global `\tan`/`\an` fallback) aligns its shorter
 visual lines inside it.
 For example, `\an7\ta2\ctan5` keeps the event top-left anchored, centers the
 first logical line's wrapped visual lines in the text block, and centers that
-block on the curved path. Put `\ta2` after each `\N` to center subsequent
+block on the curved path. An initial `\ta2` also centers subsequent
 logical lines too.
 
 Explicit `\ctan` changes curved attachment only. `\an` still determines the

@@ -266,6 +266,7 @@ int main(int argc, char **argv)
     if (ass_set_tag_image_rgba(renderer, "style-test.png", ASS_TAG_IMAGE_FORMAT_PNG, 1, 1, 4, image)) return 1;
 
     static const Case cases[] = {
+        {"ta inheritance through automatic wrapping", "", "Vertical", "", "{\\q0\\ta7}A\\NONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN ELEVEN TWELVE\\NShort", "", "{\\q0\\ta7}A\\N{\\ta7}ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN ELEVEN TWELVE\\N{\\ta7}Short"},
         {"padding legacy all sides", "Comment: 0,0:00:00.00,0:00:00.00,Box,,0,0,0,mangetsu-style,{\\boxp10}\n", "Box", "", "<က|စူဇူကီ>\\Nက က", "", "{\\boxpx10\\boxpy10}<က|စူဇူကီ>\\Nက က"},
         {"padding legacy horizontal", "Comment: 0,0:00:00.00,0:00:00.00,Box,,0,0,0,mangetsu-style,{\\boxpx10}\n", "Box", "", "<က|စူဇူကီ>\\Nက က", "", "{\\boxp(10,10,0,0)}<က|စူဇူကီ>\\Nက က"},
         {"padding legacy vertical", "Comment: 0,0:00:00.00,0:00:00.00,Box,,0,0,0,mangetsu-style,{\\boxpy10}\n", "Box", "", "<က|စူဇူကီ>\\Nက က", "", "{\\boxp(0,0,10,10)}<က|စူဇူကီ>\\Nက က"},
