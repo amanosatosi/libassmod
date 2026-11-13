@@ -976,6 +976,217 @@ static bool positioned_coverage(ASS_Library *lib, ASS_Renderer *renderer)
     return check(ok, "positioned drawing/clip/fade or outside solid fallback failed");
 }
 
+#define SLIDE_DRAW "\\an7\\pos(100,100)\\p1"
+#define SLIDE_RECT "}m 0 0 l 200 0 200 100 0 100"
+#define SLIDE_RED "(0,&H0000FF&,&H0000FF&)"
+#define SLIDE_BLUE "(0,&HFF0000&,&HFF0000&)"
+#define SLIDE_WIPE "\\t(0,1000,\\1grd" SLIDE_BLUE ")"
+
+static bool slide_timing(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    ASS_Track *track = track_for(lib, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+                                "\\grds0" SLIDE_WIPE SLIDE_RECT);
+    if (!track)
+        return false;
+    bool ok = true;
+    const int times[] = {0, 250, 500, 750, 1000, 250};
+    for (size_t i = 0; i < sizeof(times) / sizeof(*times); i++) {
+        Frame frame = {0};
+        int boundary = 100 + times[i] / 5;
+        if (render_track(renderer, track, times[i], &frame)) {
+            for (int x = 101; x < 299; x++) {
+                uint8_t *p = pixel(&frame, IMAGE_TYPE_CHARACTER, x, 150);
+                ok &= p[3] == 255 && p[0] == (x < boundary ? 0 : 255) &&
+                      p[1] == 0 && p[2] == (x < boundary ? 255 : 0);
+            }
+        } else {
+            ok = false;
+        }
+        release(&frame);
+    }
+    ass_free_track(track);
+    Frame legacy = {0}, accelerated = {0}, diagonal = {0}, reverse = {0};
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+                 SLIDE_WIPE SLIDE_RECT, 500, &legacy);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+                 "\\1grds0\\t(0,1000,2,\\1grd" SLIDE_BLUE ")" SLIDE_RECT, 500, &accelerated);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+                 "\\grds0\\t(0,1000,\\1grd(45,&HFF0000&,&HFF0000&))" SLIDE_RECT, 500, &diagonal);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+                 "\\grds0\\t(0,1000,\\1grd(-45,&HFF0000&,&HFF0000&))" SLIDE_RECT, 500, &reverse);
+    if (ok) {
+        int type = IMAGE_TYPE_CHARACTER;
+        uint8_t *p = pixel(&legacy, type, 120, 150);
+        ok &= p[0] > 120 && p[0] < 136 && p[2] > 120 && p[2] < 136 &&
+              !memcmp(p, pixel(&legacy, type, 270, 150), 4);
+        ok &= pixel(&accelerated, type, 140, 150)[2] == 255 &&
+              pixel(&accelerated, type, 160, 150)[0] == 255;
+        ok &= pixel(&diagonal, type, 190, 130)[2] == 255 &&
+              pixel(&diagonal, type, 190, 180)[0] == 255 &&
+              pixel(&reverse, type, 190, 130)[0] == 255 &&
+              pixel(&reverse, type, 190, 180)[2] == 255;
+    }
+    release(&legacy); release(&accelerated); release(&diagonal); release(&reverse);
+    return check(ok, "gradient slide direction, timing or legacy interpolation");
+}
+
+static bool slide_settings(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *cases[][2] = {
+        {"\\grds0\\1grds20\\grds5", "\\grds20"},
+        {"\\grds20\\1grds5\\1grds()", "\\grds20"},
+        {"\\grds20\\1grdsoff", ""},
+        {"\\grds20\\grdsoff", ""},
+        {"\\grds20\\r", ""},
+        {"\\grds20\\1grds-5\\grdsnan\\grds(1,2)", "\\grds20"},
+        {"\\2grds0\\4gras5\\10bbgrds9", ""},
+        {"\\grds0\\1grds20\\1grds5", "\\grds5"},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        Frame frames[2] = {{0}};
+        bool good = true;
+        for (int j = 0; j < 2; j++) {
+            char text[512];
+            snprintf(text, sizeof(text), "{%s" SLIDE_DRAW "\\1grd" SLIDE_RED
+                     SLIDE_WIPE SLIDE_RECT, cases[i][j]);
+            good &= render(lib, renderer, text, 500, &frames[j]);
+        }
+        good = good && same_target(&frames[0], &frames[1], IMAGE_TYPE_CHARACTER);
+        if (!good)
+            fprintf(stderr, "gradient slide settings: %s\n", cases[i][0]);
+        ok &= good;
+        release(&frames[0]); release(&frames[1]);
+    }
+    Frame soft = {0}, wide_start = {0}, wide_end = {0};
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED "\\grds20"
+                 SLIDE_WIPE SLIDE_RECT, 500, &soft);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED "\\grds10000"
+                 SLIDE_WIPE SLIDE_RECT, 0, &wide_start);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED "\\grds10000"
+                 SLIDE_WIPE SLIDE_RECT, 1000, &wide_end);
+    if (ok) {
+        int type = IMAGE_TYPE_CHARACTER;
+        uint8_t *center = pixel(&soft, type, 199, 150);
+        ok &= center[0] > 110 && center[0] < 145 && center[2] > 110 && center[2] < 145;
+        ok &= pixel(&soft, type, 185, 150)[2] == 255 &&
+              pixel(&soft, type, 215, 150)[0] == 255 &&
+              pixel(&wide_start, type, 110, 150)[0] == 255 &&
+              pixel(&wide_end, type, 290, 150)[2] == 255;
+    }
+    release(&soft); release(&wide_start); release(&wide_end);
+    return check(ok, "gradient slide settings, band width or exact endpoints");
+}
+
+static bool slide_paints(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *cases[][4] = {
+        {"\\1c&H0000FF&", "\\1grd(0,&HFF0000&,60%,&H00FF00&,&HFFFFFF&)", "\\1grds0", ""},
+        {"\\1grd(90,&H0000FF&,20%,&H00FF00&,&HFFFFFF&)",
+         "\\1grd(0,&HFF0000&,60%,&H00FFFF&,&HFFFFFF&)", "\\1grds0", ""},
+        {"\\1grd" SLIDE_RED, "\\1c&HFF0000&", "\\grds0", ""},
+        {"\\1gra(0,&H00&,&H40&)", "\\1gra(0,&HC0&,40%,&H80&,&HFF&)", "\\1gras0", ""},
+        {"\\1vc(&H0000FF&,&H00FF00&,&HFFFFFF&,&H000000&)",
+         "\\1vc(&HFF0000&,&HFFFFFF&,&H00FFFF&,&HFFFFFF&)", "\\1vcs0", ""},
+        {"\\1va(&H00&,&H40&,&H80&,&H20&)",
+         "\\1va(&HFF&,&H80&,&H40&,&H40&)", "\\1vas0", ""},
+        {"\\1pgrd(120,110,260,190,90,&H0000FF&,&H00FF00&)",
+         "\\pgrd(140,110,280,190,0,&HFF0000&,&H000000&)", "\\1pgrds0", ""},
+        {"\\pgrdalpha(110,110,270,190,90,&H20&,&H60&)",
+         "\\pgrdalpha(140,110,290,190,0,&HFF&,&H40&)", "\\pgrdalphas0", ""},
+        {"\\1grd" SLIDE_RED "\\1gra(0,&H00&,&H00&)",
+         "\\1grd" SLIDE_BLUE "\\1gra(0,&H80&,&H80&)", "\\1grds0\\1gras0", ""},
+        {"\\1grd" SLIDE_RED, "\\1c&HFF0000&", "\\grds0", "\\1gra(90,&H00&,&H80&)"},
+        {"\\1c&H0000FF&", "\\1c&HFF0000&", "\\grds0", ""},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        const char **c = cases[i];
+        char text[1024];
+        Frame frames[5] = {{0}};
+        snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s%s" SLIDE_RECT, c[0], c[3]);
+        bool good = render(lib, renderer, text, 0, &frames[0]);
+        snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s%s%s" SLIDE_RECT, c[0], c[1], c[3]);
+        good &= render(lib, renderer, text, 0, &frames[1]);
+        snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s%s%s\\t(0,1000,%s)" SLIDE_RECT,
+                 c[0], c[3], c[2], c[1]);
+        for (int j = 0; j < 3; j++)
+            good &= render(lib, renderer, text, j * 500, &frames[j + 2]);
+        int type = IMAGE_TYPE_CHARACTER;
+        if (good) {
+            good = same_target(&frames[0], &frames[2], type) &&
+                   same_target(&frames[1], &frames[4], type);
+            if (i + 1 < sizeof(cases) / sizeof(*cases)) {
+                for (int x = 160; x <= 260; x += 100) {
+                    uint8_t *p = pixel(&frames[3], type, x, 150);
+                    good &= !memcmp(p, pixel(&frames[x == 160], type, x, 150), 4);
+                }
+            } else {
+                uint8_t *p = pixel(&frames[3], type, 150, 150);
+                good &= p[0] > 120 && p[0] < 136 && p[2] > 120 && p[2] < 136;
+            }
+        }
+        if (!good)
+            fprintf(stderr, "gradient slide paint: %s to %s\n", c[0], c[1]);
+        ok &= good;
+        for (int j = 0; j < 5; j++) release(&frames[j]);
+    }
+    return check(ok, "gradient slide paint endpoints or independent sampling");
+}
+
+static bool slide_borders(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *cases[][4] = {
+        {"\\bord5\\2bs10\\3grd" SLIDE_RED "\\2bgrd" SLIDE_RED,
+         "\\1bgrd" SLIDE_BLUE "\\2bgrd" SLIDE_BLUE,
+         "\\3grds0\\2bgrds0", "\\1bgrds0\\2bpgrds0"},
+        {"\\bord5\\2bs10\\3gra(0,&H00&,&H00&)\\2bga(0,&H00&,&H00&)",
+         "\\1bga(0,&HA0&,&HA0&)\\2bga(0,&HC0&,&HC0&)",
+         "\\3gras0\\2bgas0", "\\1bgas0\\2bgas0"},
+        {"\\bord5\\2bs10\\1bpgrd(80,80,320,220,0,&H0000FF&,&H0000FF&)",
+         "\\3pgrd(80,80,320,220,0,&HFF0000&,&HFF0000&)",
+         "\\1bpgrds0", "\\3grds0"},
+    };
+    bool ok = true;
+    int type = IMAGE_TYPE_OUTLINE;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        Frame frames[4] = {{0}};
+        bool good = true;
+        char text[768];
+        const char **c = cases[i];
+        for (int j = 0; j < 2; j++) {
+            snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s%s\\t(0,1000,%s)" SLIDE_RECT,
+                     c[0], c[j + 2], c[1]);
+            good &= render(lib, renderer, text, 500, &frames[j]);
+            snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s%s" SLIDE_RECT, c[0], j ? c[1] : "");
+            good &= render(lib, renderer, text, 500, &frames[j + 2]);
+        }
+        if (good) {
+            good &= same_target(&frames[0], &frames[1], type);
+            int changed = 0;
+            for (int x = 130; x < 270; x++) for (int y = 75; y < 225; y++) {
+                const uint8_t *source = pixel(&frames[2], type, x, y);
+                const uint8_t *target = pixel(&frames[3], type, x, y);
+                good &= !memcmp(pixel(&frames[0], type, x, y), x < 200 ? target : source, 4);
+                changed += memcmp(source, target, 4) != 0;
+            }
+            good &= changed > 100;
+        }
+        if (!good)
+            fprintf(stderr, "gradient slide border: %s\n", c[1]);
+        ok &= good;
+        for (int j = 0; j < 4; j++) release(&frames[j]);
+    }
+    Frame box = {0}, box_legacy = {0};
+    ok &= render(lib, renderer, "{" BOX "\\bbs8\\bbgrd" SLIDE_RED
+                 "\\1bbgrds0\\t(0,1000,\\bbgrd" SLIDE_BLUE ")}MMMM", 500, &box);
+    ok &= render(lib, renderer, "{" BOX "\\bbs8\\bbgrd" SLIDE_RED
+                 "\\t(0,1000,\\bbgrd" SLIDE_BLUE ")}MMMM", 500, &box_legacy);
+    ok = ok && red_blue(&box, type) && !same_target(&box, &box_legacy, type);
+    release(&box); release(&box_legacy);
+    return check(ok, "gradient slide native borders, aliases or box rings");
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -996,6 +1207,10 @@ int main(void)
     ok &= positioned_coverage(lib, renderer);
     ok &= positioned_sources(lib, renderer);
     ok &= positioned_transform_order(lib, renderer);
+    ok &= slide_timing(lib, renderer);
+    ok &= slide_settings(lib, renderer);
+    ok &= slide_paints(lib, renderer);
+    ok &= slide_borders(lib, renderer);
     ass_renderer_done(renderer); ass_library_done(lib);
     return ok ? 0 : 1;
 }

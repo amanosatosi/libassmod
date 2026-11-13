@@ -143,6 +143,15 @@ typedef struct PositionedAlphaMask {
     struct PositionedAlphaMask *next;
 } PositionedAlphaMask;
 
+enum { STYLE_PAINT_BORDER = 5, STYLE_PAINT_BOX = 15,
+       STYLE_PAINT_WAITING = 25, STYLE_PAINT_GLOBAL = 26,
+       STYLE_PAINT_TARGETS = 27 };
+
+typedef struct {
+    double global;
+    double target[STYLE_PAINT_TARGETS][2];
+} GradientSlideSettings;
+
 typedef struct ass_image_rgba_priv {
     ASS_ImageRGBA result;
     /* Always the exact base returned by ass_aligned_alloc(), never a view. */
@@ -195,6 +204,7 @@ typedef struct {
     ASS_Event *event;
     bool needs_rgba;
     bool has_positioned_alpha;
+    bool has_gradient_slide;
 } EventImages;
 
 typedef enum {
@@ -921,6 +931,8 @@ struct render_context {
     KaraokeBorderColors secondary_border;
     PositionedAlphaMask *positioned_alpha_masks;
     int mangetsu_gradient_next_id;
+    GradientSlideSettings gradient_slide;
+    MangetsuGradientSlide *gradient_slides;
     const struct ass_style_extension *extension_defaults;
     uint32_t pattern_cycle_serial;
     CyclePalette *cycle_palettes;
@@ -1073,6 +1085,7 @@ struct ass_renderer {
     ASS_Settings settings;
     int render_id;
     bool frame_needs_rgba;
+    bool frame_has_gradient_slide;
     uint64_t positioned_alpha_fingerprint;
     bool rgba_output_limit_hit;
     size_t rgba_output_size;

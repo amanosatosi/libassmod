@@ -529,6 +529,16 @@ static double y2scr_pos(ASS_Renderer *render_priv, double y)
     return y * render_priv->frame_content_height / render_priv->track->PlayResY +
         render_priv->settings.top_margin;
 }
+
+static GradientScriptMapping gradient_script_mapping(const ASS_Renderer *renderer)
+{
+    return (GradientScriptMapping) {
+        .scale_x = (double) renderer->frame_content_width / renderer->track->PlayResX,
+        .scale_y = (double) renderer->frame_content_height / renderer->track->PlayResY,
+        .origin_x = renderer->settings.left_margin,
+        .origin_y = renderer->settings.top_margin,
+    };
+}
 static double y2scr(RenderContext *state, double y)
 {
     ASS_Renderer *render_priv = state->renderer;
@@ -864,6 +874,17 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             &info->mangetsu_gradient.alpha[alpha_layer] : NULL;
     bool use_mangetsu_alpha = mangetsu_alpha &&
         mangetsu_alpha->active && mangetsu_alpha->rect.valid;
+    bool slide_color = use_mangetsu && mangetsu->slide;
+    bool slide_alpha = use_mangetsu_alpha && mangetsu_alpha->slide;
+    MangetsuGradientSlideSampler color_slide, alpha_slide;
+    if (slide_color || slide_alpha) {
+        GradientScriptMapping mapping = gradient_script_mapping(render_priv);
+        if (slide_color)
+            ass_gradient_slide_prepare(&color_slide, mangetsu, mangetsu->rect, mapping);
+        if (slide_alpha)
+            ass_gradient_slide_prepare(&alpha_slide, mangetsu_alpha, mangetsu_alpha->rect,
+                                        mapping);
+    }
     const ImageFillLayer empty_image_fill = {0};
     const ImageFillLayer *image_fill = secondary_outline ?
         &empty_image_fill : &info->image_fill.layer[layer];
@@ -1083,7 +1104,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
                 uf = (int32_t) (num_u / denom_w);
             }
             uint32_t color;
-            if (use_mangetsu && mangetsu->coordinate_mode ==
+            if (slide_color) {
+                color = ass_gradient_slide_sample(&color_slide, dst_x + x + 0.5,
+                                                   dst_y + y + 0.5, uf, vf, base_color, false);
+            } else if (use_mangetsu && mangetsu->coordinate_mode ==
                     MANGETSU_GRADIENT_POSITIONED_RECT) {
                 /* Pixel centres are tested in final frame coordinates. */
                 if (!ass_mangetsu_positioned_gradient_sample_color(
@@ -1100,7 +1124,10 @@ static ASS_ImageRGBA *render_bitmap_rgba(RenderContext *state,
             if (use_polka && polka_hit(gx, gy, dot_period,
                                        dot_row_period, dot_radius))
                 color = (dot_color & 0xFFFFFF00u) | _a(color);
-            uint8_t alpha = use_mangetsu_alpha ?
+            uint8_t alpha = slide_alpha ?
+                ass_gradient_slide_sample(&alpha_slide, dst_x + x + 0.5,
+                                          dst_y + y + 0.5, uf, vf, base_alpha, true) :
+                use_mangetsu_alpha ?
                 ass_mangetsu_gradient_sample_alpha(mangetsu_alpha,
                                                    dst_x + x + 0.5,
                                                    dst_y + y + 0.5) :
@@ -3725,6 +3752,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     state->c[3] = style->BackColour;
     ass_gradient_state_reset(&state->gradient, state->c);
     ass_mangetsu_gradient_state_reset(&state->mangetsu_gradient);
+    state->gradient_slide = (GradientSlideSettings) {0};
     state->positioned_alpha_mask = NULL;
     state->pattern = (TextPatternPaint) {0};
     state->secondary_outline = (KaraokeOutlinePaint) {0};
@@ -4351,6 +4379,11 @@ static void free_distortion_resources(RenderContext *state)
 static void free_render_context(RenderContext *state)
 {
     ass_positioned_alpha_masks_clear(state);
+    while (state->gradient_slides) {
+        MangetsuGradientSlide *slide = state->gradient_slides;
+        state->gradient_slides = slide->next;
+        ass_gradient_slide_unref(slide);
+    }
     while (state->box_paints) {
         BS4Paint *paint = state->box_paints;
         state->box_paints = paint->next;
@@ -10783,6 +10816,8 @@ static bool bs4_glyph_color_visible(const GlyphInfo *info, int layer)
     const MangetsuGradientLayer *alpha = layer == 2 ?
         &info->mangetsu_gradient.border_alpha[0] : &info->mangetsu_gradient.alpha[layer];
     if (alpha->active) {
+        if (alpha->slide)
+            return true;
         for (int i = 0; i < alpha->n_stops; i++)
             if ((alpha->stops[i].color & 0xFF) != 0xFF)
                 return true;
@@ -12266,6 +12301,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     if (!parse_events(state, event, chat, ranges, &title)) {
         release_chat_scene(chat, chat_cached);
         free(ranges);
+        free_render_context(state);
         return false;
     }
 
@@ -12425,6 +12461,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         bool ok = render_chat_scene(state, event, event_images, rgba_out,
                                     chat, ranges, &title, &chat_metrics);
         event_images->has_positioned_alpha = state->positioned_alpha_masks != NULL;
+        event_images->has_gradient_slide = state->gradient_slides != NULL;
         ass_shaper_cleanup(state->shaper, text_info);
         free_render_context(state);
         release_chat_scene(chat, chat_cached);
@@ -12793,6 +12830,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         *rgba_out = event_images->imgs_rgba;
 
     event_images->has_positioned_alpha = state->positioned_alpha_masks != NULL;
+    event_images->has_gradient_slide = state->gradient_slides != NULL;
     ass_shaper_cleanup(state->shaper, text_info);
     free_render_context(state);
 

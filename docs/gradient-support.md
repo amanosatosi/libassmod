@@ -73,6 +73,62 @@ independent simultaneous channels and borders, paint replacement/reset, animated
 coordinates/angles/stops, malformed input, drawing masks, clipping, fades and
 outside fallback. CI results establish validation.
 
+## Sliding gradient transitions
+
+Ordinary `\t` transforms interpolate gradient angles, positions, and stops
+across the whole painted area at once. Set `\grds20` before a transform to
+reveal the destination paint progressively across the surface. Each endpoint
+keeps its own angle, stops, and coordinate system while the wipe blends their
+samples. Sliding is off by default.
+
+The width is a nonnegative number in script-resolution pixels. `\grds0`
+creates a sharp edge. The band moves from just ahead of the first projected
+edge to just beyond the last edge, so even a very wide band starts with the
+exact source and ends with the exact destination. The transform's start, end,
+and acceleration control progress. The destination angle controls direction.
+A solid destination uses the source angle. Corner gradients have no angle of
+their own and use 0° unless the other endpoint supplies an angle. The same
+screen-axis convention applies throughout: 0° travels right, 90° travels down,
+and negative angles can travel up. Attached paint uses its rendered bounds,
+while positioned fields use their script rectangles. Transitions between
+positioned fields span both rectangles.
+
+| Slide setting | Paint target |
+| --- | --- |
+| `\grds` | Default for every gradient channel |
+| `\Ngrds`, `\Ngras`, N=1..5 | Numbered color and alpha |
+| `\Nbgrds`, `\Nbgas`, N=1..10 | Native border color and alpha |
+| `\Nbbgrds`, `\Nbbgas`, N=1..10 | Box-ring color and alpha, with `\bbgrds` and `\bbgas` for ring 1 |
+| `\Npgrds`, N=1..5, and `\Nbpgrds`, N=1..10 | Same color channels as attached paint, with `\pgrds` for primary fill |
+| `\pgrdalphas` | Whole-event positioned alpha |
+| `\3sgrds`, `\3svcs` | Waiting first outline color |
+| `\Nvcs`, `\Nvas`, N=1..4 | Same numbered channels as `\Ngrds` and `\Ngras`, with `\vcs` and `\vas` for primary fill |
+| `\Nbvcs`, `\Nbvas`, `\Nbbvcs`, `\Nbbvas`, N=1..10 | Same native and box-ring channels as their stop-gradient equivalents, with `\bbvcs` and `\bbvas` for ring 1 |
+
+Settings address the underlying paint channel. For example, `\3grds`,
+`\1bgrds`, and `\1bpgrds` all control first-outline color. A specific
+setting always takes precedence over the global one. The last valid setting
+at the same specificity wins. Use `\1grds()` or bare `\1grds` to inherit
+again, and `\1grdsoff` to disable just primary color sliding. `\grds()`
+or `\grdsoff` clears the global default. Invalid widths leave settings intact.
+`\r` restores the active style and Actor Colorcoding defaults. Settings
+inside a `\t` apply to subsequent paint tags in that transform scope. If
+transforms overlap on one channel, each slide starts from the paint resolved
+by the preceding tags, in override order. The renderer accepts up to 32
+overlapping in-progress slides on one channel.
+
+```ass
+{\grds20\1c&H0000FF&\t(0,1000,\1grd(45,&HFF0000&,60%,&H00FF00&,&HFFFFFF&))}Solid to gradient
+{\grds20\1grds0\3grasoff\1grd(0,&H0000FF&,&H00FF00&)\t(0,1000,2,\1grd(-45,&H00FFFF&,&HFF0000&))}Sharp accelerated fill wipe
+{\1grds12\1grd(0,&H0000FF&,&HFF0000&)\t(0,1000,\1c&HFFFFFF&)}Gradient to solid
+{\pgrdalphas15\t(0,1000,\pgrdalpha(80,80,560,280,0,&H00&,&HC0&))}Fixed-frame opacity wipe
+```
+
+Sliding applies to gradient paint and transitions with a gradient endpoint.
+Two solid ASS colors continue to interpolate normally. Image and procedural
+pattern paint keep their existing precedence. The legacy `ASS_Image` API
+continues to provide the solid fallback.
+
 ## Audit findings
 
 The BS4 temporary bitmap path previously carried only a solid color and blend

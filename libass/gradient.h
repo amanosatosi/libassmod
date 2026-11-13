@@ -77,6 +77,7 @@ typedef enum {
     MANGETSU_GRADIENT_NONE = 0,
     MANGETSU_GRADIENT_ATTACHED,
     MANGETSU_GRADIENT_POSITIONED_RECT,
+    MANGETSU_GRADIENT_VECTOR,
 } MangetsuGradientCoordinateMode;
 
 typedef struct {
@@ -86,6 +87,8 @@ typedef struct {
     double projection_min;
     double inverse_projection_span;
 } MangetsuGradientPositionedRect;
+
+typedef struct mangetsu_gradient_slide MangetsuGradientSlide;
 
 typedef struct {
     bool active;
@@ -99,7 +102,47 @@ typedef struct {
     double script_x1, script_y1, script_x2, script_y2;
     GradientRect rect;
     MangetsuGradientPositionedRect positioned_rect;
+    MangetsuGradientSlide *slide;
 } MangetsuGradientLayer;
+
+/* A transform adds a destination to the paint already resolved for this frame.
+ * Only slides allocate snapshots. Positioned masks can retain them until the
+ * compositor has processed the event. */
+#define MANGETSU_GRADIENT_SLIDE_MAX_DEPTH 32
+struct mangetsu_gradient_slide {
+    MangetsuGradientSlide *next;
+    unsigned references, depth;
+    MangetsuGradientLayer source, target;
+    double width, progress;
+};
+
+typedef struct {
+    double scale_x, scale_y, origin_x, origin_y;
+} GradientScriptMapping;
+
+typedef struct {
+    const MangetsuGradientLayer *paint;
+    MangetsuGradientPositionedRect field;
+} MangetsuGradientSlideEndpoint;
+
+typedef struct {
+    MangetsuGradientSlideEndpoint target;
+    double dx, dy, leading_edge, width;
+} MangetsuGradientSlideStep;
+
+typedef struct {
+    MangetsuGradientSlideEndpoint source;
+    int count;
+    MangetsuGradientSlideStep steps[MANGETSU_GRADIENT_SLIDE_MAX_DEPTH];
+} MangetsuGradientSlideSampler;
+
+void ass_gradient_slide_unref(MangetsuGradientSlide *slide);
+void ass_gradient_slide_prepare(MangetsuGradientSlideSampler *sampler,
+                               const MangetsuGradientLayer *layer,
+                               GradientRect bounds, GradientScriptMapping mapping);
+uint32_t ass_gradient_slide_sample(const MangetsuGradientSlideSampler *sampler,
+                                   double x, double y, int32_t uf, int32_t vf,
+                                   uint32_t fallback, bool alpha);
 
 typedef struct {
     MangetsuGradientLayer layer[MANGETSU_GRADIENT_LAYERS];

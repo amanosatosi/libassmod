@@ -20,6 +20,7 @@
 #include "ass_compat.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gradient.h"
@@ -262,6 +263,8 @@ bool ass_mangetsu_gradient_layer_equal(const MangetsuGradientLayer *a,
         return false;
     if (!a->active)
         return true;
+    if (a->slide != b->slide)
+        return false;
     if (a->type != b->type || a->coordinate_mode != b->coordinate_mode ||
             a->segment_id != b->segment_id || a->angle != b->angle ||
             a->n_stops != b->n_stops)
@@ -492,4 +495,155 @@ bool ass_mangetsu_positioned_gradient_sample_alpha(
         return false;
     *alpha = mangetsu_gradient_sample_alpha_at(layer, t);
     return true;
+}
+
+void ass_gradient_slide_unref(MangetsuGradientSlide *slide)
+{
+    while (slide && !--slide->references) {
+        MangetsuGradientSlide *source = slide->source.slide;
+        free(slide);
+        slide = source;
+    }
+}
+
+static MangetsuGradientSlideEndpoint prepare_slide_endpoint(
+    const MangetsuGradientLayer *paint, GradientRect bounds,
+    GradientScriptMapping mapping)
+{
+    MangetsuGradientSlideEndpoint endpoint = {.paint = paint};
+    if (!paint->active || paint->coordinate_mode == MANGETSU_GRADIENT_VECTOR)
+        return endpoint;
+    MangetsuGradientLayer field = {
+        .active = true, .n_stops = 1, .angle = paint->angle,
+        .coordinate_mode = MANGETSU_GRADIENT_POSITIONED_RECT,
+    };
+    if (paint->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT) {
+        bounds = (GradientRect) {
+            paint->script_x1 * mapping.scale_x + mapping.origin_x,
+            paint->script_y1 * mapping.scale_y + mapping.origin_y,
+            paint->script_x2 * mapping.scale_x + mapping.origin_x,
+            paint->script_y2 * mapping.scale_y + mapping.origin_y, true,
+        };
+    }
+    if (bounds.valid)
+        ass_mangetsu_gradient_prepare_positioned(
+            &field, bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+    endpoint.field = field.positioned_rect;
+    return endpoint;
+}
+
+static void include_slide_projection(const MangetsuGradientPositionedRect *rect,
+                                      double dx, double dy, double *low, double *high)
+{
+    if (!rect->valid)
+        return;
+    double a = dx * (dx >= 0 ? rect->left : rect->right) +
+               dy * (dy >= 0 ? rect->top : rect->bottom);
+    double b = dx * (dx >= 0 ? rect->right : rect->left) +
+               dy * (dy >= 0 ? rect->bottom : rect->top);
+    *low = fmin(*low, a);
+    *high = fmax(*high, b);
+}
+
+void ass_gradient_slide_prepare(MangetsuGradientSlideSampler *sampler,
+                               const MangetsuGradientLayer *layer,
+                               GradientRect bounds, GradientScriptMapping mapping)
+{
+    sampler->count = layer->slide->depth;
+    const MangetsuGradientSlide *slide = layer->slide;
+    for (int i = sampler->count - 1; i >= 0; i--, slide = slide->source.slide) {
+        MangetsuGradientSlideStep *step = &sampler->steps[i];
+        step->target = prepare_slide_endpoint(&slide->target, bounds, mapping);
+        MangetsuGradientSlideEndpoint source = prepare_slide_endpoint(
+            &slide->source, bounds, mapping);
+        if (!i)
+            sampler->source = source;
+
+        double radians = (slide->target.active &&
+                          slide->target.coordinate_mode != MANGETSU_GRADIENT_VECTOR ?
+                          slide->target.angle : slide->source.angle) *
+                          MANGETSU_GRADIENT_PI / 180.0;
+        step->dx = cos(radians);
+        step->dy = sin(radians);
+        double low = INFINITY, high = -INFINITY;
+        include_slide_projection(&source.field, step->dx, step->dy, &low, &high);
+        include_slide_projection(&step->target.field, step->dx, step->dy, &low, &high);
+        if (!isfinite(low)) {
+            MangetsuGradientPositionedRect attached = {
+                .valid = bounds.valid, .left = bounds.x0, .right = bounds.x1,
+                .top = bounds.y0, .bottom = bounds.y1,
+            };
+            include_slide_projection(&attached, step->dx, step->dy, &low, &high);
+        }
+        double units = hypot(step->dx / mapping.scale_x, step->dy / mapping.scale_y);
+        step->width = units > 0 ? slide->width / units : slide->width;
+        if (!isfinite(low) || !isfinite(high) || !isfinite(step->width)) {
+            /* Degenerate surfaces still use the existing transform progress. */
+            step->dx = step->dy = 0;
+            step->width = 1;
+            step->leading_edge = slide->progress;
+            continue;
+        }
+        step->leading_edge = low + (high - low) * slide->progress +
+                             step->width * slide->progress;
+    }
+}
+
+static uint32_t sample_slide_endpoint(const MangetsuGradientSlideEndpoint *endpoint,
+                                      double x, double y, int32_t uf, int32_t vf,
+                                      uint32_t fallback, bool alpha)
+{
+    const MangetsuGradientLayer *paint = endpoint->paint;
+    if (!paint->active)
+        return paint->n_stops ? paint->stops[0].color : fallback;
+    if (paint->coordinate_mode == MANGETSU_GRADIENT_VECTOR) {
+        GradientValues values;
+        for (int i = 0; i < 4; i++) {
+            if (alpha)
+                values.alpha[i] = paint->stops[i].color;
+            else
+                values.color[i] = paint->stops[i].color;
+        }
+        return alpha ? ass_gradient_sample_alpha_fixed(&values, uf, vf) :
+                       ass_gradient_sample_color_fixed(&values, uf, vf);
+    }
+    const MangetsuGradientPositionedRect *rect = &endpoint->field;
+    if (paint->coordinate_mode == MANGETSU_GRADIENT_POSITIONED_RECT &&
+            (!rect->valid || x < rect->left || x > rect->right ||
+             y < rect->top || y > rect->bottom))
+        return fallback;
+    double t = rect->valid ?
+        clamp01((mangetsu_project(x, y, rect->dx, rect->dy) -
+                 rect->projection_min) * rect->inverse_projection_span) : 0.0;
+    return alpha ? mangetsu_gradient_sample_alpha_at(paint, t) :
+                   mangetsu_gradient_sample_color_at(paint, t);
+}
+
+uint32_t ass_gradient_slide_sample(const MangetsuGradientSlideSampler *sampler,
+                                   double x, double y, int32_t uf, int32_t vf,
+                                   uint32_t fallback, bool alpha)
+{
+    /* Skip all older paints once the pixel is fully behind a boundary. */
+    double weights[MANGETSU_GRADIENT_SLIDE_MAX_DEPTH];
+    int first = sampler->count - 1;
+    for (; first >= 0; first--) {
+        const MangetsuGradientSlideStep *step = &sampler->steps[first];
+        double distance = step->leading_edge - mangetsu_project(x, y, step->dx, step->dy);
+        weights[first] = distance <= 0 ? 0 :
+                         distance >= step->width ? 1 : distance / step->width;
+        if (weights[first] == 1)
+            break;
+    }
+    const MangetsuGradientSlideEndpoint *start = first < 0 ? &sampler->source :
+        &sampler->steps[first].target;
+    uint32_t value = sample_slide_endpoint(start, x, y, uf, vf, fallback, alpha);
+    for (int i = first + 1; i < sampler->count; i++) {
+        if (!weights[i])
+            continue;
+        uint32_t target = sample_slide_endpoint(
+            &sampler->steps[i].target, x, y, uf, vf, fallback, alpha);
+        value = alpha ? mix_byte(value, target, weights[i]) :
+                        mix_mangetsu_color(value, target, weights[i]);
+    }
+    return value;
 }

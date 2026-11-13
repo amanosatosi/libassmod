@@ -1422,9 +1422,6 @@ typedef struct {
 
 /* Canonical paint domains: fill 0..4 (2 is border 1), extra borders
  * 6..14, box borders 15..24, waiting outline 25, global alpha 26. */
-enum { STYLE_PAINT_BORDER = 5, STYLE_PAINT_BOX = 15,
-       STYLE_PAINT_WAITING = 25, STYLE_PAINT_GLOBAL = 26,
-       STYLE_PAINT_TARGETS = 27 };
 typedef struct {
     int target;
     bool alpha, vector;
@@ -1436,7 +1433,89 @@ typedef struct {
 
 static void apply_style_paint(RenderContext *state, const StylePaintDefault *paint);
 static bool restore_style_paint(RenderContext *state, int target, bool alpha);
+static void style_paint_slots(RenderContext *state, int target, bool alpha,
+                              GradientValues **vector, MangetsuGradientLayer **rich);
 static int style_border_target(int layer) { return layer ? STYLE_PAINT_BORDER + layer : 2; }
+
+/* Zero storage is inheritance, including after \r. A sharp wipe has its
+ * own value so a specific setting can override a nonzero global width. */
+enum { GRADIENT_SLIDE_SHARP = -1, GRADIENT_SLIDE_OFF = -2 };
+
+static double gradient_slide_width(const RenderContext *state, int target, bool alpha)
+{
+    double value = state->gradient_slide.target[target][alpha];
+    if (!value)
+        value = state->gradient_slide.global;
+    if (value == GRADIENT_SLIDE_SHARP)
+        return 0;
+    return value > 0 ? value : -1;
+}
+
+static bool gradient_slide_tag(RenderContext *state, char *p, char *end,
+                                double **setting, char **arg)
+{
+    char *name = p;
+    int number = read_decimal_digit(&name, end);
+    if (number == 1 && name < end && *name == '0') {
+        number = 10;
+        name++;
+    }
+    if (end - name < 3 ||
+            (*name != 'b' && *name != 'g' && *name != 'p' &&
+             *name != 's' && *name != 'v'))
+        return false;
+    // Most override tags have no slide suffix. Restrict the table lookup to
+    // the name (before a numeric argument, whitespace or "off").
+    char *suffix = name + (number == 3 && *name == 's');
+    while (suffix < end && *suffix >= 'a' && *suffix <= 'z' && *suffix != 's')
+        suffix++;
+    if (suffix == end || *suffix != 's')
+        return false;
+
+    static const struct {
+        const char *name;
+        int first, last, target;
+        bool alpha;
+    } tags[] = {
+        {"pgrdalphas", 0, 0, STYLE_PAINT_GLOBAL, true},
+        {"sgrds", 3, 3, STYLE_PAINT_WAITING, false},
+        {"svcs", 3, 3, STYLE_PAINT_WAITING, false},
+        {"bbgrds", 0, 10, STYLE_PAINT_BOX, false},
+        {"bbgas", 0, 10, STYLE_PAINT_BOX, true},
+        {"bbvcs", 0, 10, STYLE_PAINT_BOX, false},
+        {"bbvas", 0, 10, STYLE_PAINT_BOX, true},
+        {"bpgrds", 1, 10, STYLE_PAINT_BORDER, false},
+        {"bgrds", 1, 10, STYLE_PAINT_BORDER, false},
+        {"bgas", 1, 10, STYLE_PAINT_BORDER, true},
+        {"bvcs", 1, 10, STYLE_PAINT_BORDER, false},
+        {"bvas", 1, 10, STYLE_PAINT_BORDER, true},
+        {"pgrds", 0, 5, 0, false},
+        {"grds", 0, 5, 0, false},
+        {"gras", 1, 5, 0, true},
+        {"vcs", 0, 4, 0, false},
+        {"vas", 0, 4, 0, true},
+    };
+    int channel = number < 0 ? 0 : number;
+    if (!channel && name != p)
+        return false;
+    for (size_t i = 0; i < sizeof(tags) / sizeof(*tags); i++) {
+        if (channel < tags[i].first || channel > tags[i].last ||
+                strlen(tags[i].name) != (size_t) (suffix + 1 - name) ||
+                memcmp(name, tags[i].name, suffix + 1 - name))
+            continue;
+        int layer = channel > 0 ? channel - 1 : 0;
+        int target = tags[i].target;
+        if (target == STYLE_PAINT_BORDER)
+            target = style_border_target(layer);
+        else if (target < STYLE_PAINT_WAITING)
+            target += layer;
+        *setting = !channel && name[0] == 'g' ? &state->gradient_slide.global :
+                   &state->gradient_slide.target[target][tags[i].alpha];
+        *arg = suffix + 1;
+        return true;
+    }
+    return false;
+}
 
 struct ass_style_extension {
     int n_values;
@@ -1461,6 +1540,8 @@ struct ass_style_extension {
 #define EXT_LAYER(n) EXT_BORDER(border_layers[n]), EXT_BORDER(box_border_layers[n])
 #define EXT_SECONDARY(n) EXT_VALUE(secondary_border.set, 1u << (n)), \
     EXT_RGB(secondary_border.color[n])
+#define EXT_SLIDE(n) EXT_FIELD(gradient_slide.target[n][0]), \
+    EXT_FIELD(gradient_slide.target[n][1])
 static const StyleExtensionValue extension_fields[] = {
     EXT_FIELD(fshp), EXT_FIELD(ortho),
     EXT_FIELD(furi_enabled), EXT_FIELD(furi_scale_x), EXT_FIELD(furi_scale_y),
@@ -1478,7 +1559,16 @@ static const StyleExtensionValue extension_fields[] = {
     EXT_SECONDARY(4), EXT_SECONDARY(5), EXT_SECONDARY(6), EXT_SECONDARY(7),
     EXT_SECONDARY(8), EXT_SECONDARY(9),
     EXT_FIELD(secondary_outline.type), EXT_RGB(secondary_outline.color),
+    EXT_FIELD(gradient_slide.global),
+    EXT_SLIDE(0), EXT_SLIDE(1), EXT_SLIDE(2), EXT_SLIDE(3), EXT_SLIDE(4),
+    EXT_SLIDE(6), EXT_SLIDE(7), EXT_SLIDE(8), EXT_SLIDE(9), EXT_SLIDE(10),
+    EXT_SLIDE(11), EXT_SLIDE(12), EXT_SLIDE(13), EXT_SLIDE(14), EXT_SLIDE(15),
+    EXT_SLIDE(16), EXT_SLIDE(17), EXT_SLIDE(18), EXT_SLIDE(19), EXT_SLIDE(20),
+    EXT_SLIDE(21), EXT_SLIDE(22), EXT_SLIDE(23), EXT_SLIDE(24),
+    EXT_FIELD(gradient_slide.target[STYLE_PAINT_WAITING][0]),
+    EXT_FIELD(gradient_slide.target[STYLE_PAINT_GLOBAL][1]),
 };
+#undef EXT_SLIDE
 #undef EXT_SECONDARY
 #undef EXT_LAYER
 #undef EXT_BORDER
@@ -1514,6 +1604,27 @@ static void select_extension_field(RenderContext *state, size_t offset,
     for (size_t i = 0; i < EXTENSION_FIELDS; i++)
         if (extension_fields[i].offset == offset && extension_fields[i].mask == mask)
             state->style_extension_parse->selected[i] = true;
+}
+
+static void apply_gradient_slide_setting(RenderContext *state, double *setting,
+                                         struct arg arg)
+{
+    trim_arg_inline(&arg);
+    double value;
+    if (arg.start == arg.end)
+        value = 0;
+    else if (arg.end - arg.start == 3 && !memcmp(arg.start, "off", 3))
+        value = GRADIENT_SLIDE_OFF;
+    else {
+        if (!parse_double_arg_strict(arg, &value) || value < 0)
+            return;
+        if (!value)
+            value = GRADIENT_SLIDE_SHARP;
+    }
+    *setting = value;
+    if (state->style_extension_parse)
+        select_extension_field(state, (unsigned char *) setting -
+                               (unsigned char *) state, 0);
 }
 
 static void apply_extension_values(RenderContext *state,
@@ -2428,27 +2539,130 @@ static bool transform_mangetsu_gradient_layer(RenderContext *state,
     return true;
 }
 
+static MangetsuGradientLayer gradient_vector_endpoint(const GradientValues *vector,
+                                                      bool alpha)
+{
+    MangetsuGradientLayer paint = {0};
+    if (!vector || !(alpha ? vector->alpha_enabled : vector->color_enabled))
+        return paint;
+    paint.active = true;
+    paint.coordinate_mode = MANGETSU_GRADIENT_VECTOR;
+    paint.n_stops = 4;
+    for (int i = 0; i < 4; i++)
+        paint.stops[i].color = alpha ? vector->alpha[i] : vector->color[i];
+    return paint;
+}
+
+static bool set_gradient_slide(RenderContext *state, MangetsuGradientLayer *dst,
+                               const MangetsuGradientLayer *target,
+                               const GradientValues *vector, uint32_t solid,
+                               double width, double pwr, bool alpha)
+{
+    if (!(pwr > 0))
+        return true;
+    if (pwr >= 1) {
+        *dst = *target;
+        if (dst->active)
+            dst->segment_id = ++state->mangetsu_gradient_next_id;
+        return true;
+    }
+    /* Bound the cost of script-authored overlapping transforms. Keep the
+     * last resolved paint on excessive nesting or allocation failure. */
+    unsigned depth = dst->slide ? dst->slide->depth + 1 : 1;
+    if (depth > MANGETSU_GRADIENT_SLIDE_MAX_DEPTH)
+        return false;
+    MangetsuGradientSlide *slide = malloc(sizeof(*slide));
+    if (!slide)
+        return false;
+
+    MangetsuGradientLayer source = dst->active ? *dst :
+        gradient_vector_endpoint(vector, alpha);
+    *slide = (MangetsuGradientSlide) {
+        .next = state->gradient_slides, .references = 1, .depth = depth,
+        .source = source,
+        .target = *target, .width = width, .progress = pwr,
+    };
+    if (slide->source.slide)
+        slide->source.slide->references++;
+    if (!slide->source.active && target->coordinate_mode != MANGETSU_GRADIENT_POSITIONED_RECT) {
+        slide->source.n_stops = 1;
+        slide->source.stops[0].color = solid;
+    }
+    state->gradient_slides = slide;
+    *dst = *target;
+    if (!target->active || target->coordinate_mode == MANGETSU_GRADIENT_VECTOR)
+        dst->angle = source.angle;
+    dst->active = true;
+    /* Slides need the same attached bounds even when one endpoint is fixed.
+     * Their individual coordinate spaces are retained in the snapshots. */
+    dst->coordinate_mode = MANGETSU_GRADIENT_ATTACHED;
+    dst->segment_id = ++state->mangetsu_gradient_next_id;
+    dst->slide = slide;
+    return true;
+}
+
+static bool slide_gradient_to_solid(RenderContext *state, int target, bool alpha,
+                                   uint32_t old, uint32_t value, double pwr, bool nested)
+{
+    if (!nested)
+        return false;
+    double width = gradient_slide_width(state, target, alpha);
+    if (width < 0)
+        return false;
+    GradientValues *vector;
+    MangetsuGradientLayer *gradient;
+    if (target == STYLE_PAINT_WAITING) {
+        vector = &state->secondary_outline.vector;
+        gradient = &state->secondary_outline.gradient;
+    } else {
+        style_paint_slots(state, target, alpha, &vector, &gradient);
+    }
+    if (!gradient->active &&
+            (!vector || !(alpha ? vector->alpha_enabled : vector->color_enabled)))
+        return false;
+    if (pwr >= 1) {
+        ass_mangetsu_gradient_layer_reset(gradient);
+        return false; // The regular solid handler owns the base fallback state.
+    }
+    MangetsuGradientLayer solid = {.n_stops = 1, .angle = gradient->angle};
+    solid.stops[0].color = value;
+    set_gradient_slide(state, gradient, &solid, vector, old, width, pwr, alpha);
+    return true;
+}
+
 static void apply_positioned_alpha_tag(RenderContext *state, char *name_end,
                                         char *q, double pwr, bool nested)
 {
     if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')')
         return;
+    double width = nested ? gradient_slide_width(state, STYLE_PAINT_GLOBAL, true) : -1;
+    if (width >= 0 && !(pwr > 0))
+        return;
+    MangetsuGradientLayer target = {0};
     if (q == name_end + 2) {
-        if (!nested && restore_style_paint(state, STYLE_PAINT_GLOBAL, true))
+        if (width >= 0) {
+            if (!state->positioned_alpha_mask || pwr >= 1) {
+                state->positioned_alpha_mask = NULL;
+                return;
+            }
+        } else {
+            if (!nested && restore_style_paint(state, STYLE_PAINT_GLOBAL, true))
+                return;
+            /* Match positioned color gradients: nested resets are ignored. */
+            if (!nested)
+                state->positioned_alpha_mask = NULL;
             return;
-        /* Match positioned color gradients: nested resets are ignored. */
-        if (!nested)
-            state->positioned_alpha_mask = NULL;
+        }
+    } else if (!parse_mangetsu_positioned_gradient_raw_args(name_end + 1, q - 1,
+                                                             &target, true)) {
         return;
     }
-    MangetsuGradientLayer target;
-    if (!parse_mangetsu_positioned_gradient_raw_args(name_end + 1, q - 1,
-                                                      &target, true))
-        return;
     if (nested) {
         MangetsuGradientLayer value = state->positioned_alpha_mask ?
             state->positioned_alpha_mask->gradient : (MangetsuGradientLayer) {0};
-        if (!transform_mangetsu_gradient_layer(state, &value, &target, 0, pwr, true))
+        if (width >= 0 ?
+                !set_gradient_slide(state, &value, &target, NULL, 0, width, pwr, true) :
+                !transform_mangetsu_gradient_layer(state, &value, &target, 0, pwr, true))
             return;
         target = value;
     }
@@ -2492,12 +2706,22 @@ static bool apply_mangetsu_positioned_gradient_tag(
                                                       &gradient, false))
         return true;
 
+    int paint_target = is_border ? style_border_target(layer) : layer;
+    double width = nested ? gradient_slide_width(state, paint_target, false) : -1;
     /* Reject incompatible transforms before touching any paint state. */
-    if (nested && dst->active &&
+    if (nested && width < 0 && dst->active &&
             dst->coordinate_mode != MANGETSU_GRADIENT_POSITIONED_RECT)
         return true;
 
     uint32_t solid = mangetsu_solid_color_for_target(state, target, layer);
+    if (width >= 0) {
+        GradientValues *vector;
+        MangetsuGradientLayer *rich;
+        style_paint_slots(state, paint_target, false, &vector, &rich);
+        if (!(pwr > 0) || !set_gradient_slide(state, dst, &gradient, vector,
+                                             solid, width, pwr, false))
+            return true;
+    }
     if (is_border) {
         BorderLayerState *border = &state->border_layers[layer];
         default_extra_border_color(state, layer);
@@ -2518,14 +2742,15 @@ static bool apply_mangetsu_positioned_gradient_tag(
             disable_image_fill_layer(state, layer);
         }
     }
-    if (nested) {
-        if (!transform_mangetsu_gradient_layer(state, dst, &gradient,
-                                               solid, pwr, false))
-            return true;
-    } else if (is_border) {
-        apply_mangetsu_border_gradient_layer(state, layer, &gradient);
-    } else {
-        apply_mangetsu_gradient_layer(state, layer, &gradient);
+    if (width < 0) {
+        if (nested) {
+            if (!transform_mangetsu_gradient_layer(state, dst, &gradient, solid, pwr, false))
+                return true;
+        } else if (is_border) {
+            apply_mangetsu_border_gradient_layer(state, layer, &gradient);
+        } else {
+            apply_mangetsu_gradient_layer(state, layer, &gradient);
+        }
     }
     if (is_border) {
         /* Both first-border cycle spellings can paint this same mask. */
@@ -2551,7 +2776,7 @@ static void init_secondary_outline_paint(RenderContext *state)
 
 static void apply_secondary_outline_color(RenderContext *state,
                                           struct arg *args, int nargs,
-                                          double pwr)
+                                          double pwr, bool nested)
 {
     if (!nargs) {
         if (restore_style_paint(state, STYLE_PAINT_WAITING, false))
@@ -2572,6 +2797,12 @@ static void apply_secondary_outline_color(RenderContext *state,
     if (pwr <= 0.0 && state->secondary_outline.type == KARAOKE_OUTLINE_UNSET)
         return;
     init_secondary_outline_paint(state);
+    if (slide_gradient_to_solid(state, STYLE_PAINT_WAITING, false,
+                                state->secondary_outline.color, color, pwr, nested)) {
+        if (pwr > 0)
+            state->secondary_outline.type = KARAOKE_OUTLINE_GRADIENT;
+        return;
+    }
     change_color(&state->secondary_outline.color, color, pwr);
     state->secondary_outline.type = KARAOKE_OUTLINE_SOLID;
     ass_gradient_values_disable_color(&state->secondary_outline.vector,
@@ -2659,11 +2890,16 @@ static void apply_secondary_outline_gradient(RenderContext *state,
             (pwr <= 0.0 && paint->type == KARAOKE_OUTLINE_UNSET))
         return;
 
+    double width = nested ? gradient_slide_width(state, STYLE_PAINT_WAITING, false) : -1;
+    if (width >= 0 && !(pwr > 0))
+        return;
     init_secondary_outline_paint(state);
     if (nested) {
-        if (!transform_mangetsu_gradient_layer(state, &paint->gradient,
-                                               &gradient, paint->color,
-                                               pwr, false))
+        if (width >= 0 ?
+                !set_gradient_slide(state, &paint->gradient, &gradient, &paint->vector,
+                                    paint->color, width, pwr, false) :
+                !transform_mangetsu_gradient_layer(state, &paint->gradient,
+                                                   &gradient, paint->color, pwr, false))
             return;
     } else {
         paint->gradient = gradient;
@@ -2799,21 +3035,29 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
                         &state->mangetsu_gradient.border[0]) :
             (is_alpha ? &state->mangetsu_gradient.alpha[layer] :
                         &state->mangetsu_gradient.layer[layer]);
-        if (nested && current->active &&
+        int paint_target = is_border ? style_border_target(layer) : layer;
+        double width = nested ? gradient_slide_width(state, paint_target, is_alpha) : -1;
+        if (nested && width < 0 && current->active &&
                 current->coordinate_mode != gradient.coordinate_mode)
             return true;
 
         uint32_t solid_value = is_alpha ?
             mangetsu_solid_alpha_for_target(state, target, layer) :
             mangetsu_solid_color_for_target(state, target, layer);
-        MangetsuGradientLayer *dst = NULL;
+        if (width >= 0) {
+            GradientValues *vector;
+            MangetsuGradientLayer *rich;
+            style_paint_slots(state, paint_target, is_alpha, &vector, &rich);
+            if (!(pwr > 0) || !set_gradient_slide(state, current, &gradient, vector,
+                                                 solid_value, width, pwr, is_alpha))
+                return true;
+        }
         if (is_border && is_alpha) {
             BorderLayerState *border = &state->border_layers[layer];
             default_extra_border_color(state, layer);
             ass_gradient_values_disable_alpha(&border->gradient,
                                               _a(border->color), 1.0);
             border->has_alpha = true;
-            dst = &state->mangetsu_gradient.border_alpha[layer];
             if (layer == 0) {
                 ass_gradient_disable_alpha(&state->gradient, 2,
                                            _a(state->c[2]), 1.0);
@@ -2826,7 +3070,6 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
             ass_gradient_values_disable_color(&border->gradient,
                                               border->color, 1.0);
             border->has_color = true;
-            dst = &state->mangetsu_gradient.border[layer];
             if (layer == 0) {
                 ass_gradient_disable_color(&state->gradient, 2,
                                            state->c[2], 1.0);
@@ -2836,12 +3079,10 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
         } else if (is_alpha && layer == 2) {
             ass_gradient_disable_alpha(&state->gradient, 2,
                                        _a(state->c[2]), 1.0);
-            dst = &state->mangetsu_gradient.border_alpha[0];
             disable_image_fill_layer(state, 2);
             sync_layer1_border(state);
         } else if (layer == 2) {
             ass_gradient_disable_color(&state->gradient, 2, state->c[2], 1.0);
-            dst = &state->mangetsu_gradient.border[0];
             disable_image_fill_layer(state, 2);
             sync_layer1_border(state);
         } else {
@@ -2859,25 +3100,21 @@ static bool apply_mangetsu_gradient_tag(RenderContext *state,
                     disable_image_fill_layer(state, layer);
                 }
             }
-            dst = is_alpha ? &state->mangetsu_gradient.alpha[layer] :
-                             &state->mangetsu_gradient.layer[layer];
         }
         bool applied = true;
-        if (nested)
-            applied = transform_mangetsu_gradient_layer(
-                state, dst, &gradient, solid_value, pwr, is_alpha);
-        else if (is_alpha && is_border)
-            apply_mangetsu_border_alpha_gradient_layer(state, layer, &gradient);
-        else if (is_alpha && layer == 2)
-            apply_mangetsu_border_alpha_gradient_layer(state, 0, &gradient);
-        else if (is_alpha)
-            apply_mangetsu_alpha_gradient_layer(state, layer, &gradient);
-        else if (is_border)
-            apply_mangetsu_border_gradient_layer(state, layer, &gradient);
-        else if (layer == 2)
-            apply_mangetsu_border_gradient_layer(state, 0, &gradient);
-        else
-            apply_mangetsu_gradient_layer(state, layer, &gradient);
+        if (width < 0) {
+            if (nested)
+                applied = transform_mangetsu_gradient_layer(
+                    state, current, &gradient, solid_value, pwr, is_alpha);
+            else if (is_alpha && (is_border || layer == 2))
+                apply_mangetsu_border_alpha_gradient_layer(state, is_border ? layer : 0, &gradient);
+            else if (is_alpha)
+                apply_mangetsu_alpha_gradient_layer(state, layer, &gradient);
+            else if (is_border || layer == 2)
+                apply_mangetsu_border_gradient_layer(state, is_border ? layer : 0, &gradient);
+            else
+                apply_mangetsu_gradient_layer(state, layer, &gradient);
+        }
         if (applied && !is_alpha) {
             if (is_border)
                 replace_cycle_border_paint(state, layer, pwr);
@@ -2960,8 +3197,10 @@ static void sync_layer1_border(RenderContext *state)
 static void apply_all_border_alpha(RenderContext *state, uint32_t alpha,
                                    double pwr, bool nested)
 {
-    change_alpha(&state->c[2], alpha, pwr);
-    ass_gradient_disable_alpha(&state->gradient, 2, _a(state->c[2]), pwr);
+    if (!slide_gradient_to_solid(state, 2, true, _a(state->c[2]), alpha, pwr, nested)) {
+        change_alpha(&state->c[2], alpha, pwr);
+        ass_gradient_disable_alpha(&state->gradient, 2, _a(state->c[2]), pwr);
+    }
     if (!nested && pwr > 0.0)
         for (int layer = 0; layer < MANGETSU_GRADIENT_BORDER_LAYERS; layer++)
             disable_mangetsu_border_alpha_gradient_layer(state, layer);
@@ -2970,6 +3209,9 @@ static void apply_all_border_alpha(RenderContext *state, uint32_t alpha,
     for (int layer = 1; layer < ASS_BORDER_LAYERS_MAX; layer++) {
         BorderLayerState *border = &state->border_layers[layer];
         default_extra_border_color(state, layer);
+        if (slide_gradient_to_solid(state, style_border_target(layer), true,
+                                    _a(border->color), alpha, pwr, nested))
+            continue;
         change_alpha(&border->color, alpha, pwr);
         ass_gradient_values_disable_alpha(&border->gradient,
                                           _a(border->color), pwr);
@@ -3060,6 +3302,10 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
             ass_gradient_values_disable_color(&border->gradient, border->color, pwr);
             ass_mangetsu_gradient_layer_reset(&state->box_border_color[layer]);
         } else if (parse_ass_color_arg(arg, &val)) {
+            uint32_t old = border->has_color ? border->color : state->c[3];
+            if (slide_gradient_to_solid(state, STYLE_PAINT_BOX + layer, false,
+                                        old, val, pwr, nested))
+                break;
             uint32_t alpha = border->has_alpha ? _a(border->color) :
                              _a(state->c[3]);
             border->color = (border->color & 0x000000FFu) |
@@ -3080,6 +3326,10 @@ static void apply_box_border_tag(RenderContext *state, NumberedBorderTag tag,
             ass_gradient_values_disable_alpha(&border->gradient, _a(border->color), pwr);
             ass_mangetsu_gradient_layer_reset(&state->box_border_alpha[layer]);
         } else if (parse_ass_alpha_arg_strict(arg, &val)) {
+            uint32_t old = _a(border->has_alpha ? border->color : state->c[3]);
+            if (slide_gradient_to_solid(state, STYLE_PAINT_BOX + layer, true,
+                                        old, val, pwr, nested))
+                break;
             uint32_t rgb = border->has_color ? (border->color & 0xFFFFFF00u) :
                            (state->c[3] & 0xFFFFFF00u);
             border->color = rgb | _a(border->color);
@@ -3308,7 +3558,11 @@ static void apply_box_gradient_tag(RenderContext *state, NumberedBorderTag tag,
                     !parse_mangetsu_gradient_raw_args(raw.start, raw.end, &parsed))
             return;
         if (nested) {
-            if (!transform_mangetsu_gradient_layer(state, dst, &parsed, solid, pwr, alpha))
+            double width = gradient_slide_width(state, STYLE_PAINT_BOX + layer, alpha);
+            if (width >= 0 ?
+                    !(pwr > 0) || !set_gradient_slide(state, dst, &parsed, &border->gradient,
+                                                     solid, width, pwr, alpha) :
+                    !transform_mangetsu_gradient_layer(state, dst, &parsed, solid, pwr, alpha))
                 return;
         } else {
             *dst = parsed;
@@ -3357,7 +3611,7 @@ static void apply_numbered_border_tag(RenderContext *state,
             struct arg values[1];
             int count = arg.start ? 1 : 0;
             if (count) values[0] = arg;
-            apply_secondary_outline_color(state, values, count, pwr);
+            apply_secondary_outline_color(state, values, count, pwr, nested);
         } else if (!arg.start) {
             const KaraokeBorderColors *defaults = &state->default_style.secondary_border;
             uint32_t bit = 1u << layer;
@@ -3450,6 +3704,14 @@ static void apply_numbered_border_tag(RenderContext *state,
     }
     case BORDER_TAG_COLOR: {
         uint32_t val;
+        if (nested && arg.start && parse_ass_color_arg(arg, &val) &&
+                gradient_slide_width(state, style_border_target(layer), false) >= 0) {
+            uint32_t old = mangetsu_solid_color_for_target(
+                state, MANGETSU_GRADIENT_TARGET_BORDER, layer);
+            if (slide_gradient_to_solid(state, style_border_target(layer), false,
+                                        old, val, pwr, true))
+                break;
+        }
         if (layer == 0) {
             if (arg.start) {
                 if (!parse_ass_color_arg(arg, &val))
@@ -3496,6 +3758,14 @@ static void apply_numbered_border_tag(RenderContext *state,
     }
     case BORDER_TAG_ALPHA: {
         uint32_t val;
+        if (nested && arg.start && parse_ass_alpha_arg_strict(arg, &val) &&
+                gradient_slide_width(state, style_border_target(layer), true) >= 0) {
+            uint32_t old = mangetsu_solid_alpha_for_target(
+                state, MANGETSU_GRADIENT_TARGET_BORDER_ALPHA, layer);
+            if (slide_gradient_to_solid(state, style_border_target(layer), true,
+                                        old, val, pwr, true))
+                break;
+        }
         if (layer == 0) {
             if (arg.start) {
                 if (!parse_ass_alpha_arg_strict(arg, &val))
@@ -4373,6 +4643,88 @@ static bool style_extension_name_allowed(char *p, char *end)
     return style_extension_border_allowed(style_extension_border_tag(p, end, &layer, &arg));
 }
 
+static bool transform_gradient_vector(RenderContext *state, int target, bool alpha,
+                                      struct arg *args, int nargs, double pwr)
+{
+    double width = gradient_slide_width(state, target, alpha);
+    if (width < 0 || !nargs || !valid_vector_gradient_args(args, nargs, alpha))
+        return false;
+    if (!(pwr > 0))
+        return true;
+    GradientValues *vector;
+    MangetsuGradientLayer *gradient;
+    if (target == STYLE_PAINT_WAITING) {
+        init_secondary_outline_paint(state);
+        vector = &state->secondary_outline.vector;
+        gradient = &state->secondary_outline.gradient;
+    } else {
+        style_paint_slots(state, target, alpha, &vector, &gradient);
+    }
+    uint32_t solid;
+    if (target == STYLE_PAINT_WAITING) {
+        solid = state->secondary_outline.color;
+    } else if (target >= STYLE_PAINT_BOX) {
+        BorderLayerState *border = &state->box_border_layers[target - STYLE_PAINT_BOX];
+        solid = (alpha ? border->has_alpha : border->has_color) ?
+            border->color : state->c[3];
+    } else if (target >= STYLE_PAINT_BORDER) {
+        int layer = target - STYLE_PAINT_BORDER;
+        default_extra_border_color(state, layer);
+        solid = state->border_layers[layer].color;
+    } else {
+        solid = state->c[target];
+    }
+
+    GradientValues values;
+    ass_gradient_values_reset(&values, solid);
+    if (alpha) {
+        uint8_t alphas[4];
+        if (!parse_vector_alpha_args(args, nargs, alphas))
+            return false;
+        ass_gradient_values_apply_alpha(&values, alphas, FFMIN(nargs, 4), 1);
+        solid = _a(solid);
+    } else {
+        uint32_t colors[4];
+        for (int i = 0; i < FFMIN(nargs, 4); i++)
+            colors[i] = parse_color_tag(args[i]);
+        ass_gradient_values_apply_color(&values, colors, FFMIN(nargs, 4), 1);
+    }
+    MangetsuGradientLayer endpoint = gradient_vector_endpoint(&values, alpha);
+    if (pwr >= 1)
+        ass_mangetsu_gradient_layer_reset(gradient);
+    else if (!set_gradient_slide(state, gradient, &endpoint, vector, solid, width, pwr, alpha))
+        return true;
+
+    if (target == STYLE_PAINT_WAITING) {
+        state->secondary_outline.type = pwr >= 1 ? KARAOKE_OUTLINE_VECTOR :
+                                                   KARAOKE_OUTLINE_GRADIENT;
+    } else if (target >= STYLE_PAINT_BOX) {
+        state->box_paint_dirty = true;
+    } else {
+        if (target < 4) {
+            disable_image_fill_layer(state, target);
+            if (target < 2)
+                disable_image_fill_layer(state, 1 - target);
+        }
+        if (!alpha) {
+            if (target >= STYLE_PAINT_BORDER)
+                replace_cycle_border_paint(state, target - STYLE_PAINT_BORDER, pwr);
+            else
+                replace_cycle_base_paint(state, target, -1, pwr);
+        }
+    }
+    if (pwr >= 1) {
+        if (alpha)
+            copy_gradient_alpha(vector, &values);
+        else
+            copy_gradient_color(vector, &values);
+    }
+    if (target == 2)
+        sync_layer1_border(state);
+    mark_rgba_needed(state);
+    return true;
+}
+
 /* Validate metadata more strictly than historical inline tags, then let the
  * normal override parser perform the actual rendering-state updates. This also
  * records explicitly specified values equal to the native defaults. */
@@ -4522,6 +4874,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested)
 {
     ASS_Renderer *render_priv = state->renderer;
+    GradientSlideSettings saved_slide;
+    bool restore_slide = false;
     for (char *q; p < end; p = q) {
         while (*p != '\\' && p != end)
             ++p;
@@ -4538,10 +4892,15 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             continue;
 
         char *name_end = q;
+        double *slide_setting;
+        char *slide_arg;
+        bool slide_tag = gradient_slide_tag(state, p, name_end,
+                                            &slide_setting, &slide_arg);
 
         // Reject whole unsupported tags, including nested transforms, before
         // any early handler can interpret them or execute their child tags.
-        if (state->style_extension_parse && !style_extension_name_allowed(p, name_end)) {
+        if (state->style_extension_parse && !slide_tag &&
+                !style_extension_name_allowed(p, name_end)) {
             if (*q == '(') {
                 int depth = 1;
                 for (q++; q < end && depth; q++) {
@@ -4673,6 +5032,23 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                     }
                 }
             }
+        }
+
+        if (slide_tag) {
+            if (!state->karaoke_only_parse && !state->chat_side_only_parse &&
+                    (slide_arg == name_end || *name_end != '(')) {
+                if (nested && !restore_slide) {
+                    saved_slide = state->gradient_slide;
+                    restore_slide = true;
+                }
+                if (*name_end != '(')
+                    apply_gradient_slide_setting(state, slide_setting,
+                                                 (struct arg) {slide_arg, name_end});
+                else if (q > name_end + 1 && q[-1] == ')' && !has_backslash_arg)
+                    apply_gradient_slide_setting(state, slide_setting,
+                                                 (struct arg) {name_end + 1, q - 1});
+            }
+            continue;
         }
 
         StylePaintTag style_paint;
@@ -4815,6 +5191,18 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 ((*name_end == '(' && (q <= name_end + 1 || q[-1] != ')')) ||
                  !valid_vector_gradient_args(args, nargs, vector_alpha)))
             continue;
+        if (nested && *name_end == '(' && q > name_end + 1 && q[-1] == ')' &&
+                (vector_color || vector_alpha ||
+                 numbered_border_tag == BORDER_TAG_COLOR_GRADIENT ||
+                 numbered_border_tag == BORDER_TAG_ALPHA_GRADIENT ||
+                 numbered_border_tag == BORDER_TAG_BOX_VCOLOR ||
+                 numbered_border_tag == BORDER_TAG_BOX_VALPHA ||
+                 tag_name_matches(p, name_end, "bbvc") ||
+                 tag_name_matches(p, name_end, "bbva")) &&
+                style_paint_tag(p, name_end, &style_paint) && style_paint.vector &&
+                transform_gradient_vector(state, style_paint.target, style_paint.alpha,
+                                          args, nargs, pwr))
+            continue;
         if (!state->colorcode_parse &&
             parse_text_pattern_tag(state, p, name_end, args, nargs,
                                    *name_end == '(' && q > name_end + 1 &&
@@ -4835,7 +5223,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             continue;
         } else if (secondary_outline_color_tag) {
             push_arg(args, &nargs, p + strlen("3sc"), name_end);
-            apply_secondary_outline_color(state, args, nargs, pwr);
+            apply_secondary_outline_color(state, args, nargs, pwr, nested);
         } else if (secondary_outline_vector_tag) {
             push_arg(args, &nargs, p + strlen("3svc"), name_end);
             apply_secondary_outline_vector(state, args, nargs, pwr);
@@ -5427,8 +5815,27 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 uint32_t a;
                 if (!parse_alpha_tag(args[0], &a))
                     continue;
-                for (i = 0; i < 4; ++i)
-                    change_alpha(&state->c[i], a, pwr);
+                for (i = 0; i < 4; ++i) {
+                    if (!slide_gradient_to_solid(state, i, true, _a(state->c[i]),
+                                                 a, pwr, nested))
+                        change_alpha(&state->c[i], a, pwr);
+                }
+                if (nested && pwr > 0) {
+                    for (i = 1; i < ASS_BORDER_LAYERS_MAX; ++i) {
+                        if (gradient_slide_width(state, style_border_target(i), true) >= 0 &&
+                                (state->mangetsu_gradient.border_alpha[i].active ||
+                                 state->border_layers[i].gradient.alpha_enabled)) {
+                            default_extra_border_color(state, i);
+                            BorderLayerState *border = &state->border_layers[i];
+                            if (!slide_gradient_to_solid(state, style_border_target(i), true,
+                                                         _a(border->color), a, pwr, true)) {
+                                change_alpha(&border->color, a, pwr);
+                                ass_gradient_values_disable_alpha(&border->gradient, a, 1);
+                                border->has_alpha = true;
+                            }
+                        }
+                    }
+                }
                 if (state->chat_enabled) {
                     change_alpha(&state->chat_bubble.fill, a, pwr);
                     change_alpha(&state->chat_bubble.border, a, pwr);
@@ -5942,6 +6349,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint32_t val;
                 if (parse_decoration_color_arg(*args, &val)) {
+                    uint32_t old = mangetsu_solid_color_for_target(
+                        state, MANGETSU_GRADIENT_TARGET_COLOR, 4);
+                    if (slide_gradient_to_solid(state, 4, false, old, val, pwr, nested))
+                        continue;
                     state->decoration_color = val;
                     state->decoration_color_set = true;
                     column_default(COLUMN_STYLE_DECORATION_COLOR);
@@ -5956,6 +6367,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("c") || tag("1c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
+                if (slide_gradient_to_solid(state, 0, false, state->c[0], val, pwr, nested))
+                    continue;
                 change_color(&state->c[0], val, pwr);
             } else
                 change_color(&state->c[0],
@@ -5971,6 +6384,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("2c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
+                if (slide_gradient_to_solid(state, 1, false, state->c[1], val, pwr, nested))
+                    continue;
                 change_color(&state->c[1], val, pwr);
             } else
                 change_color(&state->c[1],
@@ -6032,6 +6447,9 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (state->chat_enabled && tag("bc")) {
             uint32_t color = nargs ? parse_color_tag(args[0]) :
                 state->default_style.c[2];
+            if (nargs && slide_gradient_to_solid(state, 2, false, state->c[2],
+                                                 color, pwr, nested))
+                continue;
             change_color(&state->c[2], color, pwr);
             ass_gradient_disable_color(&state->gradient, 2, state->c[2], pwr);
             if (!nested && pwr > 0.0)
@@ -6064,6 +6482,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 change_color(&state->chat_bubble.fill, color, pwr);
             } else if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
+                if (slide_gradient_to_solid(state, 2, false, state->c[2], val, pwr, nested))
+                    continue;
                 change_color(&state->c[2], val, pwr);
             } else
                 change_color(&state->c[2],
@@ -6083,6 +6503,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         } else if (tag("4c")) {
             if (nargs) {
                 uint32_t val = parse_color_tag(args[0]);
+                if (slide_gradient_to_solid(state, 3, false, state->c[3], val, pwr, nested))
+                    continue;
                 change_color(&state->c[3], val, pwr);
             } else
                 change_color(&state->c[3],
@@ -6099,6 +6521,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 uint32_t val;
                 if (!parse_alpha_tag(args[0], &val))
                     continue;
+                if (slide_gradient_to_solid(state, 0, true, _a(state->c[0]), val, pwr, nested))
+                    continue;
                 change_alpha(&state->c[0], val, pwr);
             } else
                 change_alpha(&state->c[0],
@@ -6113,6 +6537,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint32_t val;
                 if (!parse_alpha_tag(args[0], &val))
+                    continue;
+                if (slide_gradient_to_solid(state, 1, true, _a(state->c[1]), val, pwr, nested))
                     continue;
                 change_alpha(&state->c[1], val, pwr);
             } else
@@ -6148,6 +6574,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 uint32_t val;
                 if (!parse_alpha_tag(args[0], &val))
                     continue;
+                if (slide_gradient_to_solid(state, 3, true, _a(state->c[3]), val, pwr, nested))
+                    continue;
                 change_alpha(&state->c[3], val, pwr);
             } else
                 change_alpha(&state->c[3],
@@ -6162,6 +6590,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 uint32_t val;
                 if (!parse_decoration_alpha_arg(*args, &val))
+                    continue;
+                uint32_t old = mangetsu_solid_alpha_for_target(
+                    state, MANGETSU_GRADIENT_TARGET_ALPHA, 4);
+                if (slide_gradient_to_solid(state, 4, true, old, val, pwr, nested))
                     continue;
                 state->decoration_alpha = val;
                 state->decoration_alpha_set = true;
@@ -6358,6 +6790,8 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         }
     }
 
+    if (restore_slide)
+        state->gradient_slide = saved_slide;
     return p;
 }
 

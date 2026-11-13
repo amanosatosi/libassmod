@@ -376,8 +376,10 @@ uint8_t *ass_rgba_alloc_buffer(ASS_Renderer *priv, int w, int h,
 
 static void positioned_alpha_unref(PositionedAlphaMask *mask)
 {
-    if (mask && !--mask->references)
+    if (mask && !--mask->references) {
+        ass_gradient_slide_unref(mask->gradient.slide);
         free(mask);
+    }
 }
 
 void ass_positioned_alpha_mask_set(RenderContext *state,
@@ -396,6 +398,8 @@ void ass_positioned_alpha_mask_set(RenderContext *state,
     PositionedAlphaMask *mask = malloc(sizeof(*mask));
     if (!mask)
         return;
+    if (value.slide)
+        value.slide->references++;
     *mask = (PositionedAlphaMask) {
         .gradient = value, .references = 1, .next = state->positioned_alpha_masks,
     };
@@ -804,8 +808,25 @@ static void positioned_alpha_scale_pixel(uint8_t pixel[4], unsigned opacity,
         pixel[c] = (pixel[c] * numerator + denominator / 2) / denominator;
 }
 
-static uint8_t positioned_alpha_opacity(const PositionedAlphaMask *mask, int x, int y)
+static void prepare_positioned_alpha_slide(const ASS_Renderer *renderer,
+                                            const PositionedAlphaMask *mask,
+                                            MangetsuGradientSlideSampler *sampler)
 {
+    GradientScriptMapping mapping = {
+        .scale_x = (double) renderer->frame_content_width / renderer->track->PlayResX,
+        .scale_y = (double) renderer->frame_content_height / renderer->track->PlayResY,
+        .origin_x = renderer->settings.left_margin,
+        .origin_y = renderer->settings.top_margin,
+    };
+    ass_gradient_slide_prepare(sampler, &mask->gradient, (GradientRect) {0}, mapping);
+}
+
+static uint8_t positioned_alpha_opacity(const PositionedAlphaMask *mask,
+                                        const MangetsuGradientSlideSampler *slide,
+                                        int x, int y)
+{
+    if (slide)
+        return 255 - ass_gradient_slide_sample(slide, x + 0.5, y + 0.5, 0, 0, 0, true);
     uint8_t alpha;
     return ass_mangetsu_positioned_gradient_sample_alpha(&mask->gradient,
         x + 0.5, y + 0.5, &alpha) ? 255 - alpha : 255;
@@ -823,8 +844,12 @@ static void positioned_alpha_apply_without_scratch(ASS_Renderer *renderer,
         int x0 = FFMAX(img->dst_x, 0), y0 = FFMAX(img->dst_y, 0);
         int x1 = FFMIN((int64_t) img->dst_x + img->w, renderer->width);
         int y1 = FFMIN((int64_t) img->dst_y + img->h, renderer->height);
+        MangetsuGradientSlideSampler sampler;
+        bool slide = mask->gradient.slide != NULL;
+        if (slide)
+            prepare_positioned_alpha_slide(renderer, mask, &sampler);
         for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
-            uint8_t opacity = positioned_alpha_opacity(mask, x, y);
+            uint8_t opacity = positioned_alpha_opacity(mask, slide ? &sampler : NULL, x, y);
             if (opacity == 255)
                 continue;
             unsigned transmittance = 65535;
@@ -857,6 +882,21 @@ static uint64_t positioned_alpha_hash_double(uint64_t hash, double value)
     return positioned_alpha_hash_value(hash, bits);
 }
 
+static uint64_t positioned_alpha_hash_paint(uint64_t hash, const MangetsuGradientLayer *g)
+{
+    const double values[] = {g->angle, g->script_x1, g->script_y1,
+        g->script_x2, g->script_y2, g->positioned_rect.left, g->positioned_rect.top,
+        g->positioned_rect.right, g->positioned_rect.bottom};
+    for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+        hash = positioned_alpha_hash_double(hash, values[i]);
+    hash = positioned_alpha_hash_value(hash, g->n_stops);
+    for (int stop = 0; stop < g->n_stops; stop++) {
+        hash = positioned_alpha_hash_double(hash, g->stops[stop].offset);
+        hash = positioned_alpha_hash_value(hash, g->stops[stop].color);
+    }
+    return hash;
+}
+
 /* ASS_Image change detection cannot see this independent RGBA-only effect.
  * Hash its numeric snapshot and surface assignment, never pointers/padding. */
 static uint64_t positioned_alpha_fingerprint(ASS_ImageRGBA *images)
@@ -867,16 +907,13 @@ static uint64_t positioned_alpha_fingerprint(ASS_ImageRGBA *images)
         if (!mask)
             continue;
         const MangetsuGradientLayer *g = &mask->gradient;
-        const double values[] = {g->angle, g->script_x1, g->script_y1,
-            g->script_x2, g->script_y2, g->positioned_rect.left, g->positioned_rect.top,
-            g->positioned_rect.right, g->positioned_rect.bottom};
-        for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++)
-            hash = positioned_alpha_hash_double(hash, values[i]);
-        hash = positioned_alpha_hash_value(hash, g->n_stops);
-        for (int stop = 0; stop < g->n_stops; stop++) {
-            hash = positioned_alpha_hash_double(hash, g->stops[stop].offset);
-            hash = positioned_alpha_hash_value(hash, g->stops[stop].color);
+        for (const MangetsuGradientSlide *slide = g->slide; slide; slide = g->slide) {
+            hash = positioned_alpha_hash_double(hash, slide->width);
+            hash = positioned_alpha_hash_double(hash, slide->progress);
+            hash = positioned_alpha_hash_paint(hash, &slide->target);
+            g = &slide->source;
         }
+        hash = positioned_alpha_hash_paint(hash, g);
         const int geometry[] = {img->dst_x, img->dst_y, img->w, img->h, img->type};
         for (unsigned i = 0; i < sizeof(geometry) / sizeof(geometry[0]); i++)
             hash = positioned_alpha_hash_value(hash, (uint32_t) geometry[i]);
@@ -911,13 +948,17 @@ uint64_t ass_rgba_apply_positioned_alpha(ASS_Renderer *renderer, ASS_ImageRGBA *
         bool seen = false;
         for (size_t i = 0; i < group; i++)
             seen |= ((ASS_ImageRGBAPriv *) tiles[i])->positioned_alpha_mask == mask;
-        if (seen || !mask->gradient.positioned_rect.valid)
+        bool slide = mask->gradient.slide != NULL;
+        if (seen || (!slide && !mask->gradient.positioned_rect.valid))
             continue;
         bool opaque = true;
         for (int stop = 0; stop < mask->gradient.n_stops; stop++)
             opaque &= mask->gradient.stops[stop].color == 0;
-        if (opaque)
+        if (!slide && opaque)
             continue;
+        MangetsuGradientSlideSampler sampler;
+        if (slide)
+            prepare_positioned_alpha_slide(renderer, mask, &sampler);
         const MangetsuGradientPositionedRect *rect = &mask->gradient.positioned_rect;
         int x0 = renderer->width, x1 = 0, y0 = renderer->height, y1 = 0;
         for (size_t i = group; i < n; i++) {
@@ -930,14 +971,16 @@ uint64_t ass_rgba_apply_positioned_alpha(ASS_Renderer *renderer, ASS_ImageRGBA *
             y1 = FFMAX(y1, FFMIN((int64_t) img->dst_y + img->h, renderer->height));
         }
         // Match positioned color inclusion at pixel centers, without casting huge coordinates.
-        x0 = FFMAX(x0, (int) fmin(renderer->width, fmax(0, ceil(rect->left - 0.5))));
-        y0 = FFMAX(y0, (int) fmin(renderer->height, fmax(0, ceil(rect->top - 0.5))));
-        x1 = FFMIN(x1, (int) fmin(renderer->width, fmax(0, floor(rect->right - 0.5) + 1)));
-        y1 = FFMIN(y1, (int) fmin(renderer->height, fmax(0, floor(rect->bottom - 0.5) + 1)));
+        if (!slide) {
+            x0 = FFMAX(x0, (int) fmin(renderer->width, fmax(0, ceil(rect->left - 0.5))));
+            y0 = FFMAX(y0, (int) fmin(renderer->height, fmax(0, ceil(rect->top - 0.5))));
+            x1 = FFMIN(x1, (int) fmin(renderer->width, fmax(0, floor(rect->right - 0.5) + 1)));
+            y1 = FFMIN(y1, (int) fmin(renderer->height, fmax(0, floor(rect->bottom - 0.5) + 1)));
+        }
         for (int y = y0; y < y1; y++) {
             for (int x = x0; x < x1; x++) {
                 transmittance[x] = 65535;
-                opacities[x] = positioned_alpha_opacity(mask, x, y);
+                opacities[x] = positioned_alpha_opacity(mask, slide ? &sampler : NULL, x, y);
             }
             for (size_t i = n; i-- > group;) {
                 ASS_ImageRGBA *img = tiles[i];
@@ -1006,7 +1049,9 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
 
     ASS_Image **tail = &priv->images_root;
     uint64_t alpha_fingerprint = 0;
+    bool has_gradient_slide = false;
     for (int i = 0; i < cnt; i++) {
+        has_gradient_slide |= priv->eimg[i].has_gradient_slide;
         ASS_Image *cur = priv->eimg[i].imgs;
         while (cur) {
             *tail = cur;
@@ -1041,10 +1086,12 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
 
     if (detect_change) {
         *detect_change = ass_detect_change(priv);
-        if (alpha_fingerprint != priv->positioned_alpha_fingerprint)
+        if (alpha_fingerprint != priv->positioned_alpha_fingerprint ||
+                has_gradient_slide || priv->frame_has_gradient_slide)
             *detect_change = 2;
     }
     priv->positioned_alpha_fingerprint = alpha_fingerprint;
+    priv->frame_has_gradient_slide = has_gradient_slide;
 
     ass_frame_unref(priv->prev_images_root);
     priv->prev_images_root = NULL;
