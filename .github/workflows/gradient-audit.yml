@@ -31,14 +31,62 @@ jobs:
       - name: Configure
         run: meson setup build -Dtest=enabled -Dcompare=enabled '-Dart-samples=${{ github.workspace }}/ext_art-samples' ${{ matrix.args }}
       - name: Compile regression suite
+        id: build
         run: meson compile -C build
       - name: Run all regressions
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: meson test -C build --no-rebuild --print-errorlogs
+      - name: Run gradient lifetime regressions with LeakSanitizer
+        if: ${{ always() && matrix.name == 'ASan and UBSan' && steps.build.outcome == 'success' }}
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: meson test -C build --no-rebuild --print-errorlogs --logbase gradient-leaks gradient-slide-lifetime gradient-slide-allocation-failure
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gradient-audit-${{ strategy.job-index }}
-          path: build/meson-logs/testlog*
+          path: |
+            build/meson-logs/testlog*
+            build/meson-logs/gradient-leaks*
+  slide-performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 014ed134c36b45f5ce2d4173964f02a221f0ad3b
+          path: .perf-pinned
+      - uses: actions/checkout@v4
+        with:
+          ref: 9a68654e56c189c67d94987b1c79c209216ade41
+          path: .perf-before
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config nasm libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev
+      - name: Build matched release configurations
+        run: |
+          for revision in pinned before after; do
+            source=.
+            if [ "$revision" != after ]; then source=".perf-$revision"; fi
+            build="perf-$revision"
+            meson setup "$build" "$source" --buildtype=release -Ddefault_library=static -Dtest=disabled -Dcompare=disabled -Dprofile=disabled -Dfuzz=disabled
+            meson compile -C "$build"
+            cc -std=c99 -O2 -DMEASURE_ALLOCATIONS -I"$source/libass" test/style_extensions_bench.c \
+              "$build/libass/libass.a" $(pkg-config --libs freetype2 fribidi harfbuzz fontconfig) -lm \
+              -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc -o "$build/slide-bench"
+          done
+      - name: Measure active wipes and ordinary overrides
+        run: |
+          python3 .github/scripts/compare-gradient-slide-performance.py \
+            ./perf-pinned/slide-bench ./perf-before/slide-bench ./perf-after/slide-bench \
+            test/fonts/NotoSansMyanmar-Regular.ttf compare/test/font1.ttf
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gradient-slide-performance
+          path: gradient-slide-performance.*

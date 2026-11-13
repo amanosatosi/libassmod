@@ -312,6 +312,8 @@ static bool render_context_init(RenderContext *state, ASS_Renderer *priv)
 
 static void render_context_done(RenderContext *state)
 {
+    ass_positioned_alpha_masks_clear(state);
+    ass_gradient_slides_clear(&state->gradient_slides);
     free_scroll_contexts(state);
     ass_rasterizer_done(&state->rasterizer);
 
@@ -403,7 +405,6 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (!render_priv)
         return;
 
-    ass_positioned_alpha_masks_clear(&render_priv->state);
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
 
@@ -4379,11 +4380,7 @@ static void free_distortion_resources(RenderContext *state)
 static void free_render_context(RenderContext *state)
 {
     ass_positioned_alpha_masks_clear(state);
-    while (state->gradient_slides) {
-        MangetsuGradientSlide *slide = state->gradient_slides;
-        state->gradient_slides = slide->next;
-        ass_gradient_slide_unref(slide);
-    }
+    ass_gradient_slides_clear(&state->gradient_slides);
     while (state->box_paints) {
         BS4Paint *paint = state->box_paints;
         state->box_paints = paint->next;
@@ -6800,7 +6797,6 @@ static bool parse_events(RenderContext *state, ASS_Event *event,
     return true;
 
 fail:
-    free_render_context(state);
     return false;
 }
 
@@ -6873,16 +6869,14 @@ static void preliminary_layout(RenderContext *state)
 }
 
 // Reorder text into visual order
-static void reorder_text(RenderContext *state)
+static bool reorder_text(RenderContext *state)
 {
     ASS_Renderer *render_priv = state->renderer;
     TextInfo *text_info = &state->text_info;
     FriBidiStrIndex *cmap = ass_shaper_reorder(state->shaper, text_info);
     if (!cmap) {
         ass_msg(render_priv->library, MSGL_ERR, "Failed to reorder text");
-        ass_shaper_cleanup(state->shaper, text_info);
-        free_render_context(state);
-        return;
+        return false;
     }
 
     // Reposition according to the map
@@ -6914,6 +6908,7 @@ static void reorder_text(RenderContext *state)
             info = info->next;
         }
     }
+    return true;
 }
 
 static TextInfo furi_group_text_info(FuriGroup *group)
@@ -7518,18 +7513,18 @@ static bool furi_has_strict_spacing(TextInfo *text)
 
 /* Horizontal accommodation is independent of vertical reservation. Both
  * annotation sides share the existing base-spacing path in either mode. */
-static void resolve_furi_group_collisions(RenderContext *state)
+static bool resolve_furi_group_collisions(RenderContext *state)
 {
     TextInfo *text = &state->text_info;
     int count = text->n_furi_groups;
     if (count < 2)
-        return;
+        return true;
     FuriPlacement *p = calloc(count, sizeof(*p));
     int32_t *spacing = calloc(count, sizeof(*spacing));
     if (!p || !spacing) {
         free(p);
         free(spacing);
-        return;
+        return true;
     }
     for (int attempt = 0; attempt < count; attempt++) {
         memset(spacing, 0, count * sizeof(*spacing));
@@ -7559,10 +7554,15 @@ static void resolve_furi_group_collisions(RenderContext *state)
         }
         if (!resolved)
             break;
-        reorder_text(state);
+        if (!reorder_text(state)) {
+            free(p);
+            free(spacing);
+            return false;
+        }
     }
     free(p);
     free(spacing);
+    return true;
 }
 
 static void update_glyph_jitter_offsets(RenderContext *state)
@@ -12422,9 +12422,14 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         // Horizontal wrapping and placement retain their existing path.
         wrap_lines_smart(state, max_text_width);
         ass_process_karaoke_effects(state);
-        reorder_text(state);
-        if (text_info->n_furi_groups)
-            resolve_furi_group_collisions(state);
+        if (!reorder_text(state) ||
+                (text_info->n_furi_groups && !resolve_furi_group_collisions(state))) {
+            ass_shaper_cleanup(state->shaper, text_info);
+            free_render_context(state);
+            release_chat_scene(chat, chat_cached);
+            free(ranges);
+            return false;
+        }
         align_lines(state, max_text_width);
         apply_column_layout(state);
     }

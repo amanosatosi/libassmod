@@ -7,6 +7,23 @@
 #include <string.h>
 #include "ass.h"
 
+#ifdef GRADIENT_SLIDE_FAULT_TEST
+#include "gradient.h"
+
+static int slide_allocations_until_failure = -1;
+static bool slide_allocation_failed;
+void *__real_malloc(size_t size);
+void *__wrap_malloc(size_t size)
+{
+    if (size == sizeof(MangetsuGradientSlide) && slide_allocations_until_failure >= 0 &&
+            slide_allocations_until_failure-- == 0) {
+        slide_allocation_failed = true;
+        return NULL;
+    }
+    return __real_malloc(size);
+}
+#endif
+
 enum { W = 640, H = 360, CHANNELS = 3 };
 typedef struct { uint8_t *pixels; } Frame;
 static const char header[] =
@@ -1050,6 +1067,8 @@ static bool slide_settings(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\grds20\\grdsoff", ""},
         {"\\grds20\\r", ""},
         {"\\grds20\\1grds-5\\grdsnan\\grds(1,2)", "\\grds20"},
+        {"\\grds20\\1grdsinf\\1grds(10,)\\grds20junk", "\\grds20"},
+        {"\\grds20.5", "\\1grds(20.5)"},
         {"\\2grds0\\4gras5\\10bbgrds9", ""},
         {"\\grds0\\1grds20\\1grds5", "\\grds5"},
     };
@@ -1223,12 +1242,143 @@ static bool slide_overlap(ASS_Library *lib, ASS_Renderer *renderer)
     return check(ok, "gradient slide overlap or reverse seek");
 }
 
-int main(void)
+static bool slide_domains(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *attached = "\\1grd(0,&H0000FF&,50%,&H0000FF&,50%,&H00FF00&,&H00FF00&)";
+    const char *positioned = "\\1pgrd(150,100,280,200,0,&HFF0000&,&HFF0000&)";
+    char text[512];
+    snprintf(text, sizeof(text), "{" SLIDE_DRAW "\\grds0%s\\t(0,1000,%s)" SLIDE_RECT,
+             attached, positioned);
+    Frame mixed = {0}, target = {0}, source = {0}, before = {0}, after = {0};
+    bool ok = render(lib, renderer, text, 500, &mixed);
+    snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s" SLIDE_RECT, positioned);
+    ok &= render(lib, renderer, text, 0, &target);
+    snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s" SLIDE_RECT, attached);
+    ok &= render(lib, renderer, text, 0, &source);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\grds0\\1grd" SLIDE_RED
+                 "\\t(500,500,\\1grd" SLIDE_BLUE ")" SLIDE_RECT, 499, &before);
+    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\grds0\\1grd" SLIDE_RED
+                 "\\t(500,500,\\1grd" SLIDE_BLUE ")" SLIDE_RECT, 500, &after);
+    if (ok) {
+        int type = IMAGE_TYPE_CHARACTER;
+        ok &= !memcmp(pixel(&mixed, type, 170, 150), pixel(&target, type, 170, 150), 4) &&
+              !memcmp(pixel(&mixed, type, 230, 150), pixel(&source, type, 230, 150), 4) &&
+              pixel(&before, type, 150, 150)[0] == 255 &&
+              pixel(&after, type, 150, 150)[2] == 255;
+    }
+    release(&mixed); release(&target); release(&source); release(&before); release(&after);
+    return check(ok, "mixed slide coordinates, repeated stops or zero-duration transform");
+}
+
+static bool slide_scaled_clip(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    // An exact script-positioned domain makes the expected fractional band
+    // independent of antialiasing and padding in the rotated drawing mask.
+    const char *text = "{\\an5\\pos(200,150)\\frz15\\p1\\grds20.5"
+        "\\pgrd(100,100,300,200,0,&H0000FF&,&H0000FF&)"
+        "\\t(0,1000,\\pgrd(100,100,300,200,0,&HFF0000&,&HFF0000&))"
+        "\\iclip(190,100,210,135)}m 0 0 l 180 0 180 80 0 80";
+    ASS_Track *track = track_for(lib, text);
+    if (!track)
+        return false;
+    bool ok = true;
+    for (int scale = 1; scale <= 2; scale++) {
+        ass_set_frame_size(renderer, W * scale, H * scale);
+        ASS_ImageRGBA *images = ass_render_frame_rgba(renderer, track, 500, NULL);
+        int found = 0;
+        const int samples[][2] = {{190, 150}, {200, 150}, {209, 150}, {200, 130}};
+        for (size_t i = 0; i < sizeof(samples) / sizeof(*samples); i++) {
+            int x = samples[i][0] * scale, y = samples[i][1] * scale;
+            for (ASS_ImageRGBA *img = images; img; img = img->next) {
+                if (img->type != IMAGE_TYPE_CHARACTER || x < img->dst_x || y < img->dst_y ||
+                        x >= img->dst_x + img->w || y >= img->dst_y + img->h)
+                    continue;
+                uint8_t *p = img->rgba + (size_t) (y - img->dst_y) * img->stride +
+                             (x - img->dst_x) * 4;
+                if (!p[3])
+                    continue;
+                double blue = (210.25 - samples[i][0] - 0.5 / scale) / 20.5;
+                ok &= i < 3 && p[3] == 255 && abs(p[2] - (int) (blue * 255 + 0.5)) <= 1;
+                found |= 1 << i;
+            }
+        }
+        ok &= found == 7;
+        ass_free_images_rgba(images);
+    }
+    ass_set_frame_size(renderer, W, H);
+    ass_free_track(track);
+    return check(ok, "fractional band width changed under scaling, rotation or inverse clip");
+}
+
+static bool slide_lifetime(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *prefix = "{" SLIDE_DRAW "\\grds0"
+        "\\1grd" SLIDE_RED "\\pgrdalpha(100,100,300,200,0,&H20&,&H40&)";
+    const char *step = "\\t(0,1000,\\1grd" SLIDE_BLUE
+        "\\pgrdalpha(100,100,300,200,0,&H80&,&HC0&))";
+    const char *rejected = "\\t(0,1000,\\1grd(0,&H00FF00&,&H00FF00&)"
+        "\\pgrdalpha(100,100,300,200,0,&HFF&,&HFF&))";
+    char text[8192];
+    strcpy(text, prefix);
+    for (int i = 0; i < 32; i++)
+        strcat(text, step);
+    size_t len = strlen(text);
+    strcat(text, SLIDE_RECT);
+    ASS_Track *limit = track_for(lib, text);
+    strcpy(text + len, rejected);
+    strcat(text, SLIDE_RECT);
+    ASS_Track *overflow = track_for(lib, text);
+    Frame expected = {0};
+    bool ok = limit && overflow && render_track(renderer, limit, 500, &expected);
+#ifdef GRADIENT_SLIDE_FAULT_TEST
+    // Fail just the first snapshot. The second transform must still start
+    // from the intact source and produce the same paint as without the first.
+    snprintf(text, sizeof(text), "%s%s" SLIDE_RECT, prefix, step);
+    Frame one_step = {0}, recovered = {0};
+    ok &= render(lib, renderer, text, 500, &one_step);
+    snprintf(text, sizeof(text), "%s\\t(0,1000,\\1grd(0,&H00FF00&,&H00FF00&))%s" SLIDE_RECT,
+             prefix, step);
+    ASS_Track *fault = track_for(lib, text);
+    if (fault) {
+        slide_allocations_until_failure = 0;
+        ok &= render_track(renderer, fault, 500, &recovered);
+        ok = ok && slide_allocation_failed && same_target(&one_step, &recovered, IMAGE_TYPE_CHARACTER);
+        ass_free_track(fault);
+    } else {
+        ok = false;
+    }
+    release(&one_step); release(&recovered);
+#endif
+    for (int i = 0; ok && i < 12; i++) {
+        Frame completed = {0}, sought = {0};
+        ok = render_track(renderer, overflow, 1000, &completed) &&
+             render_track(renderer, overflow, 500, &sought);
+        if (ok)
+            ok = same_target(&expected, &sought, IMAGE_TYPE_CHARACTER) &&
+                 pixel(&completed, IMAGE_TYPE_CHARACTER, 140, 150)[3] == 0 &&
+                 pixel(&expected, IMAGE_TYPE_CHARACTER, 140, 150)[3] > 0;
+        release(&completed); release(&sought);
+    }
+    if (overflow) ass_free_track(overflow);
+    if (limit) ass_free_track(limit);
+    release(&expected);
+    return check(ok, "slide depth limit, positioned mask completion or reverse seek");
+}
+
+int main(int argc, char **argv)
 {
     ASS_Library *lib = ass_library_init();
     ASS_Renderer *renderer = lib ? ass_renderer_init(lib) : NULL;
     if (!renderer) return 2;
     ass_set_frame_size(renderer, W, H);
+    if (argc == 2 && !strcmp(argv[1], "--slide-lifetime")) {
+        // Drawings need no host font provider, keeping leak reports specific
+        // to libass and its snapshots.
+        ass_set_fonts(renderer, NULL, NULL, ASS_FONTPROVIDER_NONE, NULL, 0);
+        bool ok = slide_lifetime(lib, renderer);
+        ass_renderer_done(renderer); ass_library_done(lib);
+        return ok ? 0 : 1;
+    }
     ass_set_fonts(renderer, NULL, "Noto Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     bool ok = boxes(lib, renderer);
     ok &= vector_corners(lib, renderer);
@@ -1248,6 +1398,8 @@ int main(void)
     ok &= slide_paints(lib, renderer);
     ok &= slide_borders(lib, renderer);
     ok &= slide_overlap(lib, renderer);
+    ok &= slide_domains(lib, renderer);
+    ok &= slide_scaled_clip(lib, renderer);
     ass_renderer_done(renderer); ass_library_done(lib);
     return ok ? 0 : 1;
 }

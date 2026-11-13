@@ -105,9 +105,9 @@ typedef struct {
     MangetsuGradientSlide *slide;
 } MangetsuGradientLayer;
 
-/* A transform adds a destination to the paint already resolved for this frame.
- * Only slides allocate snapshots. Positioned masks can retain them until the
- * compositor has processed the event. */
+/* The event list owns one reference per slide. A slide owns a reference to
+ * source.slide, and a positioned mask owns one to its root slide. Other
+ * copies (including glyph and box paint) borrow the event's references. */
 #define MANGETSU_GRADIENT_SLIDE_MAX_DEPTH 32
 struct mangetsu_gradient_slide {
     MangetsuGradientSlide *next;
@@ -137,6 +137,7 @@ typedef struct {
 } MangetsuGradientSlideSampler;
 
 void ass_gradient_slide_unref(MangetsuGradientSlide *slide);
+void ass_gradient_slides_clear(MangetsuGradientSlide **list);
 void ass_gradient_slide_prepare(MangetsuGradientSlideSampler *sampler,
                                const MangetsuGradientLayer *layer,
                                GradientRect bounds, GradientScriptMapping mapping);

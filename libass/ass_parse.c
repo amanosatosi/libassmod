@@ -1451,26 +1451,51 @@ static double gradient_slide_width(const RenderContext *state, int target, bool 
     return value > 0 ? value : -1;
 }
 
-static bool gradient_slide_tag(RenderContext *state, char *p, char *end,
-                                double **setting, char **arg)
+static double *gradient_slide_tag(RenderContext *state, char *p, char *end, char **arg)
 {
+    if (end - p < 3)
+        return NULL;
     char *name = p;
-    int number = read_decimal_digit(&name, end);
-    if (number == 1 && name < end && *name == '0') {
-        number = 10;
-        name++;
+    int channel = 0;
+    if (*name >= '0' && *name <= '9') {
+        channel = *name++ - '0';
+        if (!channel)
+            return NULL;
+        if (channel == 1 && *name == '0') {
+            channel = 10;
+            name++;
+        }
     }
-    if (end - name < 3 ||
-            (*name != 'b' && *name != 'g' && *name != 'p' &&
-             *name != 's' && *name != 'v'))
-        return false;
+    if (end - name < 3)
+        return NULL;
+    /* Reject ordinary border, position, scale, and shadow tags before
+     * scanning a name or looking through the slide aliases. */
+    switch (*name) {
+    case 'b':
+        if (name[1] != 'b' && name[1] != 'g' && name[1] != 'p' && name[1] != 'v')
+            return NULL;
+        break;
+    case 'g':
+    case 'p':
+        if (name[1] != ('g' == *name ? 'r' : 'g'))
+            return NULL;
+        break;
+    case 's':
+        if (channel != 3 || (name[1] != 'g' && name[1] != 'v'))
+            return NULL;
+        break;
+    case 'v':
+        break;
+    default:
+        return NULL;
+    }
     // Most override tags have no slide suffix. Restrict the table lookup to
     // the name (before a numeric argument, whitespace or "off").
-    char *suffix = name + (number == 3 && *name == 's');
+    char *suffix = name + 2;
     while (suffix < end && *suffix >= 'a' && *suffix <= 'z' && *suffix != 's')
         suffix++;
     if (suffix == end || *suffix != 's')
-        return false;
+        return NULL;
 
     static const struct {
         const char *name;
@@ -1495,9 +1520,6 @@ static bool gradient_slide_tag(RenderContext *state, char *p, char *end,
         {"vcs", 0, 4, 0, false},
         {"vas", 0, 4, 0, true},
     };
-    int channel = number < 0 ? 0 : number;
-    if (!channel && name != p)
-        return false;
     for (size_t i = 0; i < sizeof(tags) / sizeof(*tags); i++) {
         if (channel < tags[i].first || channel > tags[i].last ||
                 strlen(tags[i].name) != (size_t) (suffix + 1 - name) ||
@@ -1509,12 +1531,11 @@ static bool gradient_slide_tag(RenderContext *state, char *p, char *end,
             target = style_border_target(layer);
         else if (target < STYLE_PAINT_WAITING)
             target += layer;
-        *setting = !channel && name[0] == 'g' ? &state->gradient_slide.global :
-                   &state->gradient_slide.target[target][tags[i].alpha];
         *arg = suffix + 1;
-        return true;
+        return !channel && name[0] == 'g' ? &state->gradient_slide.global :
+               &state->gradient_slide.target[target][tags[i].alpha];
     }
-    return false;
+    return NULL;
 }
 
 struct ass_style_extension {
@@ -4892,14 +4913,12 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             continue;
 
         char *name_end = q;
-        double *slide_setting;
-        char *slide_arg;
-        bool slide_tag = gradient_slide_tag(state, p, name_end,
-                                            &slide_setting, &slide_arg);
+        char *slide_arg = name_end;
+        double *slide_setting = gradient_slide_tag(state, p, name_end, &slide_arg);
 
         // Reject whole unsupported tags, including nested transforms, before
         // any early handler can interpret them or execute their child tags.
-        if (state->style_extension_parse && !slide_tag &&
+        if (state->style_extension_parse && !slide_setting &&
                 !style_extension_name_allowed(p, name_end)) {
             if (*q == '(') {
                 int depth = 1;
@@ -5034,7 +5053,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         }
 
-        if (slide_tag) {
+        if (slide_setting) {
             if (!state->karaoke_only_parse && !state->chat_side_only_parse &&
                     (slide_arg == name_end || *name_end != '(')) {
                 if (nested && !restore_slide) {
