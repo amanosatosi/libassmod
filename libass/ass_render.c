@@ -12330,14 +12330,29 @@ static struct ass_expr_layout_cache *expression_layout_slot(ASS_Renderer *render
     unsigned hash = 2166136261u;
     for (size_t i = 0; i < len; i++)
         hash = (hash ^ (uint8_t) key[i]) * 16777619u;
-    struct ass_expr_layout_cache *entry =
-        &renderer->expression_layout_cache[hash % EXPR_LAYOUT_CACHE_SIZE];
-    *hit = entry->length == len && !memcmp(entry->key, key, len);
-    if (!*hit) {
-        memcpy(entry->key, key, len);
-        entry->length = len;
-        entry->bounds = (ASS_ExprBounds) {0};
+    struct ass_expr_layout_cache *entry = NULL;
+    /* Two frequently rendered events can hash to the same slot. Search
+     * the bounded table before evicting either baseline. */
+    for (unsigned i = 0; i < EXPR_LAYOUT_CACHE_SIZE; i++) {
+        struct ass_expr_layout_cache *slot =
+            &renderer->expression_layout_cache[(hash + i) % EXPR_LAYOUT_CACHE_SIZE];
+        if (slot->length == len && !memcmp(slot->key, key, len)) {
+            *hit = true;
+            return slot;
+        }
+        if (!slot->length) {
+            if (!entry)
+                entry = slot;
+            break;
+        }
+        if (slot->length == SIZE_MAX && !entry)
+            entry = slot;
     }
+    if (!entry)
+        entry = &renderer->expression_layout_cache[hash % EXPR_LAYOUT_CACHE_SIZE];
+    memcpy(entry->key, key, len);
+    entry->length = len;
+    entry->bounds = (ASS_ExprBounds) {0};
     return entry;
 }
 
@@ -13033,7 +13048,7 @@ bool ass_render_event(RenderContext *state, ASS_Event *event,
             if (entry && state->expression_bounds.valid)
                 entry->bounds = state->expression_bounds;
             else if (entry)
-                entry->length = 0;
+                entry->length = SIZE_MAX; // Tombstone, retaining the probe chain.
         }
     }
     return render_event(state, event, event_images, rgba_out);
