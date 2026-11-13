@@ -31,6 +31,7 @@ The supported set contains typed event-layout defaults and persistent, pointer-f
 | `\fshp` | Signed extra line spacing; relative operands resolve against the current default |
 | `\ortho0`, `\ortho1` | Perspective (default) or orthographic projection |
 | `\q0`…`\q3` | Initial wrapping mode (script `WrapStyle` when absent) |
+| `\ta1`…`\ta9` | Initial inherited alignment for logical lines |
 | `\vert0`, `\vert1`, `\vtype0`…`\vtype3`, `\vdir0`…`\vdir2` | Initial native vertical layout, unit policy and column direction |
 | `\vsp`, `\vcolsp` | Initial vertical unit and column spacing |
 | `\1bsc`…`\10bsc` | Flat waiting karaoke border colors; `\1bsc` aliases `\3sc` inline |
@@ -177,8 +178,14 @@ text, and retain their usual restrictions after text or inside transforms.
 Parameterless vertical controls keep their existing inline native-default
 semantics; they are not appearance-style resets. See [native vertical layout](native-vertical.md).
 
+Metadata `\ta` supplies the initial logical-line alignment. The last valid
+metadata value wins. The first valid inline `\ta` on a line can override
+that line's inherited value, and the last valid inline choice carries to
+following lines. Bare and named `\r` preserve those line choices.
+
 ```ass
 Comment: 0,0:00:00.00,0:00:00.00,Vertical,,0,0,0,mangetsu-style,{\q2\vert1\vtype3\vdir2\vsp2\vcolsp8}
+Comment: 0,0:00:00.00,0:00:00.00,Signs,,0,0,0,mangetsu-style,{\ta3}
 Comment: 0,0:00:00.00,0:00:00.00,Karaoke,,0,0,0,mangetsu-style,{\2bs3\2bc&HFFFFFF&\2bsc&HFF0000&}
 ```
 

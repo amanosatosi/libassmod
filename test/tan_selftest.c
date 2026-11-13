@@ -41,7 +41,7 @@ static void hash_i32(uint64_t *hash, int value)
     hash_u32(hash, (uint32_t) value);
 }
 
-static ASS_Track *read_case_track(ASS_Library *lib, const char *text)
+static ASS_Track *read_case_track(ASS_Library *lib, const char *text, const char *metadata)
 {
     char script[8192];
     int n = snprintf(
@@ -60,18 +60,18 @@ static ASS_Track *read_case_track(ASS_Library *lib, const char *text)
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-        "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,%s\n",
-        text);
+        "%sDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,%s\n",
+        metadata, text);
     if (n < 0 || n >= (int) sizeof(script))
         return NULL;
 
     return ass_read_memory(lib, script, strlen(script), NULL);
 }
 
-static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
-                        const char *text, RenderSig *sig)
+static bool render_case_metadata(ASS_Library *lib, ASS_Renderer *renderer,
+                                 const char *text, const char *metadata, RenderSig *sig)
 {
-    ASS_Track *track = read_case_track(lib, text);
+    ASS_Track *track = read_case_track(lib, text, metadata);
     if (!track)
         return false;
 
@@ -110,11 +110,45 @@ static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
     return sig->count > 0 && sig->coverage > 0;
 }
 
+static bool render_case(ASS_Library *lib, ASS_Renderer *renderer,
+                        const char *text, RenderSig *sig)
+{
+    return render_case_metadata(lib, renderer, text, "", sig);
+}
+
 static bool same_sig(const RenderSig *a, const RenderSig *b)
 {
     return a->count == b->count &&
            a->coverage == b->coverage &&
            a->hash == b->hash;
+}
+
+static bool test_style_line_alignment(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *metadata =
+        "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\ta1}\n"
+        "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\ta3\\ta0\\ta(2,3)}\n";
+    const char *cases[][2] = {
+        {"{\\an7\\pos(320,120)}short\\NLONGER TEXT\\Nend",
+         "{\\an7\\pos(320,120)\\ta3}short\\NLONGER TEXT\\Nend"},
+        {"{\\an7\\pos(320,120)\\ta2}short\\NLONGER TEXT\\Nend",
+         "{\\an7\\pos(320,120)\\ta2}short\\NLONGER TEXT\\Nend"},
+        {"{\\an7\\pos(320,120)}short\\N{\\ta2}LONGER TEXT\\N{\\r}end",
+         "{\\an7\\pos(320,120)\\ta3}short\\N{\\ta2}LONGER TEXT\\N{\\r}end"},
+        {"{\\an7\\pos(320,120)}short\\NLONGER TEXT\\N{\\rDefault}end",
+         "{\\an7\\pos(320,120)\\ta3}short\\NLONGER TEXT\\N{\\rDefault}end"},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        RenderSig actual, expected;
+        bool good = render_case_metadata(lib, renderer, cases[i][0], metadata, &actual) &&
+                    render_case(lib, renderer, cases[i][1], &expected) &&
+                    same_sig(&actual, &expected);
+        if (!good)
+            fprintf(stderr, "inherited ta differs from inline alignment in case %zu\n", i);
+        ok &= good;
+    }
+    return ok;
 }
 
 static bool expect_same(ASS_Library *lib, ASS_Renderer *renderer,
@@ -185,7 +219,7 @@ typedef struct {
 static bool render_line_bounds(ASS_Library *lib, ASS_Renderer *renderer,
                                 const char *text, ColorBounds bounds[4])
 {
-    ASS_Track *track = read_case_track(lib, text);
+    ASS_Track *track = read_case_track(lib, text, "");
     if (!track)
         return false;
     memset(bounds, 0, 4 * sizeof(*bounds));
@@ -381,6 +415,7 @@ int main(void)
 
     bool ok = true;
     ok &= test_per_line_alignment(lib, renderer);
+    ok &= test_style_line_alignment(lib, renderer);
     RenderSig leak_probe;
     ok &= render_case(lib, renderer,
         "{\\ta7\\ta3}A\\NBBB\nDialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,A\\NBBB", &leak_probe);

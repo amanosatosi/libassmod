@@ -1621,6 +1621,7 @@ static void select_extension_field(RenderContext *state, size_t offset,
         {offsetof(RenderContext, vertical_direction), STYLE_LAYOUT_DIRECTION},
         {offsetof(RenderContext, vertical_spacing), STYLE_LAYOUT_SPACING},
         {offsetof(RenderContext, vertical_column_spacing), STYLE_LAYOUT_COLUMNS},
+        {offsetof(RenderContext, inherited_line_alignment), STYLE_LAYOUT_LINE_ALIGNMENT},
     };
     for (size_t i = 0; i < sizeof(layout_fields) / sizeof(*layout_fields); i++)
         if (offset == layout_fields[i].offset) {
@@ -1692,6 +1693,8 @@ static void apply_style_layout(RenderContext *state, const ASS_StyleLayout *layo
     if (layout->fields & STYLE_LAYOUT_DIRECTION) state->vertical_direction = layout->direction;
     if (layout->fields & STYLE_LAYOUT_SPACING) state->vertical_spacing = layout->spacing;
     if (layout->fields & STYLE_LAYOUT_COLUMNS) state->vertical_column_spacing = layout->columns;
+    if (layout->fields & STYLE_LAYOUT_LINE_ALIGNMENT)
+        state->inherited_line_alignment = layout->line_alignment;
 }
 
 void ass_apply_style_layout(RenderContext *state, int sid)
@@ -1842,6 +1845,7 @@ int ass_parse_style_extension(ASS_Track *track, int sid, char *text)
         .vertical = state->native_vertical, .profile = state->vertical_profile,
         .direction = state->vertical_direction, .spacing = state->vertical_spacing,
         .columns = state->vertical_column_spacing,
+        .line_alignment = state->inherited_line_alignment,
     };
     ass_free_override_buffers(state);
     free(renderer);
@@ -4484,6 +4488,7 @@ static const StyleExtensionTag style_extension_tags[] = {
     EXT_TAG("fshp", fshp, false, true),
     EXT_TAG("ortho", ortho, true, false),
     EXT_TAG("q", wrap_style, true, false),
+    EXT_TAG("ta", inherited_line_alignment, true, false),
     EXT_TAG("vert", native_vertical, true, false),
     EXT_TAG("vtype", vertical_profile, true, false),
     EXT_TAG("vdir", vertical_direction, true, false),
@@ -4805,6 +4810,8 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
             return false;
     } else {
         int count = has_inline ? 1 : nargs;
+        if (spec && !strcmp(spec->name, "ta") && count != 1)
+            return false;
         if (spec && (!strcmp(spec->name, "fshp") || !strcmp(spec->name, "ortho")) && count > 1)
             return false;
         if (spec && !strcmp(spec->name, "furipos") && count && count != 2)
@@ -4819,6 +4826,7 @@ static bool prepare_style_extension_tag(RenderContext *state, char *p,
                         (!strcmp(spec->name, "ortho") && number != 0 && number != 1))
                     return false;
                 if ((!strcmp(spec->name, "q") && (number < 0 || number > 3)) ||
+                    (!strcmp(spec->name, "ta") && (number < 1 || number > 9)) ||
                     (!strcmp(spec->name, "vert") && number != 0 && number != 1) ||
                     (!strcmp(spec->name, "vtype") && (number < 0 || number > 3)) ||
                     (!strcmp(spec->name, "vdir") && (number < 0 || number > 2)))
@@ -5922,7 +5930,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (!nested && nargs == 1 &&
                     parse_int32_arg_strict(*args, &val) &&
                     val >= 1 && val <= 9) {
-                ass_select_line_alignment(state, numpad2align(val));
+                if (state->style_extension_parse)
+                    state->inherited_line_alignment = numpad2align(val);
+                else
+                    ass_select_line_alignment(state, numpad2align(val));
             }
         } else if (tag("a")) {
             int32_t val = argtoi32(*args);

@@ -614,11 +614,12 @@ enum {
     STYLE_LAYOUT_DIRECTION = 1 << 3,
     STYLE_LAYOUT_SPACING = 1 << 4,
     STYLE_LAYOUT_COLUMNS = 1 << 5,
+    STYLE_LAYOUT_LINE_ALIGNMENT = 1 << 6,
 };
 
 typedef struct {
     unsigned fields;
-    int wrap, profile, direction;
+    int wrap, profile, direction, line_alignment;
     bool vertical;
     double spacing, columns;
 } ASS_StyleLayout;

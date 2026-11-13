@@ -3832,6 +3832,8 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style)
     ass_reset_render_context_explicit(state, style, style != NULL);
 }
 
+static void set_line_alignment_range(RenderContext *state, int alignment);
+
 /**
  * \brief Start new event. Reset state.
  */
@@ -3933,6 +3935,8 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
 
     if (render_priv->track->parser_priv && render_priv->track->parser_priv->style_extensions)
         ass_apply_style_layout(state, event->Style);
+    if (state->inherited_line_alignment)
+        set_line_alignment_range(state, state->inherited_line_alignment);
     state->initial_wrap_style = state->wrap_style;
 
     ass_apply_transition_effects(state);
@@ -6526,8 +6530,6 @@ static bool append_chat_literal(RenderContext *state, const char *text)
     }
     return true;
 }
-
-static void set_line_alignment_range(RenderContext *state, int alignment);
 
 static void finish_alignment_line(RenderContext *state)
 {

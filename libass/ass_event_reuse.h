@@ -125,7 +125,7 @@ static bool repeated_event_eligible(RenderContext *state)
         state->text_info.n_furi_groups || state->clip_drawing_text.str ||
         state->distort_enabled || state->curved_path_outline ||
         state->motion.relative_x || state->motion.relative_y ||
-        state->n_pos_transforms)
+        state->n_pos_transforms || state->n_line_alignments)
         return false;
     const char *p = event->Text;
     while (*p == '{') {
