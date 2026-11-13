@@ -994,11 +994,22 @@ static bool slide_timing(ASS_Library *lib, ASS_Renderer *renderer)
         Frame frame = {0};
         int boundary = 100 + times[i] / 5;
         if (render_track(renderer, track, times[i], &frame)) {
+            int first_red = 299;
+            bool good = true;
             for (int x = 101; x < 299; x++) {
                 uint8_t *p = pixel(&frame, IMAGE_TYPE_CHARACTER, x, 150);
-                ok &= p[3] == 255 && p[0] == (x < boundary ? 0 : 255) &&
-                      p[1] == 0 && p[2] == (x < boundary ? 255 : 0);
+                if (p[0] == 255 && first_red == 299)
+                    first_red = x;
+                good &= p[3] == 255 && p[0] == (x < first_red ? 0 : 255) &&
+                        p[1] == 0 && p[2] == (x < first_red ? 255 : 0);
             }
+            /* Attached paint uses the logical raster bounds, which include
+             * a small amount of padding around this integer-coordinate path. */
+            good &= abs(first_red - boundary) <= 2;
+            if (!good)
+                fprintf(stderr, "sharp gradient slide at %d ms: boundary %d, expected %d\n",
+                        times[i], first_red, boundary);
+            ok &= good;
         } else {
             ok = false;
         }
@@ -1006,28 +1017,28 @@ static bool slide_timing(ASS_Library *lib, ASS_Renderer *renderer)
     }
     ass_free_track(track);
     Frame legacy = {0}, accelerated = {0}, diagonal = {0}, reverse = {0};
-    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+    bool rendered = render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
                  SLIDE_WIPE SLIDE_RECT, 500, &legacy);
-    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+    rendered &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
                  "\\1grds0\\t(0,1000,2,\\1grd" SLIDE_BLUE ")" SLIDE_RECT, 500, &accelerated);
-    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+    rendered &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
                  "\\grds0\\t(0,1000,\\1grd(45,&HFF0000&,&HFF0000&))" SLIDE_RECT, 500, &diagonal);
-    ok &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
+    rendered &= render(lib, renderer, "{" SLIDE_DRAW "\\1grd" SLIDE_RED
                  "\\grds0\\t(0,1000,\\1grd(-45,&HFF0000&,&HFF0000&))" SLIDE_RECT, 500, &reverse);
-    if (ok) {
+    if (rendered) {
         int type = IMAGE_TYPE_CHARACTER;
         uint8_t *p = pixel(&legacy, type, 120, 150);
-        ok &= p[0] > 120 && p[0] < 136 && p[2] > 120 && p[2] < 136 &&
-              !memcmp(p, pixel(&legacy, type, 270, 150), 4);
-        ok &= pixel(&accelerated, type, 140, 150)[2] == 255 &&
-              pixel(&accelerated, type, 160, 150)[0] == 255;
-        ok &= pixel(&diagonal, type, 190, 130)[2] == 255 &&
-              pixel(&diagonal, type, 190, 180)[0] == 255 &&
-              pixel(&reverse, type, 190, 130)[0] == 255 &&
-              pixel(&reverse, type, 190, 180)[2] == 255;
+        ok &= check(p[0] > 120 && p[0] < 136 && p[2] > 120 && p[2] < 136 &&
+                    !memcmp(p, pixel(&legacy, type, 270, 150), 4), "legacy interpolation");
+        ok &= check(pixel(&accelerated, type, 140, 150)[2] == 255 &&
+                    pixel(&accelerated, type, 160, 150)[0] == 255, "accelerated slide");
+        ok &= check(pixel(&diagonal, type, 190, 130)[2] == 255 &&
+                    pixel(&diagonal, type, 190, 180)[0] == 255 &&
+                    pixel(&reverse, type, 190, 130)[0] == 255 &&
+                    pixel(&reverse, type, 190, 180)[2] == 255, "diagonal slides");
     }
     release(&legacy); release(&accelerated); release(&diagonal); release(&reverse);
-    return check(ok, "gradient slide direction, timing or legacy interpolation");
+    return check(ok && rendered, "gradient slide direction, timing or legacy interpolation");
 }
 
 static bool slide_settings(ASS_Library *lib, ASS_Renderer *renderer)
@@ -1187,6 +1198,31 @@ static bool slide_borders(ASS_Library *lib, ASS_Renderer *renderer)
     return check(ok, "gradient slide native borders, aliases or box rings");
 }
 
+static bool slide_overlap(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const char *text = "{" SLIDE_DRAW "\\1grd" SLIDE_RED "\\grds0" SLIDE_WIPE
+        "\\t(250,1250,\\1grd(0,&H00FF00&,&H00FF00&))" SLIDE_RECT;
+    ASS_Track *track = track_for(lib, text);
+    if (!track)
+        return false;
+    Frame frames[3] = {{0}};
+    bool ok = render_track(renderer, track, 750, &frames[0]);
+    ok &= render_track(renderer, track, 0, &frames[1]);
+    ok &= render_track(renderer, track, 750, &frames[2]);
+    if (ok) {
+        int type = IMAGE_TYPE_CHARACTER;
+        ok &= pixel(&frames[0], type, 150, 150)[1] == 255 &&
+              pixel(&frames[0], type, 225, 150)[2] == 255 &&
+              pixel(&frames[0], type, 275, 150)[0] == 255 &&
+              pixel(&frames[1], type, 150, 150)[0] == 255 &&
+              same_target(&frames[0], &frames[2], type);
+    }
+    for (int i = 0; i < 3; i++)
+        release(&frames[i]);
+    ass_free_track(track);
+    return check(ok, "gradient slide overlap or reverse seek");
+}
+
 int main(void)
 {
     ASS_Library *lib = ass_library_init();
@@ -1211,6 +1247,7 @@ int main(void)
     ok &= slide_settings(lib, renderer);
     ok &= slide_paints(lib, renderer);
     ok &= slide_borders(lib, renderer);
+    ok &= slide_overlap(lib, renderer);
     ass_renderer_done(renderer); ass_library_done(lib);
     return ok ? 0 : 1;
 }
