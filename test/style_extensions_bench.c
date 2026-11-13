@@ -105,6 +105,11 @@ int main(int argc, char **argv)
     int frames = atoi(argv[3]);
     const char *workload = argv[4];
     const char *animation = animated_gradient(workload);
+    int expression = !strncmp(workload, "expr-", 5);
+    int literal = !strncmp(workload, "literal-", 8);
+    int expression_control = expression || literal;
+    const char *effect = expression ? workload + 5 : literal ? workload + 8 : "";
+    int expression_style = expression_control && !strcmp(effect, "metadata");
     int height = argc == 8 ? atoi(argv[5]) : 1080;
     int event_count = argc == 8 ? atoi(argv[6]) : 12;
     int sliding = argc == 8 && !strcmp(argv[7], "slide");
@@ -113,7 +118,7 @@ int main(int argc, char **argv)
         return 1;
     int ruby = !strncmp(workload, "furi-", 5);
     int metadata = !strcmp(workload, "furi-metadata");
-    int gradient = !strncmp(workload, "gradient-", 9);
+    int gradient = !strncmp(workload, "gradient-", 9) || expression_style;
     int gradient_metadata = !strcmp(workload, "gradient-metadata");
     const char *gradient_tags = "{\\grd(45,&HFF0000&,&H0000FF&)\\1gra(0,&H00&,&H40&)}";
     if (frames <= 0 || frames > 1000000) return 1;
@@ -137,6 +142,9 @@ int main(int argc, char **argv)
         "0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1\n"
         "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n%s",
         ruby ? "Noto Sans Myanmar" : "Pixel Operator Mono",
+        expression_style ? (expression ?
+            "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\grds(($width-$width)+24)}\n" :
+            "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\grds24}\n") :
         metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\furis70}\n" :
         gradient_metadata ? "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,mangetsu-style,{\\grd(45,&HFF0000&,&H0000FF&)\\1gra(0,&H00&,&H40&)}\n" : "");
     for (int i = 0; i < event_count; i++) {
@@ -157,7 +165,25 @@ int main(int argc, char **argv)
             !strncmp(workload, "box-", 4) ? "BOX" :
             ruby ? "<က|စူဇူကီ> <က||ဆာတို့>" : gradient ? "Gradient" : "Ordinary ASS subtitle text with no Mangetsu metadata.";
         int n;
-        if (animation) {
+        if (expression_control) {
+            const char *overrides = NULL;
+            if (!strcmp(effect, "timing"))
+                overrides = expression ? "\\t($start+100,$start+900,\\fscx120)" : "\\t(100,900,\\fscx120)";
+            else if (!strcmp(effect, "percent"))
+                overrides = expression ? "\\t(10%,-10%,\\fscx120)" : "\\t(100,900,\\fscx120)";
+            else if (!strcmp(effect, "geometry"))
+                overrides = expression ? "\\fscx(($right-$left-$width)+120)" : "\\fscx120";
+            else if (!strcmp(effect, "combined"))
+                overrides = expression ? "\\bord(($height-$height)+3)\\fsp($width-$width+2)\\t(10%,90%,\\fscx(60*2)\\blur(2*2))" :
+                    "\\bord3\\fsp2\\t(100,900,\\fscx120\\blur4)";
+            else if (expression_style)
+                overrides = "\\1grd" BENCH_SOURCE BENCH_T("\\1grd" BENCH_TARGET);
+            if (!overrides)
+                return 1;
+            n = snprintf(script + length, sizeof(script) - length,
+                "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,"
+                "{\\an7\\pos(180,%d)%s}Numeric override benchmark %d\n", 40 + i * 70, overrides, i);
+        } else if (animation) {
             n = snprintf(script + length, sizeof(script) - length,
                 "Dialogue: 0,0:00:00.00,9:00:00.00,Default,,0,0,0,,"
                 "{\\an7\\pos(180,%d)\\fs56%s%s}Sliding gradient benchmark %d\n",
@@ -186,7 +212,7 @@ int main(int argc, char **argv)
     clock_t start = clock();
     for (int i = 0; i < frames; i++) {
         if (animation || gradient) {
-            int now = animation ? 400 + (i % 60) * 8 : i;
+            int now = animation || expression_control ? 400 + (i % 60) * 8 : i;
             ASS_ImageRGBA *list = ass_render_frame_rgba(renderer, track, now, NULL);
             for (ASS_ImageRGBA *im = list; im; im = im->next) {
                 uint32_t geometry[] = {im->dst_x, im->dst_y, im->w, im->h, im->type};
@@ -201,7 +227,8 @@ int main(int argc, char **argv)
             ass_free_images_rgba(list);
             continue;
         }
-        ASS_Image *im = ass_render_frame(renderer, track, i, NULL);
+        int now = expression_control ? 400 + (i % 60) * 8 : i;
+        ASS_Image *im = ass_render_frame(renderer, track, now, NULL);
         for (; im; im = im->next) {
             if ((im->color & 255) == 255)
                 continue;

@@ -12312,6 +12312,7 @@ static struct ass_expr_layout_cache *expression_layout_slot(ASS_Renderer *render
                 sizeof(track->parser_priv->style_extension_revision));
     ADD_KEY(&event->Duration, sizeof(event->Duration));
     ADD_KEY(&style->FontSize, sizeof(*style) - offsetof(ASS_Style, FontSize));
+    ADD_KEY(&track->parser_priv, sizeof(track->parser_priv));
     for (size_t i = 0; i < sizeof(strings) / sizeof(*strings); i++) {
         const char *str = strings[i] ? strings[i] : "";
         ADD_KEY(str, strlen(str) + 1);
@@ -12342,7 +12343,9 @@ static struct ass_expr_layout_cache *expression_layout_slot(ASS_Renderer *render
 
 static bool event_uses_expression_geometry(const ASS_Track *track, const ASS_Event *event)
 {
-    if (track->parser_priv && track->parser_priv->has_geometry_style_expressions)
+    if (track->parser_priv && track->parser_priv->has_geometry_style_expressions &&
+            (ass_style_has_expression_geometry(track, event->Style) ||
+             strstr(event->Text, "\\r")))
         return true;
     for (const char *start = strchr(event->Text, '{'); start;) {
         const char *end = strchr(start + 1, '}');
@@ -12352,6 +12355,13 @@ static bool event_uses_expression_geometry(const ASS_Track *track, const ASS_Eve
             return true;
         start = strchr(end + 1, '{');
     }
+    if (event->Name && *event->Name)
+        for (int i = 0; i < track->colorcode.n_actors; i++) {
+            const ASS_ActorColorcode *actor = &track->colorcode.actors[i];
+            if (actor->Name && actor->Text && !strcmp(event->Name, actor->Name) &&
+                    ass_expr_uses_geometry(actor->Text, actor->Text + strlen(actor->Text)))
+                return true;
+        }
     return false;
 }
 
@@ -12360,7 +12370,8 @@ static bool event_needs_expression_bounds(const ASS_Renderer *renderer, const AS
     const ASS_Track *track = renderer->track;
     return event->Text && event->Style >= 0 && event->Style < track->n_styles &&
         ((track->parser_priv && track->parser_priv->has_geometry_style_expressions) ||
-         strchr(event->Text, '$')) && event_uses_expression_geometry(track, event);
+         strchr(event->Text, '$') || (track->colorcode.n_actors && event->Name && *event->Name)) &&
+        event_uses_expression_geometry(track, event);
 }
 
 /**
@@ -13021,6 +13032,8 @@ bool ass_render_event(RenderContext *state, ASS_Event *event,
             state->expression_baseline = false;
             if (entry && state->expression_bounds.valid)
                 entry->bounds = state->expression_bounds;
+            else if (entry)
+                entry->length = 0;
         }
     }
     return render_event(state, event, event_images, rgba_out);

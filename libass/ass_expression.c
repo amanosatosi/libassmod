@@ -34,30 +34,6 @@ static void spaces(const char **p, const char *end)
         ++*p;
 }
 
-bool ass_expr_candidate(const char *start, const char *end, bool percent)
-{
-    if (!start || start >= end)
-        return false;
-    spaces(&start, end);
-    for (const char *p = start; p < end; p++) {
-        switch (*p) {
-        case '$': case '*': case '/': case '(': case ')':
-            return true;
-        case '%':
-            if (percent)
-                return true;
-            break;
-        case '+': case '-':
-            if (p > start && !(p == start + 1 && *start == '~') &&
-                    !((p[-1] == 'e' || p[-1] == 'E') &&
-                      p > start + 1 && (ascii_digit(p[-2]) || p[-2] == '.')))
-                return true;
-            break;
-        }
-    }
-    return false;
-}
-
 static int variable_id(const char *p, const char *end)
 {
     for (int i = 0; i < EXPR_VARIABLES; i++)

@@ -26,8 +26,8 @@ def main():
             for revision in order:
                 binary = baseline if revision == 'baseline' else candidate
                 # Match new geometry/layout against equivalent old syntax.
-                reference = {'box-asymmetric': 'box-asymmetric-reference',
-                             'ta-multiline': 'ta-explicit'}
+                reference = {} if os.environ.get('COMPARE_EXPRESSIONS') else {
+                    'box-asymmetric': 'box-asymmetric-reference', 'ta-multiline': 'ta-explicit'}
                 source = reference.get(workload, workload) if revision == 'baseline' else workload
                 run = subprocess.check_output([binary, myanmar, latin, str(frames), source], text=True)
                 samples[revision].append(json.loads(run))
@@ -46,8 +46,31 @@ def main():
     inline = results['furi-inline']['samples']['candidate'][0]
     if any(s['checksum'] != inline['checksum'] for s in inherited):
         raise RuntimeError('Inherited ruby differs from inline ruby benchmark geometry')
+    if os.environ.get('COMPARE_EXPRESSIONS'):
+        for workload in ('timing', 'percent', 'geometry', 'combined', 'metadata'):
+            samples = {'baseline': [], 'candidate': []}
+            for trial in range(trials):
+                order = ('baseline', 'candidate') if trial % 2 == 0 else ('candidate', 'baseline')
+                for revision in order:
+                    binary, prefix = (baseline, 'literal-') if revision == 'baseline' else (candidate, 'expr-')
+                    run = subprocess.check_output(
+                        [binary, myanmar, latin, str(frames), prefix + workload], text=True)
+                    samples[revision].append(json.loads(run))
+            checksums = {s['checksum'] for runs in samples.values() for s in runs}
+            if len(checksums) != 1:
+                raise RuntimeError(f'{workload}: expressions differ from literal controls')
+            medians = {key: statistics.median(s['cpu_seconds'] for s in runs)
+                       for key, runs in samples.items()}
+            mad = {key: 100 * statistics.median(abs(s['cpu_seconds'] - medians[key])
+                                               for s in runs) / medians[key]
+                   for key, runs in samples.items()}
+            results['expr-' + workload] = {
+                'samples': samples, 'median_cpu_seconds': medians,
+                'median_absolute_deviation_percent': mad,
+                'change_percent': 100 * (medians['candidate'] / medians['baseline'] - 1),
+            }
     report = {'platform': platform.platform(), 'compiler': subprocess.check_output(['cc', '--version'], text=True),
-              'baseline_sha': '014ed134c36b45f5ce2d4173964f02a221f0ad3b',
+              'baseline_sha': os.environ.get('PERF_BASELINE_SHA', '014ed134c36b45f5ce2d4173964f02a221f0ad3b'),
               'candidate_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'cpu_affinity': affinity, 'warmup_frames': 100, 'frames': frames, 'trials': trials,
               'results': results, 'inherited_ruby': inherited}

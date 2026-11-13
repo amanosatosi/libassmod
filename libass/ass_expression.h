@@ -42,7 +42,32 @@ typedef struct {
     ASS_Expression expr;
 } ASS_ExprCacheEntry;
 
-bool ass_expr_candidate(const char *start, const char *end, bool percent);
+/* Keep typical literal operands on a short local scan. */
+static inline bool ass_expr_candidate(const char *start, const char *end, bool percent)
+{
+    if (!start)
+        return false;
+    while (start < end && (*start == ' ' || *start == '\t'))
+        start++;
+    for (const char *p = start; p < end; p++) {
+        switch (*p) {
+        case '$': case '*': case '/': case '(': case ')':
+            return true;
+        case '%':
+            if (percent)
+                return true;
+            break;
+        case '+': case '-':
+            if (p > start && !(p == start + 1 && *start == '~') &&
+                    !((p[-1] == 'e' || p[-1] == 'E') && p > start + 1 &&
+                      ((p[-2] >= '0' && p[-2] <= '9') || p[-2] == '.')))
+                return true;
+            break;
+        }
+    }
+    return false;
+}
+
 bool ass_expr_uses_geometry(const char *start, const char *end);
 bool ass_expr_compile(const char *start, const char *end, bool percent,
                       ASS_Expression *out);

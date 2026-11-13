@@ -1771,6 +1771,22 @@ static void apply_gradient_slide_setting(RenderContext *state, double *setting,
     }
 }
 
+static bool style_geometry_slide(const struct ass_style_extension *patch)
+{
+    if (patch)
+        for (int i = 0; i < patch->n_slide_expressions; i++)
+            if (patch->slide_expressions[i].expression.geometry)
+                return true;
+    return false;
+}
+
+bool ass_style_has_expression_geometry(const ASS_Track *track, int sid)
+{
+    const struct parser_priv *parser = track->parser_priv;
+    return parser && sid >= 0 && sid < parser->n_style_extensions &&
+           style_geometry_slide(parser->style_extensions[sid]);
+}
+
 static void apply_extension_values(RenderContext *state,
                                     const struct ass_style_extension *patch)
 {

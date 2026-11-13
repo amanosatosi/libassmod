@@ -102,6 +102,7 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                      bool nested);
 int ass_event_has_hard_overrides(char *str);
 bool ass_event_has_clip_transforms(char *str);
+bool ass_style_has_expression_geometry(const ASS_Track *track, int sid);
 void ass_apply_fade(uint32_t *clr, int fade);
 void ass_apply_fade_color(uint32_t *clr, FadeColorState fade_color);
 void ass_apply_fades(uint32_t *clr, int fade, FadeColorState fade_color);

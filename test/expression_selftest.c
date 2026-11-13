@@ -158,9 +158,62 @@ static bool renders(ASS_Library *lib, ASS_Renderer *renderer)
     return ok;
 }
 
+static bool attach_font(ASS_Library *lib, const char *path)
+{
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return false;
+    long size = !fseek(file, 0, SEEK_END) ? ftell(file) : -1;
+    char *bytes = size > 0 && size <= 16 * 1024 * 1024 ? ass_malloc(size) : NULL;
+    bool ok = bytes && !fseek(file, 0, SEEK_SET) && fread(bytes, 1, size, file) == (size_t) size;
+    if (ok)
+        ass_add_font(lib, path, bytes, size);
+    ass_free(bytes);
+    fclose(file);
+    return ok;
+}
+
+static bool layout(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    const struct { const char *tags, *text; } cases[] = {
+        {"\\an8\\pos(320,60)", "office $10 ffi"},
+        {"\\an5\\pos(320,180)", "short\\Nlonger line\\Nthird line"},
+        {"\\an7\\fs80\\q0", "Several long words that wrap across more than one line"},
+        {"\\an7\\pos(80,100)\\fnNoto Sans Myanmar", "မြန်မာ ဆာတို့"},
+        {"\\an7\\pos(80,100)\\vert1", "漢字かな"},
+        {"\\an7\\pos(80,100)\\furi1", "<漢字|かんじ> 漢字"},
+        {"\\an5\\pos(320,180)\\ct(m -140 0 l 0 -25 140 0)", "curved text"},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        char expression[512], literal[512];
+        snprintf(expression, sizeof(expression), "%s\\fscx(120+($right-$left-$width))"
+                 "\\bord(2+($bottom-$top-$height))", cases[i].tags);
+        snprintf(literal, sizeof(literal), "%s\\fscx120\\bord2", cases[i].tags);
+        ASS_Track *actual = read_track(lib, expression, cases[i].text, "");
+        ASS_Track *expected = read_track(lib, literal, cases[i].text, "");
+        bool good = actual && expected;
+        if (good) {
+            for (int scale = 1; scale <= 2; scale++) {
+                ass_set_frame_size(renderer, 640 * scale, 360 * scale);
+                uint64_t ref = frame(renderer, expected, 8500);
+                uint64_t first = frame(renderer, actual, 8500);
+                good &= ref && first == ref && frame(renderer, actual, 7100) == first;
+            }
+        }
+        if (!good)
+            fprintf(stderr, "Expression layout mismatch: %s\n", cases[i].tags);
+        if (actual) ass_free_track(actual);
+        if (expected) ass_free_track(expected);
+        ok &= good;
+    }
+    ass_set_frame_size(renderer, 640, 360);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 2 || !arithmetic())
+    if (argc != 4 || !arithmetic())
         return 1;
     ASS_Library *lib = ass_library_init();
     ASS_Renderer *renderer = lib ? ass_renderer_init(lib) : NULL;
@@ -169,8 +222,10 @@ int main(int argc, char **argv)
         return 2;
     }
     ass_set_frame_size(renderer, 640, 360);
+    bool ok = attach_font(lib, argv[2]) && attach_font(lib, argv[3]);
     ass_set_fonts(renderer, argv[1], NULL, ASS_FONTPROVIDER_NONE, NULL, 0);
-    bool ok = renders(lib, renderer);
+    ok &= renders(lib, renderer);
+    ok &= layout(lib, renderer);
     ass_renderer_done(renderer);
     ass_library_done(lib);
     return ok ? 0 : 1;

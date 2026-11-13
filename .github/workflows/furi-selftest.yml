@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          ref: 014ed134c36b45f5ce2d4173964f02a221f0ad3b
+          ref: 4710449b1ab248ab0efd6ef32f45f543c450ebec
           path: .bench-baseline
       - name: Install benchmark dependencies
         run: |
@@ -57,6 +57,9 @@ jobs:
               -L"$build/libass" -Wl,-rpath,"$PWD/$build/libass" -lass -o "$build/style-bench"
           done
       - name: Compare warmed baseline and candidate rendering
+        env:
+          COMPARE_EXPRESSIONS: '1'
+          PERF_BASELINE_SHA: 4710449b1ab248ab0efd6ef32f45f543c450ebec
         run: |
           python3 .github/scripts/compare-style-performance.py \
             ./perf-build-baseline/style-bench ./perf-build-candidate/style-bench \
