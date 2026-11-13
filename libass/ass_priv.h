@@ -73,6 +73,8 @@ struct parser_priv {
     // Indexed by ASS style ID; allocated only for mangetsu-style metadata.
     struct ass_style_extension **style_extensions;
     int n_style_extensions;
+    bool has_geometry_style_expressions;
+    unsigned style_extension_revision;
 
     long long prune_delay;
     long long prune_next_ts;

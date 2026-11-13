@@ -45,6 +45,7 @@
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
 #include "gradient.h"
+#include "ass_expression.h"
 
 #define cmp_event_layer ass_cmp_event_layer
 #define fix_collisions ass_fix_collisions
@@ -843,6 +844,8 @@ typedef struct {
 } LineAlignment;
 
 struct render_context {
+    ASS_ExprBounds expression_bounds;
+    bool expression_baseline;
     ASS_Renderer *renderer;
     TextInfo text_info;
     ASS_Shaper *shaper;
@@ -1102,6 +1105,8 @@ struct ass_renderer {
     } chat_cache[8];
     unsigned chat_cache_next;
     ASS_ScrollDefinition *scroll_cache;
+    ASS_ExprCacheEntry *expression_cache; // fixed-size, allocated on first use
+    struct ass_expr_layout_cache *expression_layout_cache;
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size

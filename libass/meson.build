@@ -64,6 +64,7 @@ libass_src = files(
     'ass_library.c',
     'ass_outline.c',
     'ass_parse.c',
+    'ass_expression.c',
     'gradient.c',
     'ass_rasterizer.c',
     'ass_render.c',

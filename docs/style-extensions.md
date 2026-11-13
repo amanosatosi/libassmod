@@ -24,6 +24,8 @@ styles are ignored with a warning instead of modifying the fallback style.
 
 ## Supported properties
 
+Gradient slide widths can use [event timing and layout expressions](expression-variables.md#baseline-layout-and-reusable-styles).
+
 The supported set contains typed event-layout defaults and persistent, pointer-free appearance defaults:
 
 | Tags | Meaning |

@@ -45,6 +45,8 @@ This project favors **working previews** over exact matching.
 
 ## Supported VSFilterMod-style tags
 
+Mangetsu also supports [numeric expressions and event-relative transform timing](docs/expression-variables.md).
+
 ### Typography & text attributes
 
 - `\fsc<scale>`  

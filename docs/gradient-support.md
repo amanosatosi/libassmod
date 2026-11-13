@@ -75,6 +75,9 @@ outside fallback. CI results establish validation.
 
 ## Sliding gradient transitions
 
+Slide widths can use [numeric expressions](expression-variables.md), such as
+`\grds($height/2)`. Transform times can use percentages of event duration.
+
 Ordinary `\t` transforms interpolate gradient angles, positions, and stops
 across the whole painted area at once. Set `\grds20` before a transform to
 reveal the destination paint progressively across the surface. Each endpoint

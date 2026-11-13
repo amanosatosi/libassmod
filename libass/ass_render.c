@@ -405,6 +405,8 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (!render_priv)
         return;
 
+    free(render_priv->expression_cache);
+    free(render_priv->expression_layout_cache);
     ass_frame_unref(render_priv->images_root);
     ass_frame_unref(render_priv->prev_images_root);
 
@@ -12267,18 +12269,111 @@ static void release_chat_scene(ASS_ChatScene *scene, bool cached)
 
 #include "ass_event_reuse.h"
 
+/* Layout cache entries own their source key. Rendering can switch tracks,
+ * prune events, or revisit times in either order without borrowing text. */
+#define EXPR_LAYOUT_CACHE_SIZE 32
+#define EXPR_LAYOUT_KEY_LIMIT 8192
+struct ass_expr_layout_cache {
+    ASS_ExprBounds bounds;
+    size_t length;
+    char key[EXPR_LAYOUT_KEY_LIMIT];
+};
+
+static struct ass_expr_layout_cache *expression_layout_slot(ASS_Renderer *renderer,
+                                                            const ASS_Event *event,
+                                                            bool *hit)
+{
+    const ASS_Track *track = renderer->track;
+    const ASS_Style *style = &track->styles[event->Style];
+    const char *strings[] = {event->Text, event->Name, event->Effect, style->Name,
+                             style->FontName, track->Language};
+    char key[EXPR_LAYOUT_KEY_LIMIT];
+    size_t len = 0;
+#define ADD_KEY(ptr, size) do { \
+    size_t bytes = (size); \
+    if (bytes > sizeof(key) - len) \
+        return NULL; \
+    memcpy(key + len, (ptr), bytes); \
+    len += bytes; \
+} while (0)
+    int params[] = {
+        renderer->render_id, event->Style, event->MarginL, event->MarginR, event->MarginV,
+        track->PlayResX, track->PlayResY, track->LayoutResX, track->LayoutResY,
+        track->WrapStyle, track->Kerning, track->ScaledBorderAndShadow, track->track_type,
+        renderer->settings.shaper, renderer->settings.hinting, renderer->settings.use_margins,
+    };
+    double layout[] = {renderer->settings.line_spacing, renderer->settings.line_position,
+                       renderer->par_scale_x};
+    ADD_KEY(params, sizeof(params));
+    ADD_KEY(layout, sizeof(layout));
+    ADD_KEY(&renderer->num_emfonts, sizeof(renderer->num_emfonts));
+    if (track->parser_priv)
+        ADD_KEY(&track->parser_priv->style_extension_revision,
+                sizeof(track->parser_priv->style_extension_revision));
+    ADD_KEY(&event->Duration, sizeof(event->Duration));
+    ADD_KEY(&style->FontSize, sizeof(*style) - offsetof(ASS_Style, FontSize));
+    for (size_t i = 0; i < sizeof(strings) / sizeof(*strings); i++) {
+        const char *str = strings[i] ? strings[i] : "";
+        ADD_KEY(str, strlen(str) + 1);
+    }
+#undef ADD_KEY
+    /* Actors and named resets can read additional, manually editable style
+     * records. Decline caching where the complete dependency key is absent. */
+    if (track->colorcode.n_actors || strstr(event->Text, "\\r"))
+        return NULL;
+    if (!renderer->expression_layout_cache)
+        renderer->expression_layout_cache = calloc(EXPR_LAYOUT_CACHE_SIZE,
+            sizeof(*renderer->expression_layout_cache));
+    if (!renderer->expression_layout_cache)
+        return NULL;
+    unsigned hash = 2166136261u;
+    for (size_t i = 0; i < len; i++)
+        hash = (hash ^ (uint8_t) key[i]) * 16777619u;
+    struct ass_expr_layout_cache *entry =
+        &renderer->expression_layout_cache[hash % EXPR_LAYOUT_CACHE_SIZE];
+    *hit = entry->length == len && !memcmp(entry->key, key, len);
+    if (!*hit) {
+        memcpy(entry->key, key, len);
+        entry->length = len;
+        entry->bounds = (ASS_ExprBounds) {0};
+    }
+    return entry;
+}
+
+static bool event_uses_expression_geometry(const ASS_Track *track, const ASS_Event *event)
+{
+    if (track->parser_priv && track->parser_priv->has_geometry_style_expressions)
+        return true;
+    for (const char *start = strchr(event->Text, '{'); start;) {
+        const char *end = strchr(start + 1, '}');
+        if (!end)
+            break;
+        if (ass_expr_uses_geometry(start + 1, end))
+            return true;
+        start = strchr(end + 1, '{');
+    }
+    return false;
+}
+
+static bool event_needs_expression_bounds(const ASS_Renderer *renderer, const ASS_Event *event)
+{
+    const ASS_Track *track = renderer->track;
+    return event->Text && event->Style >= 0 && event->Style < track->n_styles &&
+        ((track->parser_priv && track->parser_priv->has_geometry_style_expressions) ||
+         strchr(event->Text, '$')) && event_uses_expression_geometry(track, event);
+}
+
 /**
  * \brief Main ass rendering function, glues everything together
  * \param event event to render
  * \param event_images struct containing resulting images, will also be initialized
  * Process event, appending resulting ASS_Image's to images_root.
  */
-bool
-ass_render_event(RenderContext *state, ASS_Event *event,
-                 EventImages *event_images, ASS_ImageRGBA **rgba_out)
+static bool render_event(RenderContext *state, ASS_Event *event,
+                         EventImages *event_images, ASS_ImageRGBA **rgba_out)
 {
     ASS_Renderer *render_priv = state->renderer;
-    if (event->Style >= render_priv->track->n_styles) {
+    if (event->Style < 0 || event->Style >= render_priv->track->n_styles) {
         ass_msg(render_priv->library, MSGL_WARN, "No style found");
         return false;
     }
@@ -12339,7 +12434,7 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     split_style_runs(state);
     ass_vertical_mark_syllables(state);
 
-    if (repeated_geometry_lookup(state)) {
+    if (!state->expression_baseline && repeated_geometry_lookup(state)) {
         resolve_event_clip(state);
         repeated_geometry_render(state, event_images, rgba_out);
         free_render_context(state);
@@ -12464,6 +12559,13 @@ ass_render_event(RenderContext *state, ASS_Event *event,
         return false;
     }
 
+    if (chat && state->expression_baseline) {
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return false;
+    }
     if (chat) {
         bool ok = render_chat_scene(state, event, event_images, rgba_out,
                                     chat, ranges, &title, &chat_metrics);
@@ -12737,6 +12839,30 @@ ass_render_event(RenderContext *state, ASS_Event *event,
     device_x = object_anchor.x - text_base_x;
     device_y = object_anchor.y - text_base_y;
 
+    if (state->expression_baseline) {
+        GradientScriptMapping mapping = gradient_script_mapping(render_priv);
+        double par = render_priv->par_scale_x;
+        if (mapping.scale_x > 0 && mapping.scale_y > 0 &&
+                !(state->evt_type & (EVENT_HSCROLL | EVENT_VSCROLL)) &&
+                !state->n_scroll_contexts) {
+            ASS_ExprBounds bounds = {
+                .left = (device_x - mapping.origin_x + render_bbox.x_min) * par / mapping.scale_x,
+                .right = (device_x - mapping.origin_x + render_bbox.x_max) * par / mapping.scale_x,
+                .top = (device_y - mapping.origin_y + render_bbox.y_min) / mapping.scale_y,
+                .bottom = (device_y - mapping.origin_y + render_bbox.y_max) / mapping.scale_y,
+            };
+            bounds.valid = isfinite(bounds.left) && isfinite(bounds.right) &&
+                isfinite(bounds.top) && isfinite(bounds.bottom) &&
+                bounds.right >= bounds.left && bounds.bottom >= bounds.top;
+            state->expression_bounds = bounds;
+        }
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return state->expression_bounds.valid;
+    }
+
     update_glyph_jitter_offsets(state);
 
     resolve_event_clip(state);
@@ -12872,6 +12998,34 @@ static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv)
             track->parser_priv->feature_flags & FEATURE_MASK(ASS_FEATURE_WHOLE_TEXT_LAYOUT));
 }
 
+bool ass_render_event(RenderContext *state, ASS_Event *event,
+                      EventImages *event_images, ASS_ImageRGBA **rgba_out)
+{
+    ASS_Renderer *renderer = state->renderer;
+    state->expression_bounds = (ASS_ExprBounds) {0};
+    if (event_needs_expression_bounds(renderer, event)) {
+        bool hit = false;
+        struct ass_expr_layout_cache *entry = expression_layout_slot(renderer, event, &hit);
+        if (hit) {
+            state->expression_bounds = entry->bounds;
+        } else {
+            long long now = renderer->time;
+            int has_rgba = renderer->track->has_rgba;
+            int has_blend = renderer->track->has_blend;
+            state->expression_baseline = true;
+            renderer->time = event->Start;
+            render_event(state, event, event_images, NULL);
+            renderer->time = now;
+            renderer->track->has_rgba = has_rgba;
+            renderer->track->has_blend = has_blend;
+            state->expression_baseline = false;
+            if (entry && state->expression_bounds.valid)
+                entry->bounds = state->expression_bounds;
+        }
+    }
+    return render_event(state, event, event_images, rgba_out);
+}
+
 /**
  * \brief Start a new frame
  */
@@ -12889,6 +13043,10 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
     if (render_priv->library != track->library)
         return false;
 
+    if (render_priv->track != track) {
+        free(render_priv->expression_layout_cache);
+        render_priv->expression_layout_cache = NULL;
+    }
     render_priv->track = track;
     ass_clear_repeated_geometry(render_priv);
     memset(&render_priv->repeated_event_stats, 0,
