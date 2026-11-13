@@ -214,14 +214,16 @@ gradient_surface_unit = executable(
     link_with: libass_for_tools,
 )
 test('gradient-surface-pixels', gradient_surface_unit, timeout: 180)
-test('gradient-slide-lifetime', gradient_surface_unit, args: ['--slide-lifetime'], timeout: 120)
+gradient_test_env = {'GRADIENT_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')}
+test('gradient-slide-lifetime', gradient_surface_unit, args: ['--slide-lifetime'],
+     env: gradient_test_env, timeout: 120)
 if host_machine.system() == 'linux' and get_option('default_library') != 'shared'
     gradient_slide_fault_unit = executable('gradient_slide_fault_unit',
         files('gradient_surface_selftest.c'),
         include_directories: incs, dependencies: deps, link_with: libass_for_tools,
         c_args: ['-DGRADIENT_SLIDE_FAULT_TEST'], link_args: ['-Wl,--wrap=malloc'], install: false)
     test('gradient-slide-allocation-failure', gradient_slide_fault_unit,
-         args: ['--slide-lifetime'], timeout: 120)
+         args: ['--slide-lifetime'], env: gradient_test_env, timeout: 120)
 endif
 
 mangetsu_motion_scale_unit = executable(

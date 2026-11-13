@@ -1069,6 +1069,7 @@ static bool slide_settings(ASS_Library *lib, ASS_Renderer *renderer)
         {"\\grds20\\1grds-5\\grdsnan\\grds(1,2)", "\\grds20"},
         {"\\grds20\\1grdsinf\\1grds(10,)\\grds20junk", "\\grds20"},
         {"\\grds20.5", "\\1grds(20.5)"},
+        {"\\\xEF\xBC\x91" "grds20", "\\1grds20"},
         {"\\2grds0\\4gras5\\10bbgrds9", ""},
         {"\\grds0\\1grds20\\1grds5", "\\grds5"},
     };
@@ -1372,9 +1373,15 @@ int main(int argc, char **argv)
     if (!renderer) return 2;
     ass_set_frame_size(renderer, W, H);
     if (argc == 2 && !strcmp(argv[1], "--slide-lifetime")) {
-        // Drawings need no host font provider, keeping leak reports specific
-        // to libass and its snapshots.
-        ass_set_fonts(renderer, NULL, NULL, ASS_FONTPROVIDER_NONE, NULL, 0);
+        // Use a bundled face without a host provider. Event parsing still
+        // requires a font, even when the only glyph is a drawing.
+        const char *font_path = getenv("GRADIENT_TEST_FONT");
+        if (!font_path) {
+            fprintf(stderr, "GRADIENT_TEST_FONT is required for the lifetime test\n");
+            ass_renderer_done(renderer); ass_library_done(lib);
+            return 2;
+        }
+        ass_set_fonts(renderer, font_path, NULL, ASS_FONTPROVIDER_NONE, NULL, 0);
         bool ok = slide_lifetime(lib, renderer);
         ass_renderer_done(renderer); ass_library_done(lib);
         return ok ? 0 : 1;

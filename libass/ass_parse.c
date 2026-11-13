@@ -1459,12 +1459,17 @@ static double *gradient_slide_tag(RenderContext *state, char *p, char *end, char
     int channel = 0;
     if (*name >= '0' && *name <= '9') {
         channel = *name++ - '0';
-        if (!channel)
+    } else if ((unsigned char) *name >= 0x80) {
+        int digit = read_decimal_digit(&name, end);
+        if (digit < 0)
             return NULL;
-        if (channel == 1 && *name == '0') {
-            channel = 10;
-            name++;
-        }
+        channel = digit;
+    }
+    if (!channel && name != p)
+        return NULL;
+    if (channel == 1 && name < end && *name == '0') {
+        channel = 10;
+        name++;
     }
     if (end - name < 3)
         return NULL;
@@ -3604,6 +3609,8 @@ static void apply_numbered_border_tag(RenderContext *state,
                                       char *name_end, char *tag_end,
                                       double pwr, bool nested)
 {
+    if ((unsigned) layer >= ASS_BORDER_LAYERS_MAX)
+        return;
     if ((tag == BORDER_TAG_COLOR_GRADIENT || tag == BORDER_TAG_ALPHA_GRADIENT) &&
             ((*name_end == '(' && (tag_end <= name_end + 1 || tag_end[-1] != ')')) ||
              !valid_vector_gradient_args(args, nargs, tag == BORDER_TAG_ALPHA_GRADIENT)))
