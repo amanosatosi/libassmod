@@ -4853,6 +4853,17 @@ static bool setup_border_outline_key(RenderContext *state, GlyphInfo *info,
     return true;
 }
 
+static bool charge_perspective_bitmap(RenderContext *state, const Bitmap *bm)
+{
+    if (bm->h <= 0 || bm->stride <= 0 ||
+            (size_t) bm->stride > state->perspective_pixels_left / bm->h) {
+        state->perspective_failed = true;
+        return false;
+    }
+    state->perspective_pixels_left -= (size_t) bm->stride * bm->h;
+    return true;
+}
+
 static bool load_border_bitmap(RenderContext *state, GlyphInfo *info,
                                BitmapHashKey *base_key,
                                OutlineHashKey *ol_key,
@@ -4903,8 +4914,13 @@ static bool load_border_bitmap(RenderContext *state, GlyphInfo *info,
     }
 
 cleanup:
-    if (base_key->perspective && !ok)
-        state->perspective_failed = true;
+    if (base_key->perspective) {
+        ok = ok && charge_perspective_bitmap(state, *out_bm);
+        if (!ok) {
+            *out_bm = NULL;
+            state->perspective_failed = true;
+        }
+    }
     if (distorted) {
         ass_outline_free(&temp_outline.outline[0]);
         ass_outline_free(&temp_outline.outline[1]);
@@ -4995,6 +5011,10 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
             state->perspective_failed = true;
             return;
         }
+        if (key.perspective && info->bm && !charge_perspective_bitmap(state, info->bm)) {
+            info->bm = NULL;
+            return;
+        }
 
         *pos_o = *pos;
     }
@@ -5082,9 +5102,11 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
         double border_m[3][3];
         bool zero_border = false;
         if (!setup_border_outline_key(state, info, outline, m, m2,
-                                      outer_x, outer_y, &ol_key, border_m,
-                                      &zero_border))
+                                       outer_x, outer_y, &ol_key, border_m,
+                                       &zero_border)) {
+            state->perspective_failed |= key.perspective;
             continue;
+        }
 
         Bitmap **target_bm =
             layer == 0 ? &info->bm_o : &info->bm_border[layer - 1];
@@ -11410,8 +11432,11 @@ static bool bs4_get_bitmap(RenderContext *state, const double matrix[3][3],
 
     *bitmap = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
     bool ok = *bitmap && (*bitmap)->buffer && (*bitmap)->w && (*bitmap)->h;
-    if (!ok)
-        state->perspective_failed |= key.perspective;
+    if (key.perspective) {
+        ok = ok && charge_perspective_bitmap(state, *bitmap);
+        if (!ok)
+            state->perspective_failed = true;
+    }
     return ok;
 }
 
@@ -12523,6 +12548,7 @@ static void setup_perspective(RenderContext *state, ASS_DRect layout,
     ASS_DRect source = {64 * bounds.x_min, 64 * bounds.y_min,
                         64 * bounds.x_max, 64 * bounds.y_max};
     state->perspective_active = ass_perspective_solve(state->perspective_matrix, source, target);
+    state->perspective_pixels_left = 4 * (size_t) PERSPECTIVE_MAX_PIXELS;
 }
 
 /**

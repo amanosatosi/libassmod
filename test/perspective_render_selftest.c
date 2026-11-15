@@ -122,6 +122,7 @@ static void test_output(ASS_Library *lib, ASS_Renderer *r, bool rgba)
     ASS_Track *ordinary = make_track(lib, BASE TEXT);
     ASS_Track *identity = make_track(lib, BASE "\\mpersp(0,0,1,0,1,1,0,1)" TEXT);
     ASS_Track *invalid = make_track(lib, BASE "\\mpersp(0,0,1,1,0,1,1,0)" TEXT);
+    ASS_Track *oversized = make_track(lib, BASE "\\mpersp(0,0,512,0,512,512,0,512)" TEXT);
     ASS_Track *pins = make_track(lib, BASE PIN TEXT);
     ASS_Track *edited = make_track(lib, BASE PIN "\\fs52\\fsp2\\fscx107"
                                   "}Short edit\\NA long second line");
@@ -131,6 +132,7 @@ static void test_output(ASS_Library *lib, ASS_Renderer *r, bool rgba)
     uint64_t plain = render(r, ordinary, 0, rgba);
     CHECK(render(r, identity, 0, rgba) == plain);
     CHECK(render(r, invalid, 0, rgba) == plain);
+    CHECK(render(r, oversized, 0, rgba) == plain);
     CHECK(render(r, crossing, 500, rgba) == plain);
     CHECK(render(r, animation, 0, rgba) == plain);
 
@@ -153,6 +155,7 @@ static void test_output(ASS_Library *lib, ASS_Renderer *r, bool rgba)
     ass_free_track(animation);
     ass_free_track(edited);
     ass_free_track(pins);
+    ass_free_track(oversized);
     ass_free_track(invalid);
     ass_free_track(identity);
     ass_free_track(ordinary);

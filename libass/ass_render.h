@@ -1029,6 +1029,7 @@ struct render_context {
     ASS_DistortParams distort;
     ASS_DVector perspective_pins[4];
     double perspective_matrix[3][3];
+    size_t perspective_pixels_left;
     bool perspective_set, perspective_active, perspective_failed;
     OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
     int curved_text_align;                 // 0 = inherit \an, 1..9 = path anchor
