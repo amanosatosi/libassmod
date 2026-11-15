@@ -245,10 +245,15 @@ mangetsu_motion_scale_unit = executable(
     link_with: libass_for_tools,
 )
 
-# This test intentionally checks private allocation provenance. Run it only
-# where the test links against libass internals; shared Windows exports only
-# the public libass ABI.
+# These tests use private libass internals. Shared Windows exports only the
+# public libass ABI.
 if get_option('default_library') != 'shared'
+    perspective_unit = executable('perspective_unit',
+        files('perspective_test.c', '../libass/ass_perspective.c'), config_h,
+        include_directories: incs, dependencies: deps,
+        link_with: libass_for_tools, install: false)
+    test('perspective-math', perspective_unit)
+
     repeated_event_render_unit = executable('repeated_event_render_unit',
         files('repeated_event_render_selftest.c'),
         include_directories: incs, dependencies: deps,
