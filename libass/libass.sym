@@ -61,3 +61,4 @@ ass_free
 ass_prune_events
 ass_configure_prune
 ass_distort_map_point
+ass_get_perspective_layout

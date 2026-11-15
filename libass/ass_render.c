@@ -37,6 +37,7 @@
 #include "ass_parse.h"
 #include "ass_priv.h"
 #include "ass_distort.h"
+#include "ass_perspective.h"
 #include "ass_rnd.h"
 #include "ass_shaper.h"
 #include "ass_chat.h"
@@ -155,6 +156,8 @@ static ASS_Vector bitmap_ref_border_pos(BitmapRef *ref, int layer);
 #define RASTERIZER_PRECISION 16  // rasterizer spline approximation error in 1/64 pixel units
 #define POSITION_PRECISION 8.0   // rough estimate of transform error in 1/64 pixel units
 #define MAX_PERSP_SCALE 16.0
+#define PERSPECTIVE_MAX_PIXELS (16 * 1024 * 1024)
+#define PERSPECTIVE_MAX_SEGMENTS 65536
 #define SUBPIXEL_ORDER 3  // ~ log2(64 / POSITION_PRECISION)
 #define BLUR_PRECISION (1.0 / 256)  // blur error as fraction of full input range
 #define NBSP 0xa0   // unicode non-breaking space character
@@ -2154,6 +2157,8 @@ static bool quantize_transform(double m[3][3], ASS_Vector *pos,
 
     // Minimal bounding box z coordinate
     double z0 = m[2][2] - fabs(m[2][0]) * dx - fabs(m[2][1]) * dy;
+    if (key->perspective && !(z0 >= m[2][2] / MAX_PERSP_SCALE))
+        return false;
     // z0 clamped to z_center / MAX_PERSP_SCALE to mitigate problems with small z
     w = 1.0 / POSITION_PRECISION / FFMAX(z0, m[2][2] / MAX_PERSP_SCALE);
     double mul[2] = { dx * w, dy * w };  // 1 / q_x, 1 / q_y
@@ -2279,7 +2284,8 @@ static void restore_transform(double m[3][3], const BitmapHashKey *key)
 
     m[0][2] = m[1][2] = 0;
     m[2][2] = 1 + fabs(m[2][0]) * dx + fabs(m[2][1]) * dy;
-    m[2][2] = FFMIN(m[2][2], MAX_PERSP_SCALE);
+    if (!key->perspective)
+        m[2][2] = FFMIN(m[2][2], MAX_PERSP_SCALE);
 
     double center[2] = {
         key->offset.x * (64 >> SUBPIXEL_ORDER),
@@ -3922,6 +3928,9 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->vertical_column_spacing = 0.0;
     state->text_info.native_vertical = false;
     state->fade_color = (FadeColorState) {0};
+    state->perspective_active = state->perspective_failed = state->perspective_set = false;
+    for (int i = 0; i < 4; i++)
+        state->perspective_pins[i] = (ASS_DVector) {i == 1 || i == 2, i >= 2};
     state->distort_enabled = false;
     state->distort_extended = false;
     state->distort = (ASS_DistortParams) {
@@ -4646,6 +4655,18 @@ size_t ass_outline_construct(void *key, void *value, void *priv)
 /**
  * \brief Calculate outline transformation matrix
  */
+static void compose_perspective(const RenderContext *state, double matrix[3][3])
+{
+    double composed[3][3];
+    for (int i = 0; i < 3; i++) {
+        const double *row = state->perspective_matrix[i];
+        for (int j = 0; j < 3; j++)
+            composed[i][j] = row[0] * matrix[0][j] + row[1] * matrix[1][j] +
+                             row[2] * matrix[2][j];
+    }
+    memcpy(matrix, composed, sizeof(composed));
+}
+
 static void calc_transform_matrix(RenderContext *state,
                                   GlyphInfo *info, double m[3][3], double z_basis[3])
 {
@@ -4733,6 +4754,8 @@ static void calc_transform_matrix(RenderContext *state,
             z_basis[1] = -sx;
             z_basis[2] = 0;
         }
+        if (state->perspective_active)
+            compose_perspective(state, m);
         return;
     }
 
@@ -4753,6 +4776,8 @@ static void calc_transform_matrix(RenderContext *state,
         z_basis[1] = cx * cy * offs_y - sx * dist;
         z_basis[2] = cx * cy;
     }
+    if (state->perspective_active)
+        compose_perspective(state, m);
 }
 
 /**
@@ -4878,6 +4903,8 @@ static bool load_border_bitmap(RenderContext *state, GlyphInfo *info,
     }
 
 cleanup:
+    if (base_key->perspective && !ok)
+        state->perspective_failed = true;
     if (distorted) {
         ass_outline_free(&temp_outline.outline[0]);
         ass_outline_free(&temp_outline.outline[1]);
@@ -4903,6 +4930,14 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
     /* A move-only drawing reserves layout metrics, not paint pixels. */
     if (info->drawing_text.str && !outline->outline[0].n_segments)
         return;
+    if (state->perspective_active && info->border_style != 3 &&
+            !outline->outline[0].n_segments && !outline->outline[1].n_segments)
+        return;
+
+    if (state->perspective_active && (state->perspective_failed || info->has_rnd)) {
+        state->perspective_failed = true;
+        return;
+    }
 
     double m1[3][3], m2[3][3], m[3][3], z_basis[3];
     const ASS_Transform *tr = &info->transform;
@@ -4920,8 +4955,11 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
 
     BitmapHashKey key = {0};
     key.outline = outline;
-    if (!quantize_transform(m, pos, offset, first, &key))
+    key.perspective = state->perspective_active;
+    if (!quantize_transform(m, pos, offset, first, &key)) {
+        state->perspective_failed |= key.perspective;
         return;
+    }
 
     *pos_o = *pos;
 
@@ -4951,6 +4989,11 @@ get_bitmap_glyph(RenderContext *state, GlyphInfo *info,
             info->bm = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
             if (!info->bm || !info->bm->buffer)
                 info->bm = NULL;
+        }
+        if (key.perspective && !info->bm &&
+                (outline->outline[0].n_segments || outline->outline[1].n_segments)) {
+            state->perspective_failed = true;
+            return;
         }
 
         *pos_o = *pos;
@@ -5222,8 +5265,22 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
     double m[3][3];
     restore_transform(m, k);
 
-    ASS_Outline outline[2];
-    if (k->matrix_z.x || k->matrix_z.y) {
+    ASS_Outline outline[2] = {0};
+    bool ok = true;
+    if (k->perspective) {
+        unsigned tile = state->renderer->engine.tile_order;
+        ok = ass_perspective_outline(&outline[0], &k->outline->outline[0], m,
+                                     4, PERSPECTIVE_MAX_SEGMENTS, tile, PERSPECTIVE_MAX_PIXELS) &&
+             ass_perspective_outline(&outline[1], &k->outline->outline[1], m,
+                                     4, PERSPECTIVE_MAX_SEGMENTS, tile, PERSPECTIVE_MAX_PIXELS);
+        ASS_Rect bounds;
+        rectangle_reset(&bounds);
+        if (ok) {
+            ass_outline_update_cbox(&outline[0], &bounds);
+            ass_outline_update_cbox(&outline[1], &bounds);
+            ok = ass_perspective_raster_fits(&bounds, tile, PERSPECTIVE_MAX_PIXELS);
+        }
+    } else if (k->matrix_z.x || k->matrix_z.y) {
         ass_outline_transform_3d(&outline[0], &k->outline->outline[0], m);
         ass_outline_transform_3d(&outline[1], &k->outline->outline[1], m);
     } else {
@@ -5232,7 +5289,7 @@ size_t ass_bitmap_construct(void *key, void *value, void *priv)
     }
 
 
-    if (!ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
+    if (!ok || !ass_outline_to_bitmap(state, bm, &outline[0], &outline[1]))
         memset(bm, 0, sizeof(*bm));
     else {
         bm->sub_x = (uint8_t) (k->offset.x & ((1 << SUBPIXEL_ORDER) - 1));
@@ -10303,6 +10360,28 @@ static void render_decoration_list_to_bitmaps(RenderContext *state,
     }
 }
 
+static bool perspective_composite_fits(const CombinedBitmapInfo *info)
+{
+    ASS_Rect bounds;
+    rectangle_reset(&bounds);
+    for (int i = 0; i < info->bitmap_count; i++) {
+        const BitmapRef *ref = &info->bitmaps[i];
+        for (int layer = -1; layer < ASS_BORDER_LAYERS_MAX; layer++) {
+            const Bitmap *bm = layer < 0 ? ref->bm :
+                layer == 0 ? ref->bm_o : ref->bm_border[layer - 1];
+            if (!bm)
+                continue;
+            ASS_Vector pos = layer < 0 ? ref->pos :
+                layer == 0 ? ref->pos_o : ref->pos_border[layer - 1];
+            int x = pos.x + bm->left, y = pos.y + bm->top;
+            rectangle_update(&bounds, x, y, x + bm->w, y + bm->h);
+        }
+    }
+    int64_t w = (int64_t) bounds.x_max - bounds.x_min;
+    int64_t h = (int64_t) bounds.y_max - bounds.y_min;
+    return w <= 0 || h <= 0 || w <= PERSPECTIVE_MAX_PIXELS / h;
+}
+
 // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
 static void render_and_combine_glyphs(RenderContext *state)
 {
@@ -10325,6 +10404,19 @@ static void render_and_combine_glyphs(RenderContext *state)
         FuriGroup *group = &text_info->furi_groups[i];
         render_decoration_list_to_bitmaps(state, group->glyphs, group->length,
                                           &nb_bitmaps, &combined_info);
+    }
+
+    if (state->perspective_active) {
+        for (unsigned i = 0; i < nb_bitmaps && !state->perspective_failed; i++)
+            state->perspective_failed = !perspective_composite_fits(&combined_info[i]);
+        if (state->perspective_failed) {
+            for (unsigned i = 0; i < nb_bitmaps; i++) {
+                free(combined_info[i].bitmaps);
+                free_owned_source_image(&combined_info[i]);
+            }
+            text_info->n_bitmaps = 0;
+            return;
+        }
     }
 
     for (int i = 0; i < nb_bitmaps; i++) {
@@ -11308,13 +11400,19 @@ static bool bs4_get_bitmap(RenderContext *state, const double matrix[3][3],
 
     BitmapHashKey key = {0};
     key.outline = outline;
+    key.perspective = state->perspective_active;
     double transform[3][3];
     memcpy(transform, matrix, sizeof(transform));
-    if (!quantize_transform(transform, pos, NULL, true, &key))
+    if (!quantize_transform(transform, pos, NULL, true, &key)) {
+        state->perspective_failed |= key.perspective;
         return false;
+    }
 
     *bitmap = ass_cache_get(render_priv->cache.bitmap_cache, &key, state);
-    return *bitmap && (*bitmap)->buffer && (*bitmap)->w && (*bitmap)->h;
+    bool ok = *bitmap && (*bitmap)->buffer && (*bitmap)->w && (*bitmap)->h;
+    if (!ok)
+        state->perspective_failed |= key.perspective;
+    return ok;
 }
 
 static bool bs4_mask_has_coverage(const uint8_t *mask, int width, int height)
@@ -12389,6 +12487,44 @@ static bool event_needs_expression_bounds(const ASS_Renderer *renderer, const AS
         event_uses_expression_geometry(track, event);
 }
 
+static void setup_perspective(RenderContext *state, ASS_DRect layout,
+                              double device_x, double device_y, bool enable,
+                              ASS_DRect *rect, ASS_DVector corners[4])
+{
+    const ASS_Renderer *renderer = state->renderer;
+    double par = renderer->par_scale_x;
+    int margin = renderer->settings.left_margin;
+    double x = (device_x - margin) * par + margin;
+    ASS_DRect bounds = {x + layout.x_min * par, device_y + layout.y_min,
+                        x + layout.x_max * par, device_y + layout.y_max};
+    if (!(bounds.x_min < bounds.x_max && bounds.y_min < bounds.y_max) ||
+            !isfinite(bounds.x_min) || !isfinite(bounds.x_max) ||
+            !isfinite(bounds.y_min) || !isfinite(bounds.y_max))
+        return;
+    *rect = bounds;
+
+    double w = bounds.x_max - bounds.x_min, h = bounds.y_max - bounds.y_min;
+    ASS_DVector target[4];
+    bool changed = false;
+    for (int i = 0; i < 4; i++) {
+        double u = i == 1 || i == 2, v = i >= 2;
+        ASS_DVector pin = state->perspective_pins[i];
+        changed |= pin.x != u || pin.y != v;
+        target[i] = (ASS_DVector) {64 * (bounds.x_min + pin.x * w),
+                                  64 * (bounds.y_min + pin.y * h)};
+        corners[i] = isfinite(target[i].x) && isfinite(target[i].y) ?
+            (ASS_DVector) {target[i].x / 64, target[i].y / 64} :
+            (ASS_DVector) {bounds.x_min + u * w, bounds.y_min + v * h};
+    }
+    if (!enable || !state->perspective_set || !changed || state->n_scroll_contexts ||
+            (state->evt_type & (EVENT_HSCROLL | EVENT_VSCROLL)))
+        return;
+
+    ASS_DRect source = {64 * bounds.x_min, 64 * bounds.y_min,
+                        64 * bounds.x_max, 64 * bounds.y_max};
+    state->perspective_active = ass_perspective_solve(state->perspective_matrix, source, target);
+}
+
 /**
  * \brief Main ass rendering function, glues everything together
  * \param event event to render
@@ -12396,7 +12532,8 @@ static bool event_needs_expression_bounds(const ASS_Renderer *renderer, const AS
  * Process event, appending resulting ASS_Image's to images_root.
  */
 static bool render_event(RenderContext *state, ASS_Event *event,
-                         EventImages *event_images, ASS_ImageRGBA **rgba_out)
+                         EventImages *event_images, ASS_ImageRGBA **rgba_out,
+                         bool enable_perspective)
 {
     ASS_Renderer *render_priv = state->renderer;
     if (event->Style < 0 || event->Style >= render_priv->track->n_styles) {
@@ -12607,6 +12744,7 @@ static bool render_event(RenderContext *state, ASS_Event *event,
     /* Keep the box's source rectangle in untransformed event-local layout. */
     ASS_DRect bs4_layout_bbox;
     compute_string_bbox(text_info, &bs4_layout_bbox);
+    ASS_DRect perspective_layout = bs4_layout_bbox;
     add_furi_to_bbox(text_info, &bs4_layout_bbox);
 
     bool distorted_text = apply_distortion(state);
@@ -12889,6 +13027,11 @@ static bool render_event(RenderContext *state, ASS_Event *event,
         return state->expression_bounds.valid;
     }
 
+    ASS_DRect perspective_rect = {0};
+    ASS_DVector perspective_corners[4] = {0};
+    setup_perspective(state, perspective_layout, device_x, device_y, enable_perspective,
+                      &perspective_rect, perspective_corners);
+
     update_glyph_jitter_offsets(state);
 
     resolve_event_clip(state);
@@ -12966,6 +13109,8 @@ static bool render_event(RenderContext *state, ASS_Event *event,
     event_images->detect_collisions = state->detect_collisions;
     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
     event_images->event = event;
+    event_images->perspective_rect = perspective_rect;
+    memcpy(event_images->perspective_corners, perspective_corners, sizeof(perspective_corners));
     bool want_rgba = rgba_out != NULL;
     event_images->needs_rgba = state->needs_rgba;
     event_images->imgs_rgba = NULL;
@@ -12973,7 +13118,7 @@ static bool render_event(RenderContext *state, ASS_Event *event,
     ASS_ImageRGBA **rgba_ptr = want_rgba ? &event_images->imgs_rgba : NULL;
     event_images->imgs = render_text(state, rgba_ptr);
 
-    if (state->bs4_box_mode && !scroll_boxes)
+    if (state->bs4_box_mode && !scroll_boxes && !state->perspective_failed)
         add_background(state, event_images,
                        rgba_out ? &event_images->imgs_rgba : NULL,
                        &bs4_box_geometry);
@@ -12990,11 +13135,24 @@ static bool render_event(RenderContext *state, ASS_Event *event,
 
     event_images->has_positioned_alpha = state->positioned_alpha_masks != NULL;
     event_images->has_gradient_slide = state->gradient_slides != NULL;
+    bool retry = state->perspective_active && state->perspective_failed;
     ass_shaper_cleanup(state->shaper, text_info);
     free_render_context(state);
 
     release_chat_scene(chat, chat_cached);
     free(ranges);
+
+    if (retry) {
+        ass_frame_ref(event_images->imgs);
+        ass_frame_unref(event_images->imgs);
+        for (ASS_ImageRGBA *image = event_images->imgs_rgba; image;) {
+            ASS_ImageRGBA *next = image->next;
+            ass_rgba_image_free(render_priv, image);
+            image = next;
+        }
+        memset(event_images, 0, sizeof(*event_images));
+        return render_event(state, event, event_images, rgba_out, false);
+    }
 
     return true;
 }
@@ -13040,7 +13198,7 @@ bool ass_render_event(RenderContext *state, ASS_Event *event,
             int has_blend = renderer->track->has_blend;
             state->expression_baseline = true;
             renderer->time = event->Start;
-            render_event(state, event, event_images, NULL);
+            render_event(state, event, event_images, NULL, false);
             renderer->time = now;
             renderer->track->has_rgba = has_rgba;
             renderer->track->has_blend = has_blend;
@@ -13051,7 +13209,7 @@ bool ass_render_event(RenderContext *state, ASS_Event *event,
                 entry->length = SIZE_MAX; // Tombstone, retaining the probe chain.
         }
     }
-    return render_event(state, event, event_images, rgba_out);
+    return render_event(state, event, event_images, rgba_out, true);
 }
 
 /**
@@ -13061,6 +13219,7 @@ bool
 ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
                 long long now)
 {
+    render_priv->n_rendered_events = 0;
     if (!render_priv->settings.frame_width
         && !render_priv->settings.frame_height)
         return false;               // library not initialized
@@ -13193,6 +13352,10 @@ static int cmp_rect_y0(const void *p1, const void *p2)
 static void
 shift_event(ASS_Renderer *render_priv, EventImages *ei, int shift)
 {
+    ei->perspective_rect.y_min += shift;
+    ei->perspective_rect.y_max += shift;
+    for (int i = 0; i < 4; i++)
+        ei->perspective_corners[i].y += shift;
     ASS_Image *cur = ei->imgs;
     while (cur) {
         cur->dst_y += shift;
@@ -13419,6 +13582,27 @@ int ass_detect_change(ASS_Renderer *priv)
     return diff;
 }
 
+int ass_get_perspective_layout(ASS_Renderer *priv, int index, int *event_index,
+                               double rect[4], double corners[8])
+{
+    if (!priv || index < 0 || index >= priv->n_rendered_events)
+        return -1;
+    const EventImages *entry = &priv->eimg[index];
+    const ASS_DRect *bounds = &entry->perspective_rect;
+    if (!(bounds->x_min < bounds->x_max && bounds->y_min < bounds->y_max))
+        return 0;
+    *event_index = entry->event - priv->track->events;
+    rect[0] = bounds->x_min;
+    rect[1] = bounds->y_min;
+    rect[2] = bounds->x_max;
+    rect[3] = bounds->y_max;
+    for (int i = 0; i < 4; i++) {
+        corners[2 * i] = entry->perspective_corners[i].x;
+        corners[2 * i + 1] = entry->perspective_corners[i].y;
+    }
+    return 1;
+}
+
 /**
  * \brief free a single image.
  * \param img image as returned by ass_render_frame().
@@ -13490,6 +13674,7 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
 
     // concat lists, removing fully transparent bitmaps
     ASS_Image **tail = &priv->images_root;
+    priv->n_rendered_events = cnt;
     for (int i = 0; i < cnt; i++) {
         ASS_Image *cur = priv->eimg[i].imgs;
         while (cur) {

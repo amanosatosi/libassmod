@@ -5619,6 +5619,36 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             state->rnd_x = parse_rnd_amplitude(value, state->rnd_x, pwr);
             state->rnd_y = parse_rnd_amplitude(value, state->rnd_y, pwr);
             state->rnd_z = parse_rnd_amplitude(value, state->rnd_z, pwr);
+        } else if (name_end - p == 6 && !memcmp(p, "mpersp", 6)) {
+            if (*name_end != '(' || q <= name_end + 1 || q[-1] != ')' ||
+                    has_backslash_arg || state->colorcode_parse || !(pwr > 0))
+                continue;
+
+            int slots = 1;
+            for (char *arg = name_end + 1; arg < q - 1; arg++)
+                slots += *arg == ',';
+            if (nargs && (nargs != 8 || slots != 8))
+                continue;
+            if (!nargs && slots != 1)
+                continue;
+
+            ASS_DVector pins[4];
+            bool valid = true;
+            for (int i = 0; i < 4; i++) {
+                double u = i == 1 || i == 2, v = i >= 2;
+                if (nargs && (!parse_double_arg_strict(args[2 * i], &u) ||
+                             !parse_double_arg_strict(args[2 * i + 1], &v))) {
+                    valid = false;
+                    break;
+                }
+                pins[i].x = calc_anim(u, state->perspective_pins[i].x, pwr);
+                pins[i].y = calc_anim(v, state->perspective_pins[i].y, pwr);
+                valid &= isfinite(pins[i].x) && isfinite(pins[i].y);
+            }
+            if (valid) {
+                memcpy(state->perspective_pins, pins, sizeof(pins));
+                state->perspective_set = true;
+            }
         } else if (complex_tag("distort")) {
             if (*name_end != '(' || has_backslash_arg)
                 continue;

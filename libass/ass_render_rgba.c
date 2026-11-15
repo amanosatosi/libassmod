@@ -1048,6 +1048,7 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
         ass_fix_collisions(priv, last, priv->eimg + cnt - last);
 
     ASS_Image **tail = &priv->images_root;
+    priv->n_rendered_events = cnt;
     uint64_t alpha_fingerprint = 0;
     bool has_gradient_slide = false;
     for (int i = 0; i < cnt; i++) {

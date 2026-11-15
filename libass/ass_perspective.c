@@ -199,16 +199,15 @@ static bool flatten_outline(ASS_Outline *result, const ASS_Outline *source,
     return point == source->n_points && start == point;
 }
 
-static bool fits_raster(const ASS_Outline *outline, unsigned tile_order,
-                        size_t max_pixels)
+bool ass_perspective_raster_fits(const ASS_Rect *box, unsigned tile_order,
+                                 size_t max_pixels)
 {
-    ASS_Rect box;
-    rectangle_reset(&box);
-    ass_outline_update_cbox(outline, &box);
+    if (box->x_min > box->x_max || box->y_min > box->y_max)
+        return true;
     // Match the padding in ass_outline_to_bitmap. Control bounds also cover
     // the affine fast path, where the rasterizer subdivides curves itself.
-    int32_t width = ((box.x_max + 127) >> 6) - ((box.x_min - 1) >> 6);
-    int32_t height = ((box.y_max + 127) >> 6) - ((box.y_min - 1) >> 6);
+    int32_t width = ((box->x_max + 127) >> 6) - ((box->x_min - 1) >> 6);
+    int32_t height = ((box->y_max + 127) >> 6) - ((box->y_min - 1) >> 6);
     unsigned mask = (1U << tile_order) - 1;
     size_t tile_width = (width + mask) & ~mask;
     size_t tile_height = (height + mask) & ~mask;
@@ -242,8 +241,13 @@ bool ass_perspective_outline(ASS_Outline *result, const ASS_Outline *source,
         ok = flatten_outline(result, source, matrix, tolerance * tolerance,
                              max_segments);
     }
-    if (ok && fits_raster(result, tile_order, max_pixels))
-        return true;
+    if (ok) {
+        ASS_Rect bounds;
+        rectangle_reset(&bounds);
+        ass_outline_update_cbox(result, &bounds);
+        if (ass_perspective_raster_fits(&bounds, tile_order, max_pixels))
+            return true;
+    }
 
     ass_outline_free(result);
     return false;

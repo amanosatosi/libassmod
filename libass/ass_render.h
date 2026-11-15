@@ -206,6 +206,8 @@ typedef struct {
     bool needs_rgba;
     bool has_positioned_alpha;
     bool has_gradient_slide;
+    ASS_DRect perspective_rect;
+    ASS_DVector perspective_corners[4];
 } EventImages;
 
 typedef enum {
@@ -1025,6 +1027,9 @@ struct render_context {
     bool distort_enabled;
     bool distort_extended;
     ASS_DistortParams distort;
+    ASS_DVector perspective_pins[4];
+    double perspective_matrix[3][3];
+    bool perspective_set, perspective_active, perspective_failed;
     OutlineHashValue *curved_path_outline; // cached ASS drawing, borrowed
     int curved_text_align;                 // 0 = inherit \an, 1..9 = path anchor
     double curved_text_x;                  // along-path offset, script units
@@ -1110,6 +1115,7 @@ struct ass_renderer {
 
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
+    int n_rendered_events;
 
     // frame-global data
     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)

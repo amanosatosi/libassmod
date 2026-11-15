@@ -249,10 +249,18 @@ mangetsu_motion_scale_unit = executable(
 # public libass ABI.
 if get_option('default_library') != 'shared'
     perspective_unit = executable('perspective_unit',
-        files('perspective_test.c', '../libass/ass_perspective.c'), config_h,
+        files('perspective_test.c'),
         include_directories: incs, dependencies: deps,
         link_with: libass_for_tools, install: false)
     test('perspective-math', perspective_unit)
+    perspective_render_unit = executable('perspective_render_unit',
+        files('perspective_render_selftest.c'),
+        include_directories: incs, dependencies: deps,
+        link_with: libass_for_tools, install: false)
+    test('perspective-render', perspective_render_unit, args: [
+        join_paths(meson.current_source_dir(), 'fonts', 'native-vertical-furi.ttf'),
+        join_paths(meson.current_source_dir(), 'fonts', 'NotoSansMyanmar-Regular.ttf'),
+    ])
 
     repeated_event_render_unit = executable('repeated_event_render_unit',
         files('repeated_event_render_selftest.c'),

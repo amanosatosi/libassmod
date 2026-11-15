@@ -48,8 +48,9 @@ EXTRA_DIST += docs/decoration-fallback.md test/decoration_fallback_selftest.c \
 EXTRA_DIST += docs/rnd-tags.md test/rnd_test.c test/rnd_selftest.c \
               test/decoration_rnd_selftest.c
 
-EXTRA_DIST += docs/perspective-prototype.md test/perspective_test.c \
-              libass/ass_perspective.h libass/ass_perspective.c
+EXTRA_DIST += docs/perspective-prototype.md docs/perspective-tag.md \
+              test/perspective_test.c test/perspective_render_selftest.c \
+              samples/perspective.ass
 
 # Meson build setup
 EXTRA_DIST += gen_defs.py meson_options.txt meson.build \

@@ -648,6 +648,15 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
 ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
                                      long long now, int *detect_change);
+
+/* Geometry of an event in the most recent frame, in frame pixels after
+ * collision placement and before clipping. Query before modifying the track
+ * or rendering again. Iterate index from zero until -1 is returned. Zero
+ * means the entry has no layout rectangle. On 1, all outputs are written:
+ * the zero-based track event index, (left, top, right, bottom), and four
+ * interleaved XY corner pairs in TL, TR, BR, BL order. */
+int ass_get_perspective_layout(ASS_Renderer *priv, int index, int *event_index,
+                               double rect[4], double corners[8]);
 ASS_RenderResult ass_render_frame_auto(ASS_Renderer *priv, ASS_Track *track,
                                        long long now, int *detect_change);
 void ass_free_images_rgba(ASS_ImageRGBA *img);
