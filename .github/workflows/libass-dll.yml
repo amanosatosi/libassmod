@@ -159,7 +159,7 @@ jobs:
             "/I$prefix\\include\\libpng16"
           ) -join ' '
           $link = "/LIBPATH:$prefix\\lib"
-          $tests = if ('${{ inputs.gradient_direction }}' -eq 'true') { 'enabled' } else { 'disabled' }
+          $tests = if (('${{ inputs.gradient_direction }}' -eq 'true' -or '${{ github.event.head_commit.message }}' -match 'Gradient-Direction-CI')) { 'enabled' } else { 'disabled' }
           meson setup $env:BUILD_DIR `
             --prefix="$install" `
             -Ddefault_library=shared `
@@ -175,7 +175,7 @@ jobs:
 
       - name: Build
         run: |
-          if ('${{ inputs.gradient_direction }}' -eq 'true') {
+          if (('${{ inputs.gradient_direction }}' -eq 'true' -or '${{ github.event.head_commit.message }}' -match 'Gradient-Direction-CI')) {
             meson compile -C $env:BUILD_DIR gradient_surface_unit
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             meson test -C $env:BUILD_DIR --no-rebuild --print-errorlogs gradient-slide-direction
