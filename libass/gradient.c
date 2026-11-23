@@ -565,12 +565,14 @@ void ass_gradient_slide_prepare(MangetsuGradientSlideSampler *sampler,
         step->target = prepare_slide_endpoint(&slide->target, bounds, mapping);
         if (!i)
             sampler->source = prepare_slide_endpoint(&slide->source, bounds, mapping);
-        double radians = (slide->target.active &&
-                          slide->target.coordinate_mode != MANGETSU_GRADIENT_VECTOR ?
-                          slide->target.angle : slide->source.angle) *
-                          MANGETSU_GRADIENT_PI / 180.0;
-        step->dx = step->target.field.valid ? step->target.field.dx : cos(radians);
-        step->dy = step->target.field.valid ? step->target.field.dy : sin(radians);
+        const bool explicit_direction = slide->direction.set;
+        double angle = explicit_direction ? slide->direction.angle :
+            slide->target.active && slide->target.coordinate_mode != MANGETSU_GRADIENT_VECTOR ?
+            slide->target.angle : slide->source.angle;
+        double radians = angle * MANGETSU_GRADIENT_PI / 180.0;
+        const bool use_target_axis = !explicit_direction && step->target.field.valid;
+        step->dx = use_target_axis ? step->target.field.dx : cos(radians);
+        step->dy = use_target_axis ? step->target.field.dy : sin(radians);
     }
 
     /* The wrapper of an in-progress slide is marked attached for transport.

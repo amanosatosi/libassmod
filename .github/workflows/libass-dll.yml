@@ -3,6 +3,11 @@ name: Windows DLL Artifact
 on:
   push:
   workflow_dispatch:
+    inputs:
+      gradient_direction:
+        description: Build and run only the focused gradient direction test
+        type: boolean
+        default: false
 
 jobs:
   build-dll:
@@ -154,12 +159,13 @@ jobs:
             "/I$prefix\\include\\libpng16"
           ) -join ' '
           $link = "/LIBPATH:$prefix\\lib"
+          $tests = if ('${{ inputs.gradient_direction }}' -eq 'true') { 'enabled' } else { 'disabled' }
           meson setup $env:BUILD_DIR `
             --prefix="$install" `
             -Ddefault_library=shared `
             -Db_vscrt=mt `
             -Dfontconfig=disabled `
-            -Dtest=disabled `
+            "-Dtest=$tests" `
             -Dcompare=disabled `
             -Dprofile=disabled `
             -Dfuzz=disabled `
@@ -169,12 +175,18 @@ jobs:
 
       - name: Build
         run: |
-          meson compile -C $env:BUILD_DIR
+          if ('${{ inputs.gradient_direction }}' -eq 'true') {
+            meson compile -C $env:BUILD_DIR gradient_surface_unit
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            meson test -C $env:BUILD_DIR --no-rebuild --print-errorlogs gradient-slide-direction
+          } else {
+            meson compile -C $env:BUILD_DIR
+          }
 
       - name: Install
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          meson install -C $env:BUILD_DIR
+          meson install -C $env:BUILD_DIR --no-rebuild
 
       - name: Collect DLLs
         run: |

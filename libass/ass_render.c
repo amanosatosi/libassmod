@@ -3734,6 +3734,7 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     ass_gradient_state_reset(&state->gradient, state->c);
     ass_mangetsu_gradient_state_reset(&state->mangetsu_gradient);
     state->gradient_slide = (GradientSlideSettings) {0};
+    state->default_slide_direction = (GradientSlideDirection) {0};
     state->positioned_alpha_mask = NULL;
     state->pattern = (TextPatternPaint) {0};
     state->secondary_outline = (KaraokeOutlinePaint) {0};
@@ -3796,7 +3797,9 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     if (render_priv->track->parser_priv &&
             render_priv->track->parser_priv->style_extensions)
         ass_apply_style_extension(state, extension_sid);
+    state->default_slide_direction = state->gradient_slide.direction;
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
+    state->default_slide_direction = state->gradient_slide.direction;
     state->chat_bubble = (ChatBubbleStyle) {
         .fill = state->c[2],
         .border = state->c[2],

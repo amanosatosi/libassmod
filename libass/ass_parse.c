@@ -1707,6 +1707,10 @@ static double *gradient_slide_tag(RenderContext *state, char *p, char *end, char
         suffix++;
     if (suffix == end || *suffix != 's')
         return NULL;
+    if (!channel && end - name >= 5 && !memcmp(name, "grdsd", 5)) {
+        *arg = name + 5;
+        return &state->gradient_slide.direction.angle;
+    }
 
     static const struct {
         const char *name;
@@ -1799,6 +1803,7 @@ static const StyleExtensionValue extension_fields[] = {
     EXT_SECONDARY(8), EXT_SECONDARY(9),
     EXT_FIELD(secondary_outline.type), EXT_RGB(secondary_outline.color),
     EXT_FIELD(gradient_slide.global),
+    EXT_FIELD(gradient_slide.direction),
     EXT_SLIDE(0), EXT_SLIDE(1), EXT_SLIDE(2), EXT_SLIDE(3), EXT_SLIDE(4),
     EXT_SLIDE(6), EXT_SLIDE(7), EXT_SLIDE(8), EXT_SLIDE(9), EXT_SLIDE(10),
     EXT_SLIDE(11), EXT_SLIDE(12), EXT_SLIDE(13), EXT_SLIDE(14), EXT_SLIDE(15),
@@ -1887,6 +1892,26 @@ static void apply_gradient_slide_setting(RenderContext *state, double *setting,
                 builder->slide_expressions[--builder->n_slide_expressions];
         select_extension_field(state, offset, 0);
     }
+}
+
+static void apply_gradient_slide_direction(RenderContext *state, struct arg arg)
+{
+    trim_arg_inline(&arg);
+    GradientSlideDirection direction = state->default_slide_direction;
+    if (arg.start != arg.end) {
+        double angle;
+        if (!parse_double_arg_strict(arg, &angle))
+            return;
+        angle = fmod(angle, 360);
+        if (angle < 0)
+            angle += 360;
+        direction = (GradientSlideDirection) {
+            .angle = angle > 0 && angle < 360 ? angle : 0, .set = true,
+        };
+    }
+    state->gradient_slide.direction = direction;
+    if (state->style_extension_parse)
+        select_extension_field(state, offsetof(RenderContext, gradient_slide.direction), 0);
 }
 
 static bool style_geometry_slide(const struct ass_style_extension *patch)
@@ -2897,6 +2922,7 @@ static bool set_gradient_slide(RenderContext *state, MangetsuGradientLayer *dst,
         .next = state->gradient_slides, .references = 1, .depth = depth,
         .source = source,
         .target = *target, .width = width, .progress = pwr,
+        .direction = state->gradient_slide.direction,
     };
     if (slide->source.slide)
         slide->source.slide->references++;
@@ -5409,13 +5435,16 @@ static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
 
         size_t name_len = name_end - p;
         if (slide_setting) {
+            bool direction = slide_setting == &state->gradient_slide.direction.angle;
             if (!state->karaoke_only_parse && !state->chat_side_only_parse &&
-                    (slide_arg == name_end || *name_end != '(')) {
+                    (*name_end != '(' || (!direction && slide_arg == name_end))) {
                 if (nested && !restore_slide) {
                     saved_slide = state->gradient_slide;
                     restore_slide = true;
                 }
-                if (*name_end != '(')
+                if (direction)
+                    apply_gradient_slide_direction(state, (struct arg) {slide_arg, name_end});
+                else if (*name_end != '(')
                     apply_gradient_slide_setting(state, slide_setting,
                                                  (struct arg) {slide_arg, name_end});
                 else if (q > name_end + 1 && q[-1] == ')' && !has_backslash_arg)

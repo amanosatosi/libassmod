@@ -910,6 +910,10 @@ static uint64_t positioned_alpha_fingerprint(ASS_ImageRGBA *images)
         for (const MangetsuGradientSlide *slide = g->slide; slide; slide = g->slide) {
             hash = positioned_alpha_hash_double(hash, slide->width);
             hash = positioned_alpha_hash_double(hash, slide->progress);
+            if (slide->direction.set) {
+                hash = positioned_alpha_hash_value(hash, 1);
+                hash = positioned_alpha_hash_double(hash, slide->direction.angle);
+            }
             hash = positioned_alpha_hash_paint(hash, &slide->target);
             g = &slide->source;
         }

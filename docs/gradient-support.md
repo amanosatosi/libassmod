@@ -127,6 +127,24 @@ overlapping in-progress slides on one channel.
 {\pgrdalphas15\t(0,1000,\pgrdalpha(80,80,560,280,0,&H00&,&HC0&))}Fixed-frame opacity wipe
 ```
 
+
+The global `\grdsd` sets the wipe direction independently of its width and
+the orientation of either gradient. It accepts finite signed decimal degrees.
+`0` moves right, `90` down, `180` left, and `270` up. Equivalent angles wrap
+around, so `-90` moves up. A bare `\grdsd` restores the active style or actor
+default and otherwise uses the automatic gradient-derived direction.
+The tag takes its number directly. A parenthesized argument has no effect.
+
+Each wipe keeps the direction selected at its construction. Inside `\t`
+the setting applies to subsequent tags in that transform, and the direction
+itself stays fixed. Set a width with `\grds` or a compatible channel-specific
+setting to enable a wipe. `\grds0` still gives a sharp edge.
+
+```ass
+{\grds20\grdsd180\1grd(45,&H0000FF&,&H00FF00&)\t(0,1000,\1grd(45,&HFF0000&,&HFFFFFF&))}Right-to-left wipe
+{\grds20\grdsd180\grdsd\1grd(45,&H0000FF&,&H00FF00&)\t(0,1000,\1grd(45,&HFF0000&,&HFFFFFF&))}Inherited or automatic direction
+```
+
 Sliding applies to gradient paint and transitions with a gradient endpoint.
 Two solid ASS colors continue to interpolate normally. Image and procedural
 pattern paint keep their existing precedence. The legacy `ASS_Image` API

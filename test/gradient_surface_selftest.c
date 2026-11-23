@@ -1058,6 +1058,67 @@ static bool slide_timing(ASS_Library *lib, ASS_Renderer *renderer)
     return check(ok && rendered, "gradient slide direction, timing or legacy interpolation");
 }
 
+static bool slide_direction(ASS_Library *lib, ASS_Renderer *renderer)
+{
+    static const struct {
+        const char *setting;
+        int x, y;
+    } axes[] = {
+        {"\\grdsd0", 140, 130}, {"\\grdsd180", 260, 130},
+        {"\\grdsd90", 140, 120}, {"\\grdsd270", 140, 180},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(axes) / sizeof(*axes); i++) {
+        char text[512];
+        snprintf(text, sizeof(text), "{" SLIDE_DRAW "\\grds0%s\\1grd" SLIDE_RED
+                 SLIDE_WIPE SLIDE_RECT, axes[i].setting);
+        ASS_Track *track = track_for(lib, text);
+        Frame half = {0}, seek = {0}, start = {0}, end = {0};
+        bool good = track && render_track(renderer, track, 500, &half) &&
+            render_track(renderer, track, 0, &start) &&
+            render_track(renderer, track, 1000, &end) &&
+            render_track(renderer, track, 500, &seek);
+        if (good) {
+            const int type = IMAGE_TYPE_CHARACTER;
+            const int x = axes[i].x, y = axes[i].y;
+            good = pixel(&half, type, x, y)[2] == 255 &&
+                pixel(&half, type, 400 - x, 300 - y)[0] == 255 &&
+                pixel(&start, type, x, y)[0] == 255 &&
+                pixel(&end, type, x, y)[2] == 255 &&
+                same_target(&half, &seek, type);
+        }
+        ok &= check(good, axes[i].setting);
+        release(&half); release(&seek); release(&start); release(&end);
+        ass_free_track(track);
+    }
+
+    #define DIAGONAL_WIPE "\\1grd(45,&H0000FF&,&H0000FF&)" \
+        "\\t(0,1000,\\1grd(45,&HFF0000&,&HFFFFFF&))" SLIDE_RECT
+    static const char *const controls[] = {
+        "\\grds0", "\\grds0\\grdsd0", "\\grds0\\grdsd-360",
+        "\\grds0\\grdsd0\\grdsd90junk\\grdsdnan\\grdsd()\\grdsd(180)",
+        "\\grds0\\grdsd180\\grdsd",
+    };
+    Frame images[5] = {{0}};
+    for (size_t i = 0; i < sizeof(controls) / sizeof(*controls); i++) {
+        char text[512];
+        snprintf(text, sizeof(text), "{" SLIDE_DRAW "%s" DIAGONAL_WIPE, controls[i]);
+        ok &= render(lib, renderer, text, 500, &images[i]);
+    }
+    if (ok) {
+        const int type = IMAGE_TYPE_CHARACTER;
+        ok &= same_target(&images[0], &images[4], type) &&
+            same_target(&images[1], &images[2], type) &&
+            same_target(&images[1], &images[3], type) &&
+            !same_target(&images[0], &images[1], type) &&
+            pixel(&images[1], type, 150, 125)[0] != pixel(&images[1], type, 150, 175)[0];
+    }
+    for (size_t i = 0; i < sizeof(images) / sizeof(*images); i++)
+        release(&images[i]);
+    #undef DIAGONAL_WIPE
+    return check(ok, "independent gradient slide direction or reset");
+}
+
 static bool slide_settings(ASS_Library *lib, ASS_Renderer *renderer)
 {
     const char *cases[][2] = {
@@ -1372,17 +1433,18 @@ int main(int argc, char **argv)
     ASS_Renderer *renderer = lib ? ass_renderer_init(lib) : NULL;
     if (!renderer) return 2;
     ass_set_frame_size(renderer, W, H);
-    if (argc == 2 && !strcmp(argv[1], "--slide-lifetime")) {
+    bool direction_only = argc == 2 && !strcmp(argv[1], "--slide-direction");
+    if (direction_only || (argc == 2 && !strcmp(argv[1], "--slide-lifetime"))) {
         // Use a bundled face without a host provider. Event parsing still
         // requires a font, even when the only glyph is a drawing.
         const char *font_path = getenv("GRADIENT_TEST_FONT");
         if (!font_path) {
-            fprintf(stderr, "GRADIENT_TEST_FONT is required for the lifetime test\n");
+            fprintf(stderr, "GRADIENT_TEST_FONT is required for the focused slide test\n");
             ass_renderer_done(renderer); ass_library_done(lib);
             return 2;
         }
         ass_set_fonts(renderer, font_path, NULL, ASS_FONTPROVIDER_NONE, NULL, 0);
-        bool ok = slide_lifetime(lib, renderer);
+        bool ok = direction_only ? slide_direction(lib, renderer) : slide_lifetime(lib, renderer);
         ass_renderer_done(renderer); ass_library_done(lib);
         return ok ? 0 : 1;
     }

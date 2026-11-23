@@ -151,6 +151,7 @@ enum { STYLE_PAINT_BORDER = 5, STYLE_PAINT_BOX = 15,
 typedef struct {
     double global;
     double target[STYLE_PAINT_TARGETS][2];
+    GradientSlideDirection direction;
 } GradientSlideSettings;
 
 typedef struct ass_image_rgba_priv {
@@ -938,6 +939,7 @@ struct render_context {
     PositionedAlphaMask *positioned_alpha_masks;
     int mangetsu_gradient_next_id;
     GradientSlideSettings gradient_slide;
+    GradientSlideDirection default_slide_direction;
     MangetsuGradientSlide *gradient_slides;
     const struct ass_style_extension *extension_defaults;
     uint32_t pattern_cycle_serial;

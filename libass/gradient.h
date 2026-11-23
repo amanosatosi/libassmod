@@ -88,6 +88,11 @@ typedef struct {
     double inverse_projection_span;
 } MangetsuGradientPositionedRect;
 
+typedef struct {
+    double angle;
+    bool set;
+} GradientSlideDirection;
+
 typedef struct mangetsu_gradient_slide MangetsuGradientSlide;
 
 typedef struct {
@@ -114,6 +119,7 @@ struct mangetsu_gradient_slide {
     unsigned references, depth;
     MangetsuGradientLayer source, target;
     double width, progress;
+    GradientSlideDirection direction;
 };
 
 typedef struct {

@@ -225,6 +225,8 @@ test('dynamic-expressions', expression_unit,
             join_paths(meson.current_source_dir(), 'fonts', 'NotoSansMyanmar-Regular.ttf'),
             join_paths(meson.current_source_dir(), 'fonts', 'native-vertical-furi.ttf')], timeout: 120)
 gradient_test_env = {'GRADIENT_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')}
+test('gradient-slide-direction', gradient_surface_unit, args: ['--slide-direction'],
+     env: gradient_test_env, timeout: 30)
 test('gradient-slide-lifetime', gradient_surface_unit, args: ['--slide-lifetime'],
      env: gradient_test_env, timeout: 120)
 if host_machine.system() == 'linux' and get_option('default_library') != 'shared'
