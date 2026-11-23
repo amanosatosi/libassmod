@@ -727,23 +727,18 @@ static bool test_oborodzuki_dialogues(ASS_Library *lib, ASS_Renderer *renderer)
         OBR_LINE("00.00", "10.00", "Default", "OBRCCS", "OBRCC", "{Default}{Alt}")
         OBR_LINE("03.00", "08.00", "Default", "Nene", "oborodzuki-colorcoding", FACE_OUTER)
         OBR_LINE("00.00", "10.00", "Default", "", "oborodzuki-style", "{\\furis70}")
-        OBR_LINE("00.00", "10.00", "Default", "Nene", "OBRCC", "{OBRCC:4000,5000}" FACE_INNER)
+        OBR_LINE("04.30", "04.50", "Default", "Nene", "OBRCC", FACE_NORMAL)
+        OBR_LINE("04.00", "05.00", "Default", "Nene", "OBRCC", FACE_INNER)
         OBR_LINE("00.00", "10.00", "Default", "oborodzuki-colorcode-applied-styles", "OBRCC",
                  "{Default}{Alt}");
-    static const char dialogue[] =
-        OBR_LINE("01.00", "02.00", "Default", "Nene", "", OBR_TEXT)
-        OBR_LINE("03.00", "04.00", "Default", "Nene", "", OBR_TEXT)
-        OBR_LINE("04.00", "06.00", "Default", "Nene", "", OBR_TEXT)
-        OBR_LINE("06.00", "07.00", "Default", "Nene", "", OBR_TEXT)
-        OBR_LINE("08.00", "09.00", "Default", "Nene", "", OBR_TEXT)
-        OBR_LINE("09.00", "10.00", "Default", "Nobody", "", OBR_TEXT);
+    // Keep the same visible event across every actor boundary.
+    static const char dialogue[] = OBR_LINE("01.00", "09.50", "Default", "Nene", "", OBR_TEXT);
     static const char inline_events[] = OBR_STYLE_REFERENCE
-        OBR_LINE("01.00", "02.00", "Default", "Nene", "", FACE_NORMAL OBR_TEXT)
+        OBR_LINE("01.00", "03.00", "Default", "Nene", "", FACE_NORMAL OBR_TEXT)
         OBR_LINE("03.00", "04.00", "Default", "Nene", "", FACE_OUTER OBR_TEXT)
-        OBR_LINE("04.00", "06.00", "Default", "Nene", "", FACE_INNER OBR_TEXT)
-        OBR_LINE("06.00", "07.00", "Default", "Nene", "", FACE_OUTER OBR_TEXT)
-        OBR_LINE("08.00", "09.00", "Default", "Nene", "", FACE_NORMAL OBR_TEXT)
-        OBR_LINE("09.00", "10.00", "Default", "Nobody", "", OBR_TEXT);
+        OBR_LINE("04.00", "05.00", "Default", "Nene", "", FACE_INNER OBR_TEXT)
+        OBR_LINE("05.00", "08.00", "Default", "Nene", "", FACE_OUTER OBR_TEXT)
+        OBR_LINE("08.00", "09.50", "Default", "Nene", "", FACE_NORMAL OBR_TEXT);
 
     ASS_Renderer *second = ass_renderer_init(lib);
     if (!second)
@@ -761,13 +756,31 @@ static bool test_oborodzuki_dialogues(ASS_Library *lib, ASS_Renderer *renderer)
         ass_process_data(initial, metadata, sizeof(metadata) - 1);
         ass_process_data(initial, dialogue, sizeof(dialogue) - 1);
     }
-    bool ok = expected && initial && complete && initial->n_events == 6 && complete->n_events == 6 &&
+    bool ok = expected && initial && complete && initial->n_events == 1 && complete->n_events == 1 &&
               !ass_render_frame(renderer, initial, 0, NULL) &&
               !ass_render_frame_rgba(renderer, initial, 0, NULL);
-    const int times[] = {5500, 1000, 3000, 4000, 5000, 6000, 8000, 9250, 4000, 1000};
-    for (size_t i = 0; ok && i < sizeof(times) / sizeof(*times); i++)
+    const int times[] = {4000, 1000, 2999, 3000, 3999, 4000, 4400, 4999, 5000, 7999,
+                         8000, 9250, 5000, 3999, 3000, 2999};
+    for (size_t i = 0; ok && i < sizeof(times) / sizeof(*times); i++) {
         ok = same_oborodzuki_frame(renderer, initial, second, expected, times[i]) &&
              same_oborodzuki_frame(renderer, complete, second, expected, times[i]);
+        if (!ok)
+            fprintf(stderr, "Actor interval pixel mismatch at %d ms\\n", times[i]);
+    }
+
+    // Both output APIs must report a change when only the actor patch changes.
+    if (ok) {
+        int changed = 0;
+        ass_render_frame(renderer, complete, 2999, NULL);
+        ass_render_frame(renderer, complete, 3000, &changed);
+        ok = changed != 0;
+        ASS_ImageRGBA *rgba = ass_render_frame_rgba(renderer, complete, 4999, NULL);
+        ass_free_images_rgba(rgba);
+        changed = 0;
+        rgba = ass_render_frame_rgba(renderer, complete, 5000, &changed);
+        ok = ok && changed != 0;
+        ass_free_images_rgba(rgba);
+    }
 
     ass_free_track(complete);
     ass_free_track(expected);
@@ -782,7 +795,8 @@ static bool test_oborodzuki_chunks(ASS_Library *lib, ASS_Renderer *renderer)
 {
     ASS_Track *track = read_header_track(lib);
     ASS_Track *expected = read_events_track(lib, OBR_STYLE_REFERENCE
-        OBR_LINE("04.00", "06.00", "Default", "Nene", "", FACE_INNER OBR_TEXT));
+        OBR_LINE("04.00", "05.00", "Default", "Nene", "", FACE_INNER OBR_TEXT)
+        OBR_LINE("05.00", "06.00", "Default", "Nene", "", FACE_OUTER OBR_TEXT));
     if (!track || !expected) {
         ass_free_track(track);
         ass_free_track(expected);
@@ -802,12 +816,14 @@ static bool test_oborodzuki_chunks(ASS_Library *lib, ASS_Renderer *renderer)
         ass_process_chunk(track, packets[i], strlen(packets[i]), start[i], duration[i]);
 
     bool ok = track->n_events == 1 &&
+              same_oborodzuki_frame(renderer, track, renderer, expected, 4999) &&
               same_oborodzuki_frame(renderer, track, renderer, expected, 5000);
     ass_flush_events(track);
     ass_process_chunk(track, packets[1], strlen(packets[1]), start[1], duration[1]);
     ass_process_chunk(track, packets[4], strlen(packets[4]), start[4], duration[4]);
     ok = ok && track->n_events == 1 &&
-         same_oborodzuki_frame(renderer, track, renderer, expected, 5000);
+         same_oborodzuki_frame(renderer, track, renderer, expected, 5000) &&
+         same_oborodzuki_frame(renderer, track, renderer, expected, 4000);
     ass_free_track(expected);
     ass_free_track(track);
     if (!ok)
@@ -838,6 +854,10 @@ int main(void)
 
     bool ok = test_oborodzuki_dialogues(lib, renderer);
     ok &= test_oborodzuki_chunks(lib, renderer);
+    ok &= expect_same(lib, renderer,
+        OBR_LINE("00.00", "10.00", "Default", "Nene", "OBRCC", "{OBRCC:1000,2000}" FACE_OUTER),
+        OBR_SAMPLE, FACE_OUTER OBR_SAMPLE,
+        "An ordinary brace comment changed the OBRCC event interval");
     ok &= expect_same(lib, renderer,
         OBR_LINE("00.00", "10.00", "Default", "OBRCCS", "OBRCC", "{Default}{Alt}")
         OBR_LINE("00.00", "10.00", "Default", "Nene", "OBRCC", "{\\1c&H1122FF&}"),

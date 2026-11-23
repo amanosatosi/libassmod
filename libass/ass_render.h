@@ -1154,7 +1154,7 @@ typedef struct render_priv {
     int top, height, left, width;
     int render_id;
     unsigned timed_colorcode_revision;
-    long long timed_colorcode_start;
+    long long timed_colorcode_from, timed_colorcode_until;
     const char *timed_colorcode_actor;
     const struct ass_timed_colorcode *timed_colorcode;
 } RenderPriv;

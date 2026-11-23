@@ -782,49 +782,33 @@ static int colorcode_actor_upper_bound(const struct parser_priv *parser,
 }
 
 const ASS_TimedColorcode *ass_find_timed_colorcode(const ASS_Track *track,
-                                                   const char *name, long long start,
-                                                   const char **matched_actor)
+                                                   const char *name, long long now,
+                                                   const char **matched_actor,
+                                                   long long *valid_from,
+                                                   long long *valid_until)
 {
     const struct parser_priv *parser = track->parser_priv;
     const ASS_TimedColorcode *list = parser->timed_colorcodes;
     *matched_actor = NULL;
+    *valid_from = LLONG_MIN;
+    *valid_until = LLONG_MAX;
     for (int i = colorcode_actor_upper_bound(parser, name); i > 0;) {
         const ASS_TimedColorcode *entry = &list[--i];
         if (strcmp(entry->name, name))
             break;
         *matched_actor = entry->name;
-        if (entry->start <= start && start < entry->end)
+        // Higher-priority declarations bound reuse even when inactive.
+        if (now < entry->start)
+            *valid_until = FFMIN(*valid_until, entry->start);
+        else if (now >= entry->end)
+            *valid_from = FFMAX(*valid_from, entry->end);
+        else {
+            *valid_from = FFMAX(*valid_from, entry->start);
+            *valid_until = FFMIN(*valid_until, entry->end);
             return entry;
+        }
     }
     return NULL;
-}
-
-static bool parse_oborodzuki_interval(const char **text, long long *start, long long *end)
-{
-    static const char prefix[] = "{OBRCC:";
-    if (strncmp(*text, prefix, sizeof(prefix) - 1))
-        return true;
-
-    long long values[2];
-    const char *p = *text + sizeof(prefix) - 1;
-    for (int i = 0; i < 2; i++) {
-        long long value = 0;
-        if (*p < '0' || *p > '9')
-            return false;
-        do {
-            int digit = *p++ - '0';
-            if (value > (INT_MAX - digit) / 10)
-                return false;
-            value = value * 10 + digit;
-        } while (*p >= '0' && *p <= '9');
-        if (*p++ != (i ? '}' : ','))
-            return false;
-        values[i] = value;
-    }
-    *start = values[0];
-    *end = values[1];
-    *text = p;
-    return true;
 }
 
 static int process_oborodzuki_dialogue(ASS_Track *track, const ASS_Event *event,
@@ -843,11 +827,10 @@ static int process_oborodzuki_dialogue(ASS_Track *track, const ASS_Event *event,
         return set_colorcode_applied_styles(track, &parser->oborodzuki_whitelist,
                                             event->Text) < 0 ? -1 : 1;
 
-    const char *text = event->Text;
     long long start = event->Start;
     long long end = start <= LLONG_MAX - FFMAX(event->Duration, 0) ?
         start + FFMAX(event->Duration, 0) : LLONG_MAX;
-    if (!parse_oborodzuki_interval(&text, &start, &end) || start >= end)
+    if (start >= end)
         return 1;
 
     // Keep declarations grouped by actor and in ascending priority within
@@ -865,7 +848,7 @@ static int process_oborodzuki_dialogue(ASS_Track *track, const ASS_Event *event,
     if (parser->max_timed_colorcodes >= FFMIN(SIZE_MAX, INT_MAX) / 2)
         return -1;
     char *name = strdup(event->Name);
-    ASS_ColorcodeProgram *program = ass_compile_colorcode(text);
+    ASS_ColorcodeProgram *program = ass_compile_colorcode(event->Text);
     if (!name || !program)
         goto fail;
 

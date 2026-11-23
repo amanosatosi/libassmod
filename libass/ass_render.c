@@ -13186,20 +13186,27 @@ static const ASS_TimedColorcode *event_timed_colorcode(ASS_Renderer *renderer, A
         return NULL;
 
     ASS_RenderPriv *priv = get_render_priv(renderer, event);
-    // Cache gaps as well as matches for actors with timed declarations.
-    // Compare the name's contents for clients editing an event in place.
+    // Reuse the match or gap only within its current frame-time interval.
+    long long now = renderer->time;
     if (priv && priv->timed_colorcode_revision == parser->timed_colorcode_revision &&
-            priv->timed_colorcode_start == event->Start && priv->timed_colorcode_actor &&
+            priv->timed_colorcode_from <= now && now < priv->timed_colorcode_until &&
+            priv->timed_colorcode_actor &&
             !strcmp(priv->timed_colorcode_actor, event->Name))
         return priv->timed_colorcode;
 
     const char *matched_actor;
+    long long from, until;
     const ASS_TimedColorcode *entry = ass_find_timed_colorcode(renderer->track,
-                                                               event->Name, event->Start,
-                                                               &matched_actor);
+                                                              event->Name, now,
+                                                              &matched_actor, &from, &until);
     if (priv) {
+        // A different patch can change the fixed collision rectangle.
+        if (priv->timed_colorcode_revision != parser->timed_colorcode_revision ||
+                priv->timed_colorcode != entry)
+            priv->height = 0;
         priv->timed_colorcode_revision = parser->timed_colorcode_revision;
-        priv->timed_colorcode_start = event->Start;
+        priv->timed_colorcode_from = from;
+        priv->timed_colorcode_until = until;
         priv->timed_colorcode_actor = matched_actor;
         priv->timed_colorcode = entry;
     }

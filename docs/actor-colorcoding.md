@@ -208,11 +208,11 @@ Dialogue and Comment carriers can be interleaved at the top of `[Events]`.
 Dialogue carriers can also appear later, while the Mangetsu Comment block is
 still limited to the top of `[Events]`.
 
-For each normal Dialogue, the last matching actor patch in source order
-whose interval includes the Dialogue's start time wins. Intervals include
-their start and exclude their end. The selected patch stays in effect for
-the whole line. A later-starting line can return to an earlier eligible
-patch when a newer one expires. Each patch supplies only its own properties.
+At each rendered video frame, the last matching actor declaration in
+source order whose ASS Start and End bracket the frame wins. Start is
+inclusive and End is exclusive. A visible line changes appearance as
+declarations begin and expire. When a declaration ends, the next active
+one resumes. Each patch supplies only its own properties.
 The effective order is the ASS style, extended style defaults, the selected
 actor patch, then inline overrides.
 
@@ -232,24 +232,19 @@ Dialogue: 0,0:07:00.00,0:08:00.00,Default,NOELLE,0,0,0,OBRCC,{\c&HFABB41&\1a&H20
 Dialogue: 0,0:07:30.00,0:08:30.00,Default,NOELLE,0,0,0,,<今日|きょう> မြန်မာနိုင်ငံ
 ```
 
-The line starting at 07:30 keeps the special patch past 08:00. A new line
-starting at 08:30 receives the transformation patch. The normal patch
-returns at 10:00.
+The line starting at 07:30 uses the special patch until 08:00, then
+changes to the transformation patch while still visible. The normal
+appearance resumes at 10:00.
 
-### Filtered hosts and streaming
+### Filtered CSRI preview
 
-Aegisub can create a fresh CSRI instance with only the Dialogue events
-active on the requested frame. Such a load can omit declarations needed
-at a visible line's earlier start time. For filtered preview, keep the
-outer times of **all** metadata carriers wide enough to cover the script.
-Use a leading `{OBRCC:start,end}` group on timed actor carriers, with
-the interval in integer milliseconds from 0 through 2147483647.
+Aegisub can open a fresh CSRI instance with just the Dialogue events
+active on the requested frame. The actor declarations needed for that
+frame are active by their ordinary ASS times. Track-wide style and
+whitelist carriers should span the preview range so the host includes
+them in filtered loads. Editing an actor carrier's Start or End changes
+the interval immediately when the editor refreshes the frame.
 [See Aegisub's frame loading](https://github.com/TypesettingTools/Aegisub/blob/master/src/async_video_provider.cpp#L51-L69).
-
-```ass
-Dialogue: 0,0:00:00.00,9:59:59.99,Default,NOELLE,0,0,0,OBRCC,{OBRCC:300000,600000}{\c&HAC5CCC&}
-Dialogue: 0,0:00:00.00,9:59:59.99,Default,NOELLE,0,0,0,OBRCC,{OBRCC:420000,480000}{\c&HFABB41&\1a&H20&}
-```
 
 Mangetsu handles the shared Dialogue carriers through ASS file loading,
 `ass_process_data()` and `ass_process_chunk()`. For Matroska packets, actor
