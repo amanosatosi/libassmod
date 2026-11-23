@@ -35,6 +35,9 @@ static inline uint32_t mult_alpha(uint32_t a, uint32_t b)
     return a - ((uint64_t) a * b + 0x7F) / 0xFF + b;
 }
 
+struct ass_colorcode_program;
+void ass_apply_colorcode_program(RenderContext *state,
+                                 const struct ass_colorcode_program *program);
 void ass_update_font(RenderContext *state);
 extern const ASS_FuriganaStyle ass_native_furigana_style;
 void ass_init_style_extension_state(RenderContext *state, const ASS_Style *style);

@@ -49,6 +49,17 @@ typedef enum {
     // max 32 enumerators
 } ScriptInfo;
 
+typedef struct ass_colorcode_program ASS_ColorcodeProgram;
+
+typedef struct ass_timed_colorcode {
+    char *name;
+    long long start, end;
+    // File declarations precede packets, which use Matroska ReadOrder.
+    bool packet;
+    int read_order;
+    ASS_ColorcodeProgram *program;
+} ASS_TimedColorcode;
+
 struct parser_priv {
     ParserState state;
     char *fontname;
@@ -76,9 +87,25 @@ struct parser_priv {
     bool has_geometry_style_expressions;
     unsigned style_extension_revision;
 
+    ASS_TimedColorcode *timed_colorcodes;
+    int n_timed_colorcodes, max_timed_colorcodes;
+    unsigned timed_colorcode_revision;
+    // Reuse whitelist storage without changing the public track layout.
+    ASS_ColorcodeConfig oborodzuki_whitelist;
+
     long long prune_delay;
     long long prune_next_ts;
 };
+
+enum ass_oborodzuki_effect {
+    OBR_NONE, OBR_COLORCODE, OBR_STYLE,
+};
+
+const ASS_TimedColorcode *ass_find_timed_colorcode(const ASS_Track *track,
+                                                   const char *name, long long start);
+ASS_ColorcodeProgram *ass_compile_colorcode(const char *text);
+void ass_free_colorcode_program(ASS_ColorcodeProgram *program);
+bool ass_colorcode_uses_geometry(const ASS_ColorcodeProgram *program);
 
 int ass_parse_style_extension(ASS_Track *track, int sid, char *text);
 void ass_free_style_extension(ASS_Track *track, int sid);

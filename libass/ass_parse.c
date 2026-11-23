@@ -79,6 +79,128 @@ bool ass_prepare_override_block(char **start, char **end, ASS_OverrideText **sto
     return true;
 }
 
+struct arg {
+    char *start, *end;
+};
+
+typedef struct colorcode_tag {
+    struct colorcode_tag *next;
+    char *name, *name_end, *end;
+    int nargs, empty_args;
+    bool has_backslash_arg, balanced_args;
+    struct arg args[];
+} ColorcodeTag;
+
+typedef struct colorcode_block {
+    struct colorcode_block *next;
+    ColorcodeTag *tags;
+    size_t length;
+    char text[];
+} ColorcodeBlock;
+
+static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
+                        bool nested, ColorcodeTag ***tail, const ColorcodeBlock *replay);
+
+struct ass_colorcode_program {
+    ColorcodeBlock *first;
+    bool expression_geometry;
+};
+
+void ass_free_colorcode_program(ASS_ColorcodeProgram *program)
+{
+    if (!program)
+        return;
+    while (program->first) {
+        ColorcodeBlock *block = program->first;
+        program->first = block->next;
+        while (block->tags) {
+            ColorcodeTag *tag = block->tags;
+            block->tags = tag->next;
+            free(tag);
+        }
+        free(block);
+    }
+    free(program);
+}
+
+ASS_ColorcodeProgram *ass_compile_colorcode(const char *text)
+{
+    ASS_ColorcodeProgram *program = calloc(1, sizeof(*program));
+    if (!program)
+        return NULL;
+
+    ColorcodeBlock **tail = &program->first;
+    for (const char *p = text; *p;) {
+        const char *start, *end;
+        bool braced = *p == '{';
+        if (braced) {
+            start = p + 1;
+            end = strchr(start, '}');
+            if (!end)
+                break;
+            p = end + 1;
+        } else if (*p == '\\') {
+            start = p;
+            end = strchr(start, '{');
+            if (!end)
+                end = start + strlen(start);
+            p = end;
+        } else {
+            p++;
+            continue;
+        }
+        if (start == end)
+            continue;
+
+        char *begin = (char *) start, *stop = (char *) end;
+        ASS_OverrideText *storage = NULL;
+        if (braced &&
+                !ass_prepare_override_block(&begin, &stop, &storage))
+            goto fail;
+
+        size_t length = stop - begin;
+        ColorcodeBlock *block = malloc(sizeof(*block) + length + 2);
+        if (!block) {
+            free(storage);
+            goto fail;
+        }
+        block->next = NULL;
+        block->tags = NULL;
+        block->length = length;
+        memcpy(block->text, begin, length);
+        // The parser can inspect the end sentinel.
+        block->text[length] = *stop;
+        block->text[length + 1] = 0;
+        program->expression_geometry |= ass_expr_uses_geometry(block->text,
+                                                               block->text + length);
+        free(storage);
+        *tail = block;
+        tail = &block->next;
+        ColorcodeTag **tags = &block->tags;
+        if (!parse_tags(NULL, block->text, block->text + length, 1.0, false, &tags, NULL))
+            goto fail;
+    }
+    return program;
+
+fail:
+    ass_free_colorcode_program(program);
+    return NULL;
+}
+
+bool ass_colorcode_uses_geometry(const ASS_ColorcodeProgram *program)
+{
+    return program->expression_geometry;
+}
+
+void ass_apply_colorcode_program(RenderContext *state, const ASS_ColorcodeProgram *program)
+{
+    bool old_mode = state->colorcode_parse;
+    state->colorcode_parse = true;
+    for (const ColorcodeBlock *block = program->first; block; block = block->next)
+        parse_tags(state, block->text, block->text + block->length, 1.0, false, NULL, block);
+    state->colorcode_parse = old_mode;
+}
+
 void ass_free_override_buffers(RenderContext *state)
 {
     while (state->override_buffers) {
@@ -87,10 +209,6 @@ void ass_free_override_buffers(RenderContext *state)
         free(buffer);
     }
 }
-
-struct arg {
-    char *start, *end;
-};
 
 static bool parse_int32_arg_strict(struct arg arg, int32_t *out);
 static bool parse_double_arg_strict(struct arg arg, double *out);
@@ -5074,92 +5192,14 @@ static const ASS_FuriganaStyle *furigana_defaults(const RenderContext *state)
     return state->furi_defaults ? state->furi_defaults : &ass_native_furigana_style;
 }
 
-char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
-                     bool nested)
+static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
+                        bool nested, ColorcodeTag ***tail, const ColorcodeBlock *replay)
 {
-    ASS_Renderer *render_priv = state->renderer;
+    ASS_Renderer *render_priv = state ? state->renderer : NULL;
+    const ColorcodeTag *token = replay ? replay->tags : NULL;
     GradientSlideSettings saved_slide;
     bool restore_slide = false;
-    for (char *q; p < end; p = q) {
-        while (*p != '\\' && p != end)
-            ++p;
-        if (*p != '\\')
-            break;
-        ++p;
-        if (p != end)
-            skip_spaces(&p);
-
-        q = p;
-        while (*q != '(' && *q != '\\' && q != end)
-            ++q;
-        if (q == p)
-            continue;
-
-        char *name_end = q;
-        char *slide_arg = name_end;
-        double *slide_setting = gradient_slide_tag(state, p, name_end, &slide_arg);
-
-        // Reject whole unsupported tags, including nested transforms, before
-        // any early handler can interpret them or execute their child tags.
-        if (state->style_extension_parse && !slide_setting &&
-                !style_extension_name_allowed(p, name_end)) {
-            if (*q == '(') {
-                int depth = 1;
-                for (q++; q < end && depth; q++) {
-                    if (*q == '(') depth++;
-                    else if (*q == ')') depth--;
-                }
-            }
-            ass_msg(render_priv->library, MSGL_V,
-                    "Ignoring unsupported mangetsu-style tag: %.*s",
-                    (int) (name_end - p), p);
-            continue;
-        }
-
-        if (state->chat_side_only_parse &&
-            !chat_structural_name_is(p, name_end, "msgleft") &&
-            !chat_structural_name_is(p, name_end, "msgright")) {
-            if (*q == '(') {
-                int depth = 1;
-                for (q++; q < end && depth; q++) {
-                    if (*q == '(') depth++;
-                    else if (*q == ')') depth--;
-                }
-            }
-            continue;
-        }
-
-        /* Scroll lists bypass the legacy bounded argument array. Consume the
-         * complete tag even on failure, and publish state only after validation. */
-        if (name_end - p >= 6 && !memcmp(p, "scroll", 6)) {
-            char *scroll_end = name_end;
-            while (scroll_end > p && (scroll_end[-1] == ' ' || scroll_end[-1] == '\t'))
-                scroll_end--;
-            if (*q == '(') {
-                char *close = memchr(q + 1, ')', end - (q + 1));
-                if (scroll_end - p == 6 && close && !nested &&
-                        !state->karaoke_only_parse && !state->colorcode_parse)
-                    ass_scroll_start(state, q + 1, close);
-                q = close ? close + 1 : end;
-            } else if (!nested && !state->karaoke_only_parse &&
-                       !state->colorcode_parse) {
-                int32_t value;
-                if (scroll_end - p == 7 && p[6] == '0') {
-                    state->scroll_id = 0;
-                } else if (name_end - p >= 8 && p[6] == 's' && p[7] == 'l') {
-                    if (ass_scroll_integer(p + 8, name_end, &value) && value > 0) {
-                        state->scroll_show_lines = value;
-                        if (state->scroll_id)
-                            state->scroll_contexts[state->scroll_id - 1].show_lines = value;
-                    }
-                } else if (name_end - p >= 7 && p[6] == 't') {
-                    if (ass_scroll_integer(p + 7, name_end, &value))
-                        state->scroll_duration = value;
-                }
-            }
-            continue;
-        }
-
+    for (char *q; replay ? token != NULL : p < end; p = q) {
         // Store one extra element to be able to detect excess arguments
         struct arg args[MAX_VALID_NARGS + 1];
         int nargs = 0;
@@ -5169,92 +5209,205 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
         for (int i = 0; i <= MAX_VALID_NARGS; ++i)
             args[i].start = args[i].end = "";
 
-        size_t name_len = name_end - p;
-        bool is_transition = name_len == 1 && p[0] == 't';
+        char *name_end, *slide_arg;
+        double *slide_setting = NULL;
+        if (replay) {
+            p = token->name;
+            q = token->end;
+            name_end = token->name_end;
+            nargs = token->nargs;
+            empty_args = token->empty_args;
+            has_backslash_arg = token->has_backslash_arg;
+            balanced_args = token->balanced_args;
+            memcpy(args, token->args, nargs * sizeof(*args));
+            slide_arg = name_end;
+            slide_setting = gradient_slide_tag(state, p, name_end, &slide_arg);
+            token = token->next;
+        } else {
+            while (*p != '\\' && p != end)
+                ++p;
+            if (*p != '\\')
+                break;
+            ++p;
+            if (p != end)
+                skip_spaces(&p);
 
-        // Split parenthesized arguments. Do this for all tags and before
-        // any non-parenthesized argument because that's what VSFilter does.
-        if (*q == '(') {
-            ++q;
-            // Legacy argument splitting stops at the first close. A group
-            // opener inside that first span opts into balanced splitting.
-            char *first = q;
-            if (!is_transition)
-                while (first < end && *first != '(' && *first != ')' && *first != '\\')
-                    first++;
-            bool grouped = !is_transition && first < end && *first == '(';
-            if (is_transition || grouped) {
-                int depth = 1;
-                char *arg_start = q;
-                while (q != end && depth > 0) {
-                    if (*q == '\\') {
-                        has_backslash_arg = true;
-                        if (grouped)
-                            break;
+            q = p;
+            while (*q != '(' && *q != '\\' && q != end)
+                ++q;
+            if (q == p)
+                continue;
+
+            name_end = q;
+            slide_arg = name_end;
+            if (!tail)
+                slide_setting = gradient_slide_tag(state, p, name_end, &slide_arg);
+
+            // Reject whole unsupported tags, including nested transforms, before
+            // any early handler can interpret them or execute their child tags.
+            if (!tail && state->style_extension_parse && !slide_setting &&
+                    !style_extension_name_allowed(p, name_end)) {
+                if (*q == '(') {
+                    int depth = 1;
+                    for (q++; q < end && depth; q++) {
+                        if (*q == '(') depth++;
+                        else if (*q == ')') depth--;
                     }
-                    if (*q == '(') {
-                        depth++;
-                    } else if (*q == ')') {
-                        depth--;
-                        if (depth == 0) {
+                }
+                ass_msg(render_priv->library, MSGL_V,
+                        "Ignoring unsupported mangetsu-style tag: %.*s",
+                        (int) (name_end - p), p);
+                continue;
+            }
+
+            if (!tail && state->chat_side_only_parse &&
+                !chat_structural_name_is(p, name_end, "msgleft") &&
+                !chat_structural_name_is(p, name_end, "msgright")) {
+                if (*q == '(') {
+                    int depth = 1;
+                    for (q++; q < end && depth; q++) {
+                        if (*q == '(') depth++;
+                        else if (*q == ')') depth--;
+                    }
+                }
+                continue;
+            }
+
+            /* Scroll lists bypass the legacy bounded argument array. Consume the
+             * complete tag even on failure, and publish state only after validation. */
+            if (name_end - p >= 6 && !memcmp(p, "scroll", 6)) {
+                char *scroll_end = name_end;
+                while (scroll_end > p && (scroll_end[-1] == ' ' || scroll_end[-1] == '\t'))
+                    scroll_end--;
+                if (*q == '(') {
+                    char *close = memchr(q + 1, ')', end - (q + 1));
+                    if (!tail && scroll_end - p == 6 && close && !nested &&
+                            !state->karaoke_only_parse && !state->colorcode_parse)
+                        ass_scroll_start(state, q + 1, close);
+                    q = close ? close + 1 : end;
+                } else if (!tail && !nested && !state->karaoke_only_parse &&
+                           !state->colorcode_parse) {
+                    int32_t value;
+                    if (scroll_end - p == 7 && p[6] == '0') {
+                        state->scroll_id = 0;
+                    } else if (name_end - p >= 8 && p[6] == 's' && p[7] == 'l') {
+                        if (ass_scroll_integer(p + 8, name_end, &value) && value > 0) {
+                            state->scroll_show_lines = value;
+                            if (state->scroll_id)
+                                state->scroll_contexts[state->scroll_id - 1].show_lines = value;
+                        }
+                    } else if (name_end - p >= 7 && p[6] == 't') {
+                        if (ass_scroll_integer(p + 7, name_end, &value))
+                            state->scroll_duration = value;
+                    }
+                }
+                continue;
+            }
+
+            size_t name_len = name_end - p;
+            bool is_transition = name_len == 1 && p[0] == 't';
+
+            // Split parenthesized arguments. Do this for all tags and before
+            // any non-parenthesized argument because that's what VSFilter does.
+            if (*q == '(') {
+                ++q;
+                // Legacy argument splitting stops at the first close. A group
+                // opener inside that first span opts into balanced splitting.
+                char *first = q;
+                if (!is_transition)
+                    while (first < end && *first != '(' && *first != ')' && *first != '\\')
+                        first++;
+                bool grouped = !is_transition && first < end && *first == '(';
+                if (is_transition || grouped) {
+                    int depth = 1;
+                    char *arg_start = q;
+                    while (q != end && depth > 0) {
+                        if (*q == '\\') {
+                            has_backslash_arg = true;
+                            if (grouped)
+                                break;
+                        }
+                        if (*q == '(') {
+                            depth++;
+                        } else if (*q == ')') {
+                            depth--;
+                            if (depth == 0) {
+                                int before = nargs;
+                                push_arg(args, &nargs, arg_start, q);
+                                empty_args += before == nargs;
+                                ++q;
+                                break;
+                            }
+                        } else if (*q == ',' && depth == 1) {
                             int before = nargs;
                             push_arg(args, &nargs, arg_start, q);
                             empty_args += before == nargs;
-                            ++q;
+                            arg_start = q + 1;
+                        }
+                        ++q;
+                    }
+                    if (grouped && depth > 0)
+                        continue;
+                    balanced_args = depth == 0;
+                    if (depth > 0 && arg_start < q)
+                        push_arg(args, &nargs, arg_start, q);
+                } else {
+                    while (1) {
+                        if (q != end)
+                            skip_spaces(&q);
+
+                        // Split on commas. If there is a backslash, ignore any
+                        // commas following it and lump everything starting from
+                        // the last comma, through the backslash and all the way
+                        // to the end of the argument string into a single argument.
+
+                        char *r = q;
+                        while (*r != ',' && *r != '\\' && *r != ')' && r != end)
+                            ++r;
+
+                        if (*r == ',') {
+                            push_arg(args, &nargs, q, r);
+                            q = r + 1;
+                        } else {
+                            // Swallow the rest of the parenthesized string. This could
+                            // be either a backslash-argument or simply the last argument.
+                            if (*r == '\\') {
+                                has_backslash_arg = true;
+                                char *paren = memchr(r, ')', end - r);
+                                if (paren)
+                                    r = paren;
+                                else
+                                    r = end;
+                            }
+                            push_arg(args, &nargs, q, r);
+                            q = r;
+                            // The closing parenthesis could be missing.
+                            if (q != end)
+                                ++q;
                             break;
                         }
-                    } else if (*q == ',' && depth == 1) {
-                        int before = nargs;
-                        push_arg(args, &nargs, arg_start, q);
-                        empty_args += before == nargs;
-                        arg_start = q + 1;
-                    }
-                    ++q;
-                }
-                if (grouped && depth > 0)
-                    continue;
-                balanced_args = depth == 0;
-                if (depth > 0 && arg_start < q)
-                    push_arg(args, &nargs, arg_start, q);
-            } else {
-                while (1) {
-                    if (q != end)
-                        skip_spaces(&q);
-
-                    // Split on commas. If there is a backslash, ignore any
-                    // commas following it and lump everything starting from
-                    // the last comma, through the backslash and all the way
-                    // to the end of the argument string into a single argument.
-
-                    char *r = q;
-                    while (*r != ',' && *r != '\\' && *r != ')' && r != end)
-                        ++r;
-
-                    if (*r == ',') {
-                        push_arg(args, &nargs, q, r);
-                        q = r + 1;
-                    } else {
-                        // Swallow the rest of the parenthesized string. This could
-                        // be either a backslash-argument or simply the last argument.
-                        if (*r == '\\') {
-                            has_backslash_arg = true;
-                            char *paren = memchr(r, ')', end - r);
-                            if (paren)
-                                r = paren;
-                            else
-                                r = end;
-                        }
-                        push_arg(args, &nargs, q, r);
-                        q = r;
-                        // The closing parenthesis could be missing.
-                        if (q != end)
-                            ++q;
-                        break;
                     }
                 }
             }
+
+            if (tail) {
+                size_t bytes = nargs * sizeof(*args);
+                ColorcodeTag *tag = malloc(sizeof(*tag) + bytes);
+                if (!tag)
+                    return NULL;
+                *tag = (ColorcodeTag) {
+                    .name = p, .name_end = name_end, .end = q, .nargs = nargs,
+                    .empty_args = empty_args, .has_backslash_arg = has_backslash_arg,
+                    .balanced_args = balanced_args,
+                };
+                memcpy(tag->args, args, bytes);
+                **tail = tag;
+                *tail = &tag->next;
+                continue;
+            }
         }
 
+        size_t name_len = name_end - p;
         if (slide_setting) {
             if (!state->karaoke_only_parse && !state->chat_side_only_parse &&
                     (slide_arg == name_end || *name_end != '(')) {
@@ -7065,6 +7218,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
     if (restore_slide)
         state->gradient_slide = saved_slide;
     return p;
+}
+
+char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr, bool nested)
+{
+    return parse_tags(state, p, end, pwr, nested, NULL, NULL);
 }
 
 static char *parse_override_block(RenderContext *state, char *start, char *end,

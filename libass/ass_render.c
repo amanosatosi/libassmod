@@ -3390,14 +3390,13 @@ static ASS_ActorColorcode *find_actor_colorcode(ASS_Track *track,
     return NULL;
 }
 
-static bool colorcode_style_allowed(ASS_Track *track, const char *style_name)
+static bool colorcode_style_allowed(const ASS_ColorcodeConfig *cfg,
+                                    const char *style_name, bool named_reset)
 {
     if (!style_name)
         return false;
-
-    ASS_ColorcodeConfig *cfg = &track->colorcode;
     if (!cfg->has_applied_styles)
-        return true;
+        return !named_reset;
 
     for (int i = 0; i < cfg->n_applied_styles; i++)
         if (!strcmp(cfg->applied_styles[i], style_name))
@@ -3459,45 +3458,18 @@ static void apply_actor_colorcoding(RenderContext *state,
                                     const char *active_style_name)
 {
     ASS_Track *track = state->renderer->track;
-    ASS_ColorcodeConfig *cfg = &track->colorcode;
-    const char *event_name = state->event && state->event->Name ?
-                             state->event->Name : "";
-
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "Mangetsu colorcoding check: actors=%d has_whitelist=%d "
-            "whitelist_entries=%d event_name='%s' active_style='%s'",
-            cfg->n_actors, cfg->has_applied_styles, cfg->n_applied_styles,
-            event_name, active_style_name ? active_style_name : "");
-
-    if (!cfg->n_actors) {
-        ass_msg(state->renderer->library, MSGL_DBG2,
-                "Mangetsu colorcoding skipped: no actor metadata");
-        return;
+    const struct parser_priv *parser = track->parser_priv;
+    if (state->timed_colorcode &&
+            colorcode_style_allowed(&parser->oborodzuki_whitelist,
+                                    active_style_name, explicit_style_reset)) {
+        capture_effective_default_state(state);
+        ass_apply_colorcode_program(state, state->timed_colorcode->program);
+    } else if (state->global_colorcode &&
+               colorcode_style_allowed(&track->colorcode,
+                                       active_style_name, explicit_style_reset)) {
+        capture_effective_default_state(state);
+        apply_colorcode_text(state, state->global_colorcode->Text);
     }
-
-    if (!cfg->has_applied_styles && explicit_style_reset) {
-        ass_msg(state->renderer->library, MSGL_DBG2,
-                "Mangetsu colorcoding skipped: explicit style reset without whitelist");
-        return;
-    }
-
-    bool style_allowed = colorcode_style_allowed(track, active_style_name);
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "Mangetsu colorcoding style whitelist result: %d", style_allowed);
-    if (!style_allowed)
-        return;
-
-    ASS_ActorColorcode *actor = find_actor_colorcode(track, event_name);
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "Mangetsu colorcoding actor lookup for '%s': %s",
-            event_name, actor ? "found" : "missing");
-    if (!actor)
-        return;
-
-    apply_colorcode_text(state, actor->Text);
-    ass_msg(state->renderer->library, MSGL_DBG2,
-            "Mangetsu colorcoding applied actor '%s': text='%s'",
-            actor->Name, actor->Text ? actor->Text : "");
 }
 
 static bool border_style_tag_value_valid(int32_t value)
@@ -3824,7 +3796,6 @@ void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
     if (render_priv->track->parser_priv &&
             render_priv->track->parser_priv->style_extensions)
         ass_apply_style_extension(state, extension_sid);
-    capture_effective_default_state(state);
     apply_actor_colorcoding(state, explicit_style_reset, active_style_name);
     state->chat_bubble = (ChatBubbleStyle) {
         .fill = state->c[2],
@@ -12443,7 +12414,8 @@ static struct ass_expr_layout_cache *expression_layout_slot(ASS_Renderer *render
 #undef ADD_KEY
     /* Actors and named resets can read additional, manually editable style
      * records. Decline caching where the complete dependency key is absent. */
-    if (track->colorcode.n_actors || strstr(event->Text, "\\r"))
+    if (renderer->state.global_colorcode || renderer->state.timed_colorcode ||
+            strstr(event->Text, "\\r"))
         return NULL;
     if (!renderer->expression_layout_cache)
         renderer->expression_layout_cache = calloc(EXPR_LAYOUT_CACHE_SIZE,
@@ -12479,8 +12451,9 @@ static struct ass_expr_layout_cache *expression_layout_slot(ASS_Renderer *render
     return entry;
 }
 
-static bool event_uses_expression_geometry(const ASS_Track *track, const ASS_Event *event)
+static bool event_uses_expression_geometry(const RenderContext *state, const ASS_Event *event)
 {
+    const ASS_Track *track = state->renderer->track;
     if (track->parser_priv && track->parser_priv->has_geometry_style_expressions &&
             (ass_style_has_expression_geometry(track, event->Style) ||
              strstr(event->Text, "\\r")))
@@ -12493,23 +12466,19 @@ static bool event_uses_expression_geometry(const ASS_Track *track, const ASS_Eve
             return true;
         start = strchr(end + 1, '{');
     }
-    if (event->Name && *event->Name)
-        for (int i = 0; i < track->colorcode.n_actors; i++) {
-            const ASS_ActorColorcode *actor = &track->colorcode.actors[i];
-            if (actor->Name && actor->Text && !strcmp(event->Name, actor->Name) &&
-                    ass_expr_uses_geometry(actor->Text, actor->Text + strlen(actor->Text)))
-                return true;
-        }
-    return false;
+    if (state->timed_colorcode && ass_colorcode_uses_geometry(state->timed_colorcode->program))
+        return true;
+    char *text = state->global_colorcode ? state->global_colorcode->Text : NULL;
+    return text && ass_expr_uses_geometry(text, text + strlen(text));
 }
 
-static bool event_needs_expression_bounds(const ASS_Renderer *renderer, const ASS_Event *event)
+static bool event_needs_expression_bounds(const RenderContext *state, const ASS_Event *event)
 {
-    const ASS_Track *track = renderer->track;
+    const ASS_Track *track = state->renderer->track;
     return event->Text && event->Style >= 0 && event->Style < track->n_styles &&
         ((track->parser_priv && track->parser_priv->has_geometry_style_expressions) ||
-         strchr(event->Text, '$') || (track->colorcode.n_actors && event->Name && *event->Name)) &&
-        event_uses_expression_geometry(track, event);
+         state->timed_colorcode || state->global_colorcode || strchr(event->Text, '$')) &&
+        event_uses_expression_geometry(state, event);
 }
 
 static void setup_perspective(RenderContext *state, ASS_DRect layout,
@@ -13208,12 +13177,40 @@ static void setup_shaper(ASS_Shaper *shaper, ASS_Renderer *render_priv)
             track->parser_priv->feature_flags & FEATURE_MASK(ASS_FEATURE_WHOLE_TEXT_LAYOUT));
 }
 
+static ASS_RenderPriv *get_render_priv(ASS_Renderer *renderer, ASS_Event *event);
+
+static const ASS_TimedColorcode *event_timed_colorcode(ASS_Renderer *renderer, ASS_Event *event)
+{
+    const struct parser_priv *parser = renderer->track->parser_priv;
+    if (!parser->n_timed_colorcodes || !event->Name || !*event->Name)
+        return NULL;
+
+    ASS_RenderPriv *priv = get_render_priv(renderer, event);
+    // Ordinary events ingested by libass own their immutable Name. A cached
+    // match also compares its contents, for clients editing an event in place.
+    if (priv && priv->timed_colorcode_revision == parser->timed_colorcode_revision &&
+            priv->timed_colorcode_start == event->Start && priv->timed_colorcode &&
+            !strcmp(priv->timed_colorcode->name, event->Name))
+        return priv->timed_colorcode;
+
+    const ASS_TimedColorcode *entry = ass_find_timed_colorcode(renderer->track,
+                                                               event->Name, event->Start);
+    if (priv) {
+        priv->timed_colorcode_revision = parser->timed_colorcode_revision;
+        priv->timed_colorcode_start = event->Start;
+        priv->timed_colorcode = entry;
+    }
+    return entry;
+}
+
 bool ass_render_event(RenderContext *state, ASS_Event *event,
                       EventImages *event_images, ASS_ImageRGBA **rgba_out)
 {
     ASS_Renderer *renderer = state->renderer;
+    state->timed_colorcode = event_timed_colorcode(renderer, event);
+    state->global_colorcode = find_actor_colorcode(renderer->track, event->Name);
     state->expression_bounds = (ASS_ExprBounds) {0};
-    if (event_needs_expression_bounds(renderer, event)) {
+    if (event_needs_expression_bounds(state, event)) {
         bool hit = false;
         struct ass_expr_layout_cache *entry = expression_layout_slot(renderer, event, &hit);
         if (hit) {

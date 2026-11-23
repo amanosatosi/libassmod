@@ -996,6 +996,8 @@ struct render_context {
     ColumnStyleState column_base_style;
     ColumnStyleState default_style;
     bool colorcode_parse;
+    const struct ass_timed_colorcode *timed_colorcode;
+    const ASS_ActorColorcode *global_colorcode;
     struct ass_style_extension_builder *style_extension_parse;
 
     // used to store RenderContext.style when doing selective style overrides
@@ -1151,6 +1153,9 @@ struct ass_renderer {
 typedef struct render_priv {
     int top, height, left, width;
     int render_id;
+    unsigned timed_colorcode_revision;
+    long long timed_colorcode_start;
+    const struct ass_timed_colorcode *timed_colorcode;
 } RenderPriv;
 
 typedef struct {

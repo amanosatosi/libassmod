@@ -67,14 +67,24 @@ static const char *const ssa_event_format =
 #define COLORCODE_EFFECT "mangetsu-colorcoding"
 #define COLORCODE_APPLIED_STYLES "mangetsu-colorcode-applied-styles"
 
+static enum ass_oborodzuki_effect oborodzuki_effect(const char *effect)
+{
+    if (!effect)
+        return OBR_NONE;
+    if (!strcmp(effect, "OBRCC") || !strcmp(effect, "oborodzuki-colorcoding"))
+        return OBR_COLORCODE;
+    if (!strcmp(effect, "OBRS") || !strcmp(effect, "oborodzuki-style"))
+        return OBR_STYLE;
+    return OBR_NONE;
+}
+
 int ass_library_version(void)
 {
     return LIBASS_VERSION;
 }
 
-static void clear_colorcode_applied_styles(ASS_Track *track)
+static void clear_colorcode_applied_styles(ASS_ColorcodeConfig *cfg)
 {
-    ASS_ColorcodeConfig *cfg = &track->colorcode;
     for (int i = 0; i < cfg->n_applied_styles; i++)
         free(cfg->applied_styles[i]);
     cfg->n_applied_styles = 0;
@@ -88,7 +98,7 @@ static void free_colorcode_config(ASS_Track *track)
         free(cfg->actors[i].Text);
     }
     free(cfg->actors);
-    clear_colorcode_applied_styles(track);
+    clear_colorcode_applied_styles(cfg);
     free(cfg->applied_styles);
 }
 
@@ -136,10 +146,9 @@ static int set_colorcode_actor(ASS_Track *track, const char *name,
     return 0;
 }
 
-static int add_colorcode_applied_style(ASS_Track *track,
+static int add_colorcode_applied_style(ASS_ColorcodeConfig *cfg,
                                        const char *start, size_t len)
 {
-    ASS_ColorcodeConfig *cfg = &track->colorcode;
     if (cfg->n_applied_styles == cfg->max_applied_styles) {
         if (cfg->max_applied_styles >= FFMIN(SIZE_MAX, INT_MAX) / 2)
             return -1;
@@ -158,10 +167,10 @@ static int add_colorcode_applied_style(ASS_Track *track,
     return 0;
 }
 
-static int set_colorcode_applied_styles(ASS_Track *track, const char *text)
+static int set_colorcode_applied_styles(ASS_Track *track,
+                                        ASS_ColorcodeConfig *cfg, const char *text)
 {
-    ASS_ColorcodeConfig *cfg = &track->colorcode;
-    clear_colorcode_applied_styles(track);
+    clear_colorcode_applied_styles(cfg);
     cfg->has_applied_styles = true;
 
     const char *p = text ? text : "";
@@ -170,7 +179,7 @@ static int set_colorcode_applied_styles(ASS_Track *track, const char *text)
         const char *end = strchr(start, '}');
         if (!end)
             break;
-        if (end > start && add_colorcode_applied_style(track, start,
+        if (end > start && add_colorcode_applied_style(cfg, start,
                                                        end - start) < 0)
             return -1;
         p = end + 1;
@@ -179,7 +188,7 @@ static int set_colorcode_applied_styles(ASS_Track *track, const char *text)
     if (!cfg->n_applied_styles) {
         cfg->has_applied_styles = false;
         ass_msg(track->library, MSGL_WARN,
-                "Empty mangetsu colorcoding applied-styles whitelist; "
+                "Empty Actor Colorcoding style whitelist; "
                 "treating it as absent");
     }
 
@@ -194,6 +203,14 @@ void ass_free_track(ASS_Track *track)
         return;
 
     if (track->parser_priv) {
+        struct parser_priv *parser = track->parser_priv;
+        for (int i = 0; i < parser->n_timed_colorcodes; i++) {
+            free(parser->timed_colorcodes[i].name);
+            ass_free_colorcode_program(parser->timed_colorcodes[i].program);
+        }
+        free(parser->timed_colorcodes);
+        clear_colorcode_applied_styles(&parser->oborodzuki_whitelist);
+        free(parser->oborodzuki_whitelist.applied_styles);
         for (int sid = 0; sid < track->parser_priv->n_style_extensions; sid++)
             ass_free_style_extension(track, sid);
         free(track->parser_priv->read_order_bitmap);
@@ -621,6 +638,7 @@ static int process_event_tail(ASS_Track *track, ASS_Event *event,
     char *p = str;
     int i;
     ASS_Event *target = event;
+    char *style_name = NULL;
 
     char *format = strdup(track->event_format);
     if (!format)
@@ -641,6 +659,12 @@ static int process_event_tail(ASS_Track *track, ASS_Event *event,
                        (end[-1] == '\r' || end[-1] == '\t' || end[-1] == ' '))
                     *--end = 0;
             }
+            if (style_name)
+                event->Style = metadata || oborodzuki_effect(event->Effect) == OBR_STYLE ?
+                    ass_lookup_style_strict(track, style_name) :
+                    ass_lookup_style(track, style_name);
+            else if (oborodzuki_effect(event->Effect) == OBR_STYLE)
+                event->Style = -1;
             event->Duration -= event->Start;
             free(format);
             return event->Text ? 0 : -1;           // "Text" is always the last
@@ -652,8 +676,7 @@ static int process_event_tail(ASS_Track *track, ASS_Event *event,
         PARSE_START
             INTVAL(Layer)
         } else if (ass_strcasecmp(tname, "Style") == 0) {
-            target->Style = metadata ? ass_lookup_style_strict(track, token) :
-                                      ass_lookup_style(track, token);
+            style_name = token;
             STRVAL(Name)
             STRVAL(Effect)
             INTVAL(MarginL)
@@ -707,7 +730,7 @@ static int try_process_actor_colorcode_event(ASS_Track *track, bool is_comment,
     bool applied_styles = colorcode_marker_matches(
         event->Name, strlen(event->Name), COLORCODE_APPLIED_STYLES);
     if (applied_styles)
-        ret = set_colorcode_applied_styles(track, event->Text);
+        ret = set_colorcode_applied_styles(track, &track->colorcode, event->Text);
     else
         ret = set_colorcode_actor(track, event->Name, event->Text);
 
@@ -742,6 +765,128 @@ static int try_process_metadata_event(ASS_Track *track, bool is_comment,
                                          event->Text ? event->Text : "") < 0 ? -1 : 1;
     }
     return try_process_actor_colorcode_event(track, is_comment, event, top_scan_active);
+}
+
+static int colorcode_actor_upper_bound(const struct parser_priv *parser,
+                                       const char *name)
+{
+    int lo = 0, hi = parser->n_timed_colorcodes;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (strcmp(parser->timed_colorcodes[mid].name, name) <= 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+
+const ASS_TimedColorcode *ass_find_timed_colorcode(const ASS_Track *track,
+                                                   const char *name, long long start)
+{
+    const struct parser_priv *parser = track->parser_priv;
+    const ASS_TimedColorcode *list = parser->timed_colorcodes;
+    for (int i = colorcode_actor_upper_bound(parser, name); i > 0;) {
+        const ASS_TimedColorcode *entry = &list[--i];
+        if (strcmp(entry->name, name))
+            break;
+        if (entry->start <= start && start < entry->end)
+            return entry;
+    }
+    return NULL;
+}
+
+static bool parse_oborodzuki_interval(const char **text, long long *start, long long *end)
+{
+    static const char prefix[] = "{OBRCC:";
+    if (strncmp(*text, prefix, sizeof(prefix) - 1))
+        return true;
+
+    long long values[2];
+    const char *p = *text + sizeof(prefix) - 1;
+    for (int i = 0; i < 2; i++) {
+        long long value = 0;
+        if (*p < '0' || *p > '9')
+            return false;
+        do {
+            int digit = *p++ - '0';
+            if (value > (INT_MAX - digit) / 10)
+                return false;
+            value = value * 10 + digit;
+        } while (*p >= '0' && *p <= '9');
+        if (*p++ != (i ? '}' : ','))
+            return false;
+        values[i] = value;
+    }
+    *start = values[0];
+    *end = values[1];
+    *text = p;
+    return true;
+}
+
+static int process_oborodzuki_dialogue(ASS_Track *track, const ASS_Event *event,
+                                     enum ass_oborodzuki_effect effect, bool packet)
+{
+    struct parser_priv *parser = track->parser_priv;
+    if (effect == OBR_STYLE) {
+        if (event->Style < 0)
+            return 1;
+        return ass_parse_style_extension(track, event->Style, event->Text) < 0 ? -1 : 1;
+    }
+    if (!event->Name || !*event->Name)
+        return 1;
+    if (!strcmp(event->Name, "OBRCCS") ||
+            !strcmp(event->Name, "oborodzuki-colorcode-applied-styles"))
+        return set_colorcode_applied_styles(track, &parser->oborodzuki_whitelist,
+                                            event->Text) < 0 ? -1 : 1;
+
+    const char *text = event->Text;
+    long long start = event->Start;
+    long long end = start <= LLONG_MAX - FFMAX(event->Duration, 0) ?
+        start + FFMAX(event->Duration, 0) : LLONG_MAX;
+    if (!parse_oborodzuki_interval(&text, &start, &end) || start >= end)
+        return 1;
+
+    // Keep declarations grouped by actor and in ascending priority within
+    // each group. File order is implicit, even when aliases are mixed.
+    int pos = colorcode_actor_upper_bound(parser, event->Name);
+    ASS_TimedColorcode *list = parser->timed_colorcodes;
+    while (pos && list[pos - 1].packet && !strcmp(list[pos - 1].name, event->Name) &&
+           (!packet || list[pos - 1].read_order > event->ReadOrder))
+        pos--;
+    if (packet && pos && list[pos - 1].packet &&
+            list[pos - 1].read_order == event->ReadOrder &&
+            !strcmp(list[pos - 1].name, event->Name))
+        return 1;
+
+    if (parser->max_timed_colorcodes >= FFMIN(SIZE_MAX, INT_MAX) / 2)
+        return -1;
+    char *name = strdup(event->Name);
+    ASS_ColorcodeProgram *program = ass_compile_colorcode(text);
+    if (!name || !program)
+        goto fail;
+
+    if (parser->n_timed_colorcodes == parser->max_timed_colorcodes) {
+        int cap = parser->max_timed_colorcodes ? 2 * parser->max_timed_colorcodes : 8;
+        if (!ASS_REALLOC_ARRAY(parser->timed_colorcodes, cap))
+            goto fail;
+        parser->max_timed_colorcodes = cap;
+        list = parser->timed_colorcodes;
+    }
+    memmove(list + pos + 1, list + pos,
+            (parser->n_timed_colorcodes - pos) * sizeof(*list));
+    list[pos] = (ASS_TimedColorcode) {
+        .name = name, .start = start, .end = end, .packet = packet,
+        .read_order = event->ReadOrder, .program = program,
+    };
+    parser->n_timed_colorcodes++;
+    parser->timed_colorcode_revision++;
+    return 1;
+
+fail:
+    free(name);
+    ass_free_colorcode_program(program);
+    return -1;
 }
 
 static int process_metadata_comment(ASS_Track *track, char *str)
@@ -1281,8 +1426,6 @@ static int process_events_line(ASS_Track *track, char *str)
                     "Track treated as legacy ffmpeg sub.");
         }
     } else if (!strncmp(str, "Dialogue:", 9)) {
-        track->parser_priv->colorcode_scan_top = 0;
-        track->parser_priv->colorcode_block_closed = 1;
         // This should never be reached for embedded subtitles.
         // They have slightly different format and are parsed in ass_process_chunk,
         // called directly from demuxer
@@ -1305,6 +1448,16 @@ static int process_events_line(ASS_Track *track, char *str)
         event = track->events + eid;
 
         int ret = process_event_tail(track, event, str, 0, false);
+        enum ass_oborodzuki_effect effect = oborodzuki_effect(event->Effect);
+        if (effect != OBR_NONE) {
+            if (!ret)
+                ret = process_oborodzuki_dialogue(track, event, effect, false);
+            ass_free_event(track, eid);
+            track->n_events--;
+            return ret < 0 ? ret : 0;
+        }
+        track->parser_priv->colorcode_scan_top = 0;
+        track->parser_priv->colorcode_block_closed = 1;
         if (!ret) {
             update_prune_ts(track, event->Start + event->Duration);
             return 0;
@@ -1640,6 +1793,11 @@ void ass_process_chunk(ASS_Track *track, const char *data, int size,
 
         event->Start = timecode;
         event->Duration = duration;
+        enum ass_oborodzuki_effect effect = oborodzuki_effect(event->Effect);
+        if (effect != OBR_NONE) {
+            process_oborodzuki_dialogue(track, event, effect, true);
+            break;  // Metadata lives on the track, outside the visible event list.
+        }
         update_prune_ts(track, event->Start + event->Duration);
         goto cleanup;
 //              dump_events(tid);
