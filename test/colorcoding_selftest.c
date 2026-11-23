@@ -456,7 +456,8 @@ static bool expect_mangetsu_segments(ASS_Library *lib, ASS_Renderer *renderer,
                                      const char *dialogue, int segments,
                                      const char *label)
 {
-    MangetsuGradientDebugState debug;
+    // Sanitizer inlining can otherwise stack several full gradient captures.
+    static MangetsuGradientDebugState debug;
     if (!render_mangetsu_debug_case(lib, renderer, dialogue, &debug) ||
             debug.n_segments != segments) {
         fprintf(stderr, "%s\n", label);
@@ -471,7 +472,7 @@ static bool expect_one_mangetsu_segment(ASS_Library *lib,
                                         double angle, const char *label,
                                         MangetsuGradientDebugState *debug_out)
 {
-    MangetsuGradientDebugState debug;
+    static MangetsuGradientDebugState debug;
     if (!render_mangetsu_debug_case(lib, renderer, dialogue, &debug) ||
             debug.n_segments != 1 ||
             !debug.segments[0].active ||
@@ -492,7 +493,7 @@ static bool expect_equivalent_mangetsu_gradient(ASS_Library *lib,
                                                 const char *expected,
                                                 const char *label)
 {
-    MangetsuGradientDebugState got, reference;
+    static MangetsuGradientDebugState got, reference;
     if (!render_mangetsu_debug_case(lib, renderer, actual, &got) ||
             !render_mangetsu_debug_case(lib, renderer, expected, &reference) ||
             got.n_segments != 1 || reference.n_segments != 1 ||
@@ -528,7 +529,7 @@ static bool expect_one_mangetsu_segment_at(ASS_Library *lib,
                                            double angle, const char *label,
                                            MangetsuGradientDebugState *debug_out)
 {
-    MangetsuGradientDebugState debug;
+    static MangetsuGradientDebugState debug;
     if (!render_mangetsu_debug_case_at(lib, renderer, dialogue, now, &debug) ||
             debug.n_segments != 1 ||
             !debug.segments[0].active ||
@@ -549,7 +550,7 @@ static bool expect_one_mangetsu_target(ASS_Library *lib,
                                        MangetsuGradientTarget target,
                                        int layer, const char *label)
 {
-    MangetsuGradientDebugState debug;
+    static MangetsuGradientDebugState debug;
     if (!expect_one_mangetsu_segment(lib, renderer, dialogue, 2, 0.0,
                                      label, &debug))
         return false;
@@ -567,7 +568,7 @@ static bool expect_one_positioned_gradient_at(
     int stops, double angle, double x1, double y1, double x2, double y2,
     bool rect_valid, const char *label, MangetsuGradientDebugState *debug_out)
 {
-    MangetsuGradientDebugState debug;
+    static MangetsuGradientDebugState debug;
     if (!expect_one_mangetsu_segment_at(lib, renderer, dialogue, now, stops,
                                         angle, label, &debug))
         return false;
@@ -1406,7 +1407,7 @@ int main(void)
         }
     }
 
-    MangetsuGradientDebugState mangetsu_debug;
+    static MangetsuGradientDebugState mangetsu_debug;
     static const struct {
         const char *name;
         const char *hex;
@@ -1914,7 +1915,7 @@ int main(void)
         ok = false;
     }
 
-    MangetsuGradientDebugState positioned_debug;
+    static MangetsuGradientDebugState positioned_debug;
     ok &= expect_one_positioned_gradient(
         lib, renderer,
         "{\\pgrd(100,200,700,500,0,&H000000&,50%,&H0000FF&,&HFFFFFF&)}Positioned",

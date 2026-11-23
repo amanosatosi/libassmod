@@ -782,14 +782,17 @@ static int colorcode_actor_upper_bound(const struct parser_priv *parser,
 }
 
 const ASS_TimedColorcode *ass_find_timed_colorcode(const ASS_Track *track,
-                                                   const char *name, long long start)
+                                                   const char *name, long long start,
+                                                   const char **matched_actor)
 {
     const struct parser_priv *parser = track->parser_priv;
     const ASS_TimedColorcode *list = parser->timed_colorcodes;
+    *matched_actor = NULL;
     for (int i = colorcode_actor_upper_bound(parser, name); i > 0;) {
         const ASS_TimedColorcode *entry = &list[--i];
         if (strcmp(entry->name, name))
             break;
+        *matched_actor = entry->name;
         if (entry->start <= start && start < entry->end)
             return entry;
     }

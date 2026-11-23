@@ -102,7 +102,8 @@ enum ass_oborodzuki_effect {
 };
 
 const ASS_TimedColorcode *ass_find_timed_colorcode(const ASS_Track *track,
-                                                   const char *name, long long start);
+                                                   const char *name, long long start,
+                                                   const char **matched_actor);
 ASS_ColorcodeProgram *ass_compile_colorcode(const char *text);
 void ass_free_colorcode_program(ASS_ColorcodeProgram *program);
 bool ass_colorcode_uses_geometry(const ASS_ColorcodeProgram *program);

@@ -13186,18 +13186,21 @@ static const ASS_TimedColorcode *event_timed_colorcode(ASS_Renderer *renderer, A
         return NULL;
 
     ASS_RenderPriv *priv = get_render_priv(renderer, event);
-    // Ordinary events ingested by libass own their immutable Name. A cached
-    // match also compares its contents, for clients editing an event in place.
+    // Cache gaps as well as matches for actors with timed declarations.
+    // Compare the name's contents for clients editing an event in place.
     if (priv && priv->timed_colorcode_revision == parser->timed_colorcode_revision &&
-            priv->timed_colorcode_start == event->Start && priv->timed_colorcode &&
-            !strcmp(priv->timed_colorcode->name, event->Name))
+            priv->timed_colorcode_start == event->Start && priv->timed_colorcode_actor &&
+            !strcmp(priv->timed_colorcode_actor, event->Name))
         return priv->timed_colorcode;
 
+    const char *matched_actor;
     const ASS_TimedColorcode *entry = ass_find_timed_colorcode(renderer->track,
-                                                               event->Name, event->Start);
+                                                               event->Name, event->Start,
+                                                               &matched_actor);
     if (priv) {
         priv->timed_colorcode_revision = parser->timed_colorcode_revision;
         priv->timed_colorcode_start = event->Start;
+        priv->timed_colorcode_actor = matched_actor;
         priv->timed_colorcode = entry;
     }
     return entry;
