@@ -207,6 +207,7 @@ typedef struct {
     bool needs_rgba;
     bool has_positioned_alpha;
     bool has_gradient_slide;
+    unsigned column_mask;
     ASS_DRect perspective_rect;
     ASS_DVector perspective_corners[4];
 } EventImages;
@@ -677,8 +678,10 @@ typedef struct {
 typedef struct {
     int row;
     int column;
-    bool active;
+    uint8_t group;
 } ColumnGlyphInfo;
+
+enum { MAX_COLUMN_GROUP = 10 };
 
 enum {
     COLUMN_STYLE_FONT_NAME = 1u << 0,
@@ -762,6 +765,22 @@ typedef struct {
 } ColumnStyleDefault;
 
 typedef struct {
+    ColumnStyleDefault default_style;
+    double width, spacing;
+    int align;
+} Column;
+
+typedef struct {
+    Column *columns;
+    int capacity, rows, count;
+} ColumnLayout;
+
+typedef struct {
+    double *widths;
+    int capacity, count, events;
+} ColumnGroupWidths;
+
+typedef struct {
     GlyphInfo *glyphs;
     FriBidiChar *event_text;
     char *breaks;
@@ -781,14 +800,11 @@ typedef struct {
     int n_furi_groups;
     int max_furi_groups;
     ColumnGlyphInfo *column_glyphs;
-    ColumnStyleDefault *column_defaults;
     int max_column_glyphs;
-    double *column_widths;
-    double *column_spacing;
-    int *column_align;
-    int max_columns;
-    int column_rows;
-    int column_count;
+    unsigned column_layout_mask;
+    ColumnLayout column_layouts[MAX_COLUMN_GROUP];
+    bool has_shared_column_bounds;
+    double shared_column_left, shared_column_right;
     KaraokeSegment *karaoke_segments;
     int n_karaoke_segments;
     int max_karaoke_segments;
@@ -992,7 +1008,8 @@ struct render_context {
     int32_t rnd_x, rnd_y, rnd_z;
     int32_t rnd_seed;
     bool column_event;
-    bool column_active;
+    uint8_t column_group;
+    unsigned column_mask;
     int column_row;
     int column_index;
     ColumnStyleState column_base_style;
@@ -1121,6 +1138,9 @@ struct ass_renderer {
     EventImages *eimg;          // temporary buffer for sorting rendered events
     int eimg_size;              // allocated buffer size
     int n_rendered_events;
+    unsigned shared_column_mask;
+    bool measuring_column_groups;
+    ColumnGroupWidths column_groups[MAX_COLUMN_GROUP];
 
     // frame-global data
     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)
@@ -1172,8 +1192,9 @@ void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 bool ass_scroll_start(RenderContext *state, const char *start, const char *end);
 void ass_reset_render_context_explicit(RenderContext *state, ASS_Style *style,
                                        bool explicit_style_reset);
-void ass_column_set_mode(RenderContext *state, bool active);
+void ass_column_set_group(RenderContext *state, int group);
 void ass_column_set_align(RenderContext *state, int align);
+double ass_column_spacing(const RenderContext *state);
 void ass_column_set_spacing(RenderContext *state, double spacing);
 void ass_column_update_default(RenderContext *state, unsigned fields);
 void ass_frame_ref(ASS_Image *img);
@@ -1220,10 +1241,8 @@ void ass_rgba_debug_allocation_stats(size_t *live_allocations,
                                      uint64_t *registry_scans,
                                      uint64_t *registry_scan_steps);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
-bool ass_render_event(RenderContext *state, ASS_Event *event,
-                      EventImages *event_images, ASS_ImageRGBA **rgba_out);
+int ass_render_frame_events(ASS_Renderer *renderer, bool rgba);
 bool ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track, long long now);
-bool ass_ensure_event_images(ASS_Renderer *render_priv, int count);
 int ass_cmp_event_layer(const void *p1, const void *p2);
 void ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt);
 int ass_detect_change(ASS_Renderer *priv);

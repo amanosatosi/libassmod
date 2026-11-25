@@ -37,6 +37,7 @@ EXTRA_DIST += test/clip_transform_selftest.c
 EXTRA_DIST += docs/style-extensions.md test/style_extensions_selftest.c
 EXTRA_DIST += docs/expression-variables.md test/expression_selftest.c
 EXTRA_DIST += test/style_extensions_bench.c
+EXTRA_DIST += docs/column-layout.md test/column_layout_selftest.c
 EXTRA_DIST += test/secondary_border_selftest.c test/fonts/karaoke-border.ttf
 EXTRA_DIST += test/rgba_registry_selftest.c
 EXTRA_DIST += docs/furigana-extension.md test/furi_selftest.c \

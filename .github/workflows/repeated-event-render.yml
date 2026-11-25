@@ -27,10 +27,15 @@ jobs:
       - name: Build
         run: meson compile -C build
       - name: Run deterministic rendering checks
-        run: meson test -C build repeated-paint-event-render --verbose --print-errorlogs
+        run: meson test -C build repeated-paint-event-render column-layout-groups --verbose --print-errorlogs
+      - name: Measure column layout rendering
+        if: matrix.mode == 'release'
+        run: meson test -C build --benchmark column-layout-performance --verbose
       - name: Save diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: repeated-event-render-${{ matrix.mode }}
-          path: build/meson-logs/testlog.txt
+          path: |
+            build/meson-logs/testlog.txt
+            build/meson-logs/benchmarklog.txt

@@ -13,6 +13,13 @@ test('native-scroll-render', scroll_render_unit,
     env: {'SCROLL_TEST_FONT': join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')},
     timeout: 120)
 
+column_layout_unit = executable('column_layout_unit', files('column_layout_selftest.c'),
+    include_directories: incs, dependencies: deps,
+    link_with: libass_for_tools, install: false)
+column_layout_font = join_paths(meson.project_source_root(), 'compare', 'test', 'font1.ttf')
+test('column-layout-groups', column_layout_unit, args: [column_layout_font])
+benchmark('column-layout-performance', column_layout_unit, args: [column_layout_font, '--bench'])
+
 libass_test = executable(
     'libass_test',
     test_src,

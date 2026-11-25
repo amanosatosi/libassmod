@@ -183,6 +183,7 @@ static bool test_pairs(ASS_Library *lib, ASS_Renderer *renderer)
         {"{\\b[split]s4}Text", "{\\bs4}Text"},
         {"{[\\col1]}Left|Right", "{}Left|Right"},
         {"{\\co[split]l1\\colsp[gap]8}Left|Right", "{\\col1\\colsp8}Left|Right"},
+        {"{\\co[split]l1[group]0\\colsp8}Left|Right", "{\\col10\\colsp8}Left|Right"},
         {"{[]}Hello\\NWorld", "Hello\\NWorld"},
         {"{[]}Hello [world]", "Hello [world]"},
         {"{\\N}Text", "{}Text"}, {"{[]}Text", "{}Text"},
@@ -237,6 +238,7 @@ static bool test_prescans(ASS_Library *lib, ASS_Renderer *renderer)
         "\\t(0,500,\\bs(4))\\bs1", "\\bs(4", "\\t(0,500,\\bs4",
         "\\t((\\bs4)",
         "\\col1\\colsp8", "\\col0", "\\col+1", "\\col01", "\\col(1)",
+        "\\col2", "\\col10", "\\col\xEF\xBC\x91\xEF\xBC\x90", // Unicode 10
         "\\col 1 \\colsp8", "\\col\xEF\xBC\x91\\colsp8",
         "\\col\xF0\x9D\x9F\x99\\colsp8", // Unicode 1
         "\\col\xEF\xBC", "\\col\v1", "\\col1\v", "\\unknown(\\col1)",

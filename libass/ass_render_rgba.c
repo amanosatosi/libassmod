@@ -1024,20 +1024,7 @@ ASS_ImageRGBA *ass_render_frame_rgba(ASS_Renderer *priv, ASS_Track *track,
         return NULL;
     }
 
-    int cnt = 0;
-    for (int i = 0; i < track->n_events; i++) {
-        ASS_Event *event = track->events + i;
-        if ((event->Start <= now) && (now < (event->Start + event->Duration))) {
-            if (!ass_ensure_event_images(priv, cnt))
-                break;
-            memset(priv->eimg + cnt, 0, sizeof(*priv->eimg));
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt,
-                                 &priv->eimg[cnt].imgs_rgba)) {
-                priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
-                cnt++;
-            }
-        }
-    }
+    int cnt = ass_render_frame_events(priv, true);
 
     if (cnt > 0)
         qsort(priv->eimg, cnt, sizeof(EventImages), ass_cmp_event_layer);

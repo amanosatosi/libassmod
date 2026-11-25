@@ -5,8 +5,8 @@ ASS-like subtitles. The feature is intended for structured subtitle text such
 as status screens, lists, UI-like displays, and translated layouts where manual
 spacing would be fragile.
 
-Normal ASS rendering is unchanged unless `\col1` is active in the current
-dialogue event.
+Column mode is opt-in. Set `\col1` through `\col10` to place text in a column
+group.
 
 ## Basic Syntax
 
@@ -16,8 +16,9 @@ Column mode is controlled with override tags:
 {\col1}A|B|C{\col0}
 ```
 
-* `\col1` enables column mode.
-* `\col0` disables column mode and clears column layout state.
+* `\col1` through `\col10` enable column mode and select that group.
+* `\col0` disables column mode and clears the current group's visual defaults.
+* Missing, invalid, and out-of-range group values leave the current mode alone.
 * Column mode is off by default.
 * While column mode is active, `|` separates columns.
 * While column mode is active, `||` creates an empty column.
@@ -31,8 +32,25 @@ Rows are separated by normal ASS hard line breaks:
 {\col1}HP|504\NMP|80{\col0}
 ```
 
-Column measurement is event-local. Separate dialogue events do not share table
-widths.
+## Independent Groups
+
+Each column in a group uses the widest corresponding cell among that group's
+currently active dialogue events. Other groups have their own widths. If a row
+enters or leaves the frame, the group's widths update at that event's Start or
+End time. Seeking uses the rows active at the destination time.
+
+```ass
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(30,40)\col1}HP|504
+Dialogue: 0,0:00:02.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(30,70)\col1}Max HP|800
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(300,40)\col2}Name|Emilia
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(300,70)\col2}Location|Lugunica
+```
+
+The `Max HP` row can widen group 1 from two seconds onward. Group 2 keeps its
+own widths. Use matching horizontal anchors and `\colsp` settings when rows
+in different events should line up at the same screen coordinates. Position,
+`\colan`, `\colsp`, and visual defaults still belong to each event. A single
+`\col1` event continues to align its own `\N`-separated rows.
 
 ## Example
 
@@ -341,7 +359,8 @@ Karaoke tags are ignored in column mode as described above.
 
 ## Scope and Lifetime
 
-Column layout state is temporary and event-local.
+Column widths are shared within each active group. Per-column style defaults,
+alignment, and spacing are local to the event and its group.
 
 Column defaults do not leak:
 
@@ -350,7 +369,7 @@ Column defaults do not leak:
 * into other dialogue events
 * into reused renderer state
 
-`\col0` ends the current column block and clears column layout state.
+`\col0` ends the current column block and restores ordinary text layout.
 
 ## Reset Behavior
 
@@ -360,14 +379,11 @@ Inside column mode, `\r` does not replace the stored per-column defaults in this
 version. The stored defaults remain first-default-wins until the column block
 ends.
 
-When column mode ends with `\col0`, all column defaults are cleared.
+When column mode ends with `\col0`, the current group's visual defaults for
+that event are cleared.
 
 ## Initial Limitations
 
 * No RTL-aware column layout is implemented.
-* `\col2` is not implemented.
-* Column measurement is event-local only.
-* Separate dialogue events do not share column widths.
 * Later rows do not update stored column defaults yet.
 * Box/background behavior is not specialized for tables yet.
-* Column state is temporary and event-local.

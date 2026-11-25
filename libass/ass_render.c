@@ -251,19 +251,18 @@ static void free_furi_groups(TextInfo *text_info)
 static void free_column_layout(TextInfo *text_info)
 {
     free(text_info->column_glyphs);
-    free(text_info->column_defaults);
-    free(text_info->column_widths);
-    free(text_info->column_spacing);
-    free(text_info->column_align);
     text_info->column_glyphs = NULL;
-    text_info->column_defaults = NULL;
-    text_info->column_widths = NULL;
-    text_info->column_spacing = NULL;
-    text_info->column_align = NULL;
     text_info->max_column_glyphs = 0;
-    text_info->max_columns = 0;
-    text_info->column_rows = 0;
-    text_info->column_count = 0;
+    unsigned groups = text_info->column_layout_mask;
+    for (int index = 0; groups; index++, groups >>= 1) {
+        if (!(groups & 1))
+            continue;
+        ColumnLayout *layout = &text_info->column_layouts[index];
+        free(layout->columns);
+        *layout = (ColumnLayout) {0};
+    }
+    text_info->column_layout_mask = 0;
+    text_info->has_shared_column_bounds = false;
 }
 
 static bool text_info_init(TextInfo* text_info)
@@ -426,6 +425,8 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (render_priv->ftlibrary)
         FT_Done_FreeType(render_priv->ftlibrary);
     free(render_priv->eimg);
+    for (int i = 0; i < MAX_COLUMN_GROUP; i++)
+        free(render_priv->column_groups[i].widths);
     ass_clear_tag_images_internal(render_priv);
 
     render_context_done(&render_priv->state);
@@ -3872,7 +3873,7 @@ init_render_context(RenderContext *state, ASS_Event *event, bool chat_enabled)
     state->pattern_cycle_serial = 0;
     state->event_has_cycle = false;
     state->column_event = false;
-    state->column_active = false;
+    state->column_group = 0;
     state->column_row = 0;
     state->column_index = 0;
     state->column_base_style = (ColumnStyleState) {0};
@@ -3952,39 +3953,35 @@ static int column_halign_from_numpad(int align)
     }
 }
 
-static bool ensure_column_count(TextInfo *text_info, int count)
+static bool ensure_column_count(ColumnLayout *layout, int count)
 {
-    if (count <= text_info->max_columns)
+    if (count <= layout->capacity)
         return true;
 
-    int old_max = text_info->max_columns;
+    int old_max = layout->capacity;
     int new_max = old_max ? old_max : 8;
     while (new_max < count) {
         if (new_max > INT_MAX / 2)
             return false;
         new_max *= 2;
     }
-
-    if (!ASS_REALLOC_ARRAY(text_info->column_defaults, new_max) ||
-            !ASS_REALLOC_ARRAY(text_info->column_widths, new_max) ||
-            !ASS_REALLOC_ARRAY(text_info->column_spacing, new_max) ||
-            !ASS_REALLOC_ARRAY(text_info->column_align, new_max))
+    if (!ASS_REALLOC_ARRAY(layout->columns, new_max))
         return false;
 
-    for (int i = old_max; i < new_max; i++) {
-        text_info->column_defaults[i] = (ColumnStyleDefault) {0};
-        text_info->column_widths[i] = 0.0;
-        text_info->column_spacing[i] = 1.0;
-        text_info->column_align[i] = HALIGN_LEFT;
-    }
-    text_info->max_columns = new_max;
+    for (int i = old_max; i < new_max; i++)
+        layout->columns[i] = (Column) {.spacing = 1.0, .align = HALIGN_LEFT};
+    layout->capacity = new_max;
     return true;
+}
+
+static ColumnLayout *current_column_layout(RenderContext *state)
+{
+    return &state->text_info.column_layouts[state->column_group - 1];
 }
 
 static bool begin_column_layout(RenderContext *state)
 {
     TextInfo *text_info = &state->text_info;
-
     if (!text_info->column_glyphs) {
         text_info->column_glyphs =
             malloc(text_info->max_glyphs * sizeof(*text_info->column_glyphs));
@@ -3993,15 +3990,7 @@ static bool begin_column_layout(RenderContext *state)
         text_info->max_column_glyphs = text_info->max_glyphs;
     }
 
-    if (!ensure_column_count(text_info, 1))
-        return false;
-
     state->column_event = true;
-    state->column_active = false;
-    state->column_row = 0;
-    state->column_index = 0;
-    text_info->column_rows = 1;
-    text_info->column_count = 1;
     return true;
 }
 
@@ -4224,104 +4213,105 @@ static void apply_column_default_style(RenderContext *state,
         ass_update_font(state);
 }
 
-static ColumnStyleDefault *get_column_default(RenderContext *state)
+static Column *get_column(RenderContext *state)
 {
-    TextInfo *text_info = &state->text_info;
+    ColumnLayout *layout = current_column_layout(state);
     int column = state->column_index;
-    if (column < 0 || !ensure_column_count(text_info, column + 1))
+    if (column < 0 || !ensure_column_count(layout, column + 1))
         return NULL;
-    return &text_info->column_defaults[column];
+    return &layout->columns[column];
 }
 
 static void finish_column_cell(RenderContext *state)
 {
-    if (!state->column_event || !state->column_active)
+    if (!state->column_group)
         return;
 
-    ColumnStyleDefault *def = get_column_default(state);
+    Column *column = get_column(state);
+    ColumnStyleDefault *def = column ? &column->default_style : NULL;
     if (def && !def->set && def->style.mask)
         def->set = true;
 }
 
 static void apply_column_cell_style(RenderContext *state)
 {
-    if (!state->column_event || !state->column_active)
+    if (!state->column_group)
         return;
 
     apply_column_base_style(state);
 
-    ColumnStyleDefault *def = get_column_default(state);
+    Column *column = get_column(state);
+    ColumnStyleDefault *def = column ? &column->default_style : NULL;
     if (def && def->set)
         apply_column_default_style(state, &def->style);
 }
 
-static void clear_column_defaults(TextInfo *text_info)
-{
-    for (int i = 0; i < text_info->max_columns; i++)
-        text_info->column_defaults[i] = (ColumnStyleDefault) {0};
-}
-
 void ass_column_update_default(RenderContext *state, unsigned fields)
 {
-    if (!state->column_event || !state->column_active || !fields)
+    if (!state->column_group || !fields)
         return;
 
-    ColumnStyleDefault *def = get_column_default(state);
+    Column *column = get_column(state);
+    ColumnStyleDefault *def = column ? &column->default_style : NULL;
     if (!def || def->set)
         return;
 
     capture_column_style(state, &def->style, fields);
 }
 
-void ass_column_set_mode(RenderContext *state, bool active)
+void ass_column_set_group(RenderContext *state, int group)
 {
-    if (!state->column_event)
+    if (!state->column_event || state->column_group == group)
         return;
 
-    if (state->column_active == active)
-        return;
-
-    if (active) {
-        capture_column_base_style(state);
-        state->column_active = true;
-        apply_column_cell_style(state);
-    } else {
+    if (state->column_group) {
         finish_column_cell(state);
-        state->column_active = false;
-        clear_column_defaults(&state->text_info);
+        if (!group) {
+            ColumnLayout *layout = current_column_layout(state);
+            for (int i = 0; i < layout->capacity; i++)
+                layout->columns[i].default_style = (ColumnStyleDefault) {0};
+        }
         apply_column_base_style(state);
+    }
+
+    state->column_group = group;
+    if (group) {
+        state->text_info.column_layout_mask |= 1u << (group - 1);
+        capture_column_base_style(state);
+        apply_column_cell_style(state);
     }
 }
 
 void ass_column_set_align(RenderContext *state, int align)
 {
-    if (!state->column_event || !state->column_active)
+    if (!state->column_group)
         return;
 
-    TextInfo *text_info = &state->text_info;
-    int column = state->column_index;
-    if (column < 0 || !ensure_column_count(text_info, column + 1))
+    Column *column = get_column(state);
+    if (!column || column->default_style.set)
         return;
 
-    ColumnStyleDefault *def = &text_info->column_defaults[column];
-    if (def->set)
-        return;
+    column->default_style.style.mask |= COLUMN_STYLE_ALIGN;
+    column->align = column_halign_from_numpad(align);
+}
 
-    def->style.mask |= COLUMN_STYLE_ALIGN;
-    text_info->column_align[column] = column_halign_from_numpad(align);
+double ass_column_spacing(const RenderContext *state)
+{
+    if (!state->column_group)
+        return 1.0;
+    const ColumnLayout *layout = &state->text_info.column_layouts[state->column_group - 1];
+    int index = state->column_index;
+    return index >= 0 && index < layout->capacity ? layout->columns[index].spacing : 1.0;
 }
 
 void ass_column_set_spacing(RenderContext *state, double spacing)
 {
-    if (!state->column_event || !state->column_active)
+    if (!state->column_group)
         return;
 
-    TextInfo *text_info = &state->text_info;
-    int column = state->column_index;
-    if (column < 0 || !ensure_column_count(text_info, column + 1))
-        return;
-
-    text_info->column_spacing[column] = spacing <= 0 ? 1.0 : spacing;
+    Column *column = get_column(state);
+    if (column)
+        column->spacing = spacing <= 0 ? 1.0 : spacing;
 }
 
 static void free_temporary_composite(CompositeHashValue *image)
@@ -4396,7 +4386,7 @@ static void free_render_context(RenderContext *state)
     state->curved_path_outline = NULL;
     state->text_info.length = 0;
     state->column_event = false;
-    state->column_active = false;
+    state->column_group = 0;
     state->column_row = 0;
     state->column_index = 0;
     state->column_base_style = (ColumnStyleState) {0};
@@ -5962,7 +5952,8 @@ static bool append_glyph_to_target(RenderContext *state,
     if (state->column_event && main_text) {
         if (!ensure_column_glyph_capacity(&state->text_info))
             return false;
-        if (!ensure_column_count(&state->text_info, state->column_index + 1))
+        if (state->column_group &&
+                !ensure_column_count(current_column_layout(state), state->column_index + 1))
             return false;
     }
 
@@ -6026,7 +6017,7 @@ static bool append_glyph_to_target(RenderContext *state,
     }
     info->line = 0;
 
-    if (main_text && state->column_event && state->column_active) {
+    if (main_text && state->column_group) {
         info->effect_type = EF_NONE;
         info->effect_timing = 0;
         info->effect_skip_timing = 0;
@@ -6134,13 +6125,12 @@ static bool append_glyph_to_target(RenderContext *state,
         state->text_info.column_glyphs[*length] = (ColumnGlyphInfo) {
             .row = state->column_row,
             .column = state->column_index,
-            .active = state->column_active,
+            .group = state->column_group,
         };
-        if (state->column_active) {
-            state->text_info.column_rows =
-                FFMAX(state->text_info.column_rows, state->column_row + 1);
-            state->text_info.column_count =
-                FFMAX(state->text_info.column_count, state->column_index + 1);
+        if (state->column_group) {
+            ColumnLayout *layout = current_column_layout(state);
+            layout->rows = FFMAX(layout->rows, state->column_row + 1);
+            layout->count = FFMAX(layout->count, state->column_index + 1);
         }
     }
 
@@ -6511,14 +6501,19 @@ static int parse_column_tag_value(char *start, char *end)
 {
     ass_override_spaces(&start, end);
     int value = ass_unicode_decimal_value(override_codepoint(&start, end));
+    if (value == 1 && ass_override_peek(&start, end)) {
+        char *next = start;
+        if (ass_unicode_decimal_value(override_codepoint(&next, end)) == 0) {
+            start = next;
+            value = MAX_COLUMN_GROUP;
+        }
+    }
     ass_override_spaces(&start, end);
-    if (start != end || (value != 0 && value != 1))
-        return -1;
-    return value;
+    return start == end ? value : -1;
 }
 
-static void scan_column_override_block(char *p, char *end, bool *active,
-                                       bool *seen_active)
+static void scan_column_override_block(char *p, char *end, unsigned *groups,
+                                       bool *uncertain)
 {
     while (p < end) {
         while (ass_override_peek(&p, end) && *p != '\\')
@@ -6532,27 +6527,31 @@ static void scan_column_override_block(char *p, char *end, bool *active,
         while (ass_override_peek(&p, end) && *p != '\\' && *p != '(')
             p++;
         char *name_end = p;
+        bool parenthesized = ass_override_peek(&p, end) == '(';
 
         if (ass_override_prefix(&name, name_end, "col")) {
             int value = parse_column_tag_value(name, name_end);
-            if (value == 0) {
-                *active = false;
-            } else if (value == 1) {
-                *active = true;
-                *seen_active = true;
-            }
+            if (value > 0)
+                *groups |= 1u << (value - 1);
+            // After column mode has been enabled, the ordinary tag parser can
+            // also interpret parenthesized, signed and zero-padded operands.
+            unsigned char next = ass_override_peek(&name, name_end);
+            if (parenthesized || (value < 0 && (next < 'a' || next > 'z')))
+                *uncertain = true;
+        } else if (parenthesized && ass_override_prefix(&name, name_end, "t")) {
+            ass_override_spaces(&name, name_end);
+            if (name == name_end)
+                *uncertain = true;
         }
 
         p = skip_parenthesized_tag_args(p, end, NULL);
     }
 }
 
-static bool event_has_active_column(char *text)
+static unsigned event_column_groups(char *p)
 {
-    bool active = false;
-    bool seen_active = false;
-    char *p = text;
-
+    unsigned groups = 0;
+    bool uncertain = false;
     while (*p) {
         if (*p == '\\' && p[1]) {
             p += 2;
@@ -6560,14 +6559,13 @@ static bool event_has_active_column(char *text)
             char *end = strchr(p, '}');
             if (!end)
                 break;
-            scan_column_override_block(p + 1, end, &active, &seen_active);
+            scan_column_override_block(p + 1, end, &groups, &uncertain);
             p = end + 1;
         } else {
             p++;
         }
     }
-
-    return seen_active;
+    return groups && uncertain ? (1u << MAX_COLUMN_GROUP) - 1 : groups;
 }
 
 /* Append fixed header/name text through the same glyph path as message bodies. */
@@ -6644,13 +6642,13 @@ static bool parse_event_fragment(RenderContext *state, char *p)
                 code = 0xfffc; // object replacement character
                 p = q;
                 break;
-            } else if (state->column_event && state->column_active && *p == '|') {
+            } else if (state->column_group && *p == '|') {
                 finish_column_cell(state);
                 state->column_index++;
-                if (!ensure_column_count(text_info, state->column_index + 1))
+                ColumnLayout *layout = current_column_layout(state);
+                if (!ensure_column_count(layout, state->column_index + 1))
                     goto fail;
-                text_info->column_count =
-                    FFMAX(text_info->column_count, state->column_index + 1);
+                layout->count = FFMAX(layout->count, state->column_index + 1);
                 apply_column_cell_style(state);
                 p++;
             } else {
@@ -6702,8 +6700,6 @@ static bool parse_event_fragment(RenderContext *state, char *p)
             finish_column_cell(state);
             state->column_row++;
             state->column_index = 0;
-            text_info->column_rows =
-                FFMAX(text_info->column_rows, state->column_row + 1);
             apply_column_cell_style(state);
         }
 
@@ -6780,7 +6776,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event,
     state->karaoke_timeline_enabled =
         strchr(event->Text, '<') && strchr(event->Text, '|');
     if (!chat) {
-        if (event_has_active_column(event->Text) && !begin_column_layout(state))
+        if (state->column_mask && !begin_column_layout(state))
             goto fail;
         if (parse_event_fragment(state, event->Text))
             return true;
@@ -8881,8 +8877,8 @@ static void align_lines(RenderContext *state, double max_text_width)
 }
 
 typedef struct {
-    double min_x;
-    double max_x;
+    double min_x, max_x;
+    int shift;
     bool seen;
 } ColumnCellMeasure;
 
@@ -8904,107 +8900,154 @@ static bool measure_column_glyph(const GlyphInfo *info, double *min_x, double *m
     return true;
 }
 
-static void apply_column_layout(RenderContext *state)
+static bool merge_column_widths(ColumnGroupWidths *group, const ColumnLayout *layout)
 {
-    TextInfo *text_info = &state->text_info;
-    if (!state->column_event || !text_info->column_glyphs ||
-            text_info->column_rows <= 0 || text_info->column_count <= 1)
-        return;
+    if (group->capacity < layout->count) {
+        if (!ASS_REALLOC_ARRAY(group->widths, layout->capacity))
+            return false;
+        group->capacity = layout->capacity;
+    }
+    for (int i = group->count; i < layout->count; i++)
+        group->widths[i] = 0.0;
+    group->count = FFMAX(group->count, layout->count);
+    for (int i = 0; i < layout->count; i++)
+        group->widths[i] = FFMAX(group->widths[i], layout->columns[i].width);
+    group->events++;
+    return true;
+}
 
-    int rows = text_info->column_rows;
-    int columns = text_info->column_count;
+static bool layout_column_group(TextInfo *text, int index, ColumnGroupWidths *group, bool measure)
+{
+    ColumnLayout *layout = &text->column_layouts[index];
+    int rows = layout->rows, columns = layout->count;
+    if (!rows || !columns || (!group && columns <= 1))
+        return true;
+
     if (rows > INT_MAX / columns)
-        return;
-
-    int cell_count = rows * columns;
-    ColumnCellMeasure *cells = calloc(cell_count, sizeof(*cells));
-    double *row_origins = malloc(rows * sizeof(*row_origins));
-    if (!cells || !row_origins) {
-        free(cells);
-        free(row_origins);
-        return;
-    }
-
-    for (int i = 0; i < cell_count; i++) {
-        cells[i].min_x = DBL_MAX;
-        cells[i].max_x = -DBL_MAX;
-    }
-    for (int i = 0; i < rows; i++)
-        row_origins[i] = DBL_MAX;
+        return false;
+    size_t cell_count = (size_t) rows * columns;
+    ColumnCellMeasure *cells = ass_realloc_array(NULL, cell_count, sizeof(*cells));
+    if (!cells)
+        return false;
+    memset(cells, 0, cell_count * sizeof(*cells));
     for (int i = 0; i < columns; i++)
-        text_info->column_widths[i] = 0.0;
+        layout->columns[i].width = 0.0;
 
-    for (int i = 0; i < text_info->length; i++) {
-        ColumnGlyphInfo meta = text_info->column_glyphs[i];
-        if (!meta.active || meta.row < 0 || meta.row >= rows ||
-                meta.column < 0 || meta.column >= columns)
+    double origin = DBL_MAX;
+    for (int i = 0; i < text->length; i++) {
+        ColumnGlyphInfo meta = text->column_glyphs[i];
+        if (meta.group != index + 1 || (unsigned) meta.row >= (unsigned) rows ||
+                (unsigned) meta.column >= (unsigned) columns)
             continue;
 
         double min_x, max_x;
-        if (!measure_column_glyph(&text_info->glyphs[i], &min_x, &max_x))
+        if (!measure_column_glyph(&text->glyphs[i], &min_x, &max_x))
             continue;
 
-        ColumnCellMeasure *cell = &cells[meta.row * columns + meta.column];
-        cell->min_x = FFMIN(cell->min_x, min_x);
-        cell->max_x = FFMAX(cell->max_x, max_x);
-        cell->seen = true;
-        row_origins[meta.row] = FFMIN(row_origins[meta.row], min_x);
+        ColumnCellMeasure *cell = &cells[(size_t) meta.row * columns + meta.column];
+        if (cell->seen) {
+            cell->min_x = FFMIN(cell->min_x, min_x);
+            cell->max_x = FFMAX(cell->max_x, max_x);
+        } else {
+            cell->min_x = min_x;
+            cell->max_x = max_x;
+            cell->seen = true;
+        }
+        origin = FFMIN(origin, min_x);
+    }
+    if (origin == DBL_MAX) {
+        free(cells);
+        return true;
     }
 
-    double table_origin = DBL_MAX;
     for (int row = 0; row < rows; row++) {
-        if (row_origins[row] < DBL_MAX)
-            table_origin = FFMIN(table_origin, row_origins[row]);
-        for (int column = 0; column < columns; column++) {
-            ColumnCellMeasure *cell = &cells[row * columns + column];
-            if (cell->seen) {
-                double width = cell->max_x - cell->min_x;
-                text_info->column_widths[column] =
-                    FFMAX(text_info->column_widths[column], width);
+        const ColumnCellMeasure *line = &cells[(size_t) row * columns];
+        for (int i = 0; i < columns; i++) {
+            if (line[i].seen) {
+                double width = line[i].max_x - line[i].min_x;
+                layout->columns[i].width = FFMAX(layout->columns[i].width, width);
             }
         }
     }
 
-    if (table_origin == DBL_MAX) {
+    if (measure) {
+        bool ok = merge_column_widths(group, layout);
         free(cells);
-        free(row_origins);
-        return;
+        return ok;
     }
 
-    double column_start = 0.0;
-    for (int column = 0; column < columns; column++) {
-        double width = text_info->column_widths[column];
-        int halign = text_info->column_align[column];
-
-        for (int row = 0; row < rows; row++) {
-            ColumnCellMeasure *cell = &cells[row * columns + column];
+    double column_start = 0.0, column_end = 0.0;
+    int grid_columns = group ? FFMAX(columns, group->count) : columns;
+    for (int i = 0; i < grid_columns; i++) {
+        const Column *column = i < columns ? &layout->columns[i] : NULL;
+        double local_width = column ? column->width : 0.0;
+        double width = group && i < group->count ?
+            FFMAX(local_width, group->widths[i]) : local_width;
+        for (int row = 0; column && row < rows; row++) {
+            ColumnCellMeasure *cell = &cells[(size_t) row * columns + i];
             if (!cell->seen)
                 continue;
 
-            double cell_width = cell->max_x - cell->min_x;
-            double align_shift = 0.0;
-            if (halign == HALIGN_CENTER)
-                align_shift = (width - cell_width) / 2.0;
-            else if (halign == HALIGN_RIGHT)
-                align_shift = width - cell_width;
-
-            double target = table_origin + column_start + align_shift;
+            double remaining = width - (cell->max_x - cell->min_x);
+            double align_shift = column->align == HALIGN_CENTER ? remaining / 2.0 :
+                column->align == HALIGN_RIGHT ? remaining : 0.0;
+            double target = origin + column_start + align_shift;
             double shift = target - cell->min_x;
-            int32_t shift_d6 = double_to_d6(shift);
-            for (int i = 0; i < text_info->length; i++) {
-                ColumnGlyphInfo meta = text_info->column_glyphs[i];
-                if (!meta.active || meta.row != row || meta.column != column)
-                    continue;
-                for (GlyphInfo *info = &text_info->glyphs[i]; info; info = info->next)
-                    info->pos.x += shift_d6;
-            }
+            cell->shift = double_to_d6(FFMINMAX(shift, INT_MIN / 64.0, INT_MAX / 64.0));
         }
+        column_end = column_start + width;
+        column_start += width + (column ? column->spacing : 1.0);
+    }
 
-        column_start += width + text_info->column_spacing[column];
+    if (group && isfinite(origin + column_end)) {
+        double right = origin + column_end;
+        if (text->has_shared_column_bounds) {
+            text->shared_column_left = FFMIN(text->shared_column_left, origin);
+            text->shared_column_right = FFMAX(text->shared_column_right, right);
+        } else {
+            text->has_shared_column_bounds = true;
+            text->shared_column_left = origin;
+            text->shared_column_right = right;
+        }
+    }
+
+    for (int i = 0; i < text->length; i++) {
+        ColumnGlyphInfo meta = text->column_glyphs[i];
+        if (meta.group != index + 1 || (unsigned) meta.row >= (unsigned) rows ||
+                (unsigned) meta.column >= (unsigned) columns)
+            continue;
+        const ColumnCellMeasure *cell = &cells[(size_t) meta.row * columns + meta.column];
+        for (GlyphInfo *glyph = &text->glyphs[i]; glyph; glyph = glyph->next) {
+            int64_t pos = (int64_t) glyph->pos.x + cell->shift;
+            glyph->pos.x = FFMINMAX(pos, INT_MIN, INT_MAX);
+        }
     }
 
     free(cells);
-    free(row_origins);
+    return true;
+}
+
+static void apply_column_layout(RenderContext *state)
+{
+    TextInfo *text = &state->text_info;
+    unsigned groups = text->column_layout_mask;
+    if (!groups)
+        return;
+    ASS_Renderer *renderer = state->renderer;
+    // Expression baselines are local to an event and can be reused across
+    // frames. Keep frame-dependent peer widths out of those baselines.
+    bool measure = renderer->measuring_column_groups && !state->expression_baseline;
+    unsigned shared = state->expression_baseline ? 0 : renderer->shared_column_mask;
+    if (measure)
+        groups &= shared;
+    for (int index = 0; groups; index++, groups >>= 1) {
+        if (!(groups & 1))
+            continue;
+        unsigned bit = 1u << index;
+        ColumnGroupWidths *group = shared & bit ? &renderer->column_groups[index] : NULL;
+        if (!layout_column_group(text, index, group, measure) && measure)
+            renderer->shared_column_mask &= ~bit;
+    }
 }
 
 static void calculate_rotation_params_list(RenderContext *state,
@@ -12595,7 +12638,8 @@ static bool render_event(RenderContext *state, ASS_Event *event,
     split_style_runs(state);
     ass_vertical_mark_syllables(state);
 
-    if (!state->expression_baseline && repeated_geometry_lookup(state)) {
+    if (!state->expression_baseline && !render_priv->measuring_column_groups &&
+            repeated_geometry_lookup(state)) {
         resolve_event_clip(state);
         repeated_geometry_render(state, event_images, rgba_out);
         free_render_context(state);
@@ -12690,6 +12734,14 @@ static bool render_event(RenderContext *state, ASS_Event *event,
         }
         align_lines(state, max_text_width);
         apply_column_layout(state);
+    }
+
+    if (render_priv->measuring_column_groups && !state->expression_baseline) {
+        ass_shaper_cleanup(state->shaper, text_info);
+        free_render_context(state);
+        release_chat_scene(chat, chat_cached);
+        free(ranges);
+        return true;
     }
 
     if (text_info->n_furi_groups)
@@ -12802,6 +12854,10 @@ static bool render_event(RenderContext *state, ASS_Event *event,
     // Ruby always contributes to horizontal alignment and occupied width.
     // furichangepos controls only vertical line/block reservation.
     ASS_DRect placement_bounds = render_bbox;
+    if (text_info->has_shared_column_bounds && !distorted_text && !curved_text && !rotate_baseline) {
+        placement_bounds.x_min = FFMIN(placement_bounds.x_min, text_info->shared_column_left);
+        placement_bounds.x_max = FFMAX(placement_bounds.x_max, text_info->shared_column_right);
+    }
     if (state->native_vertical && !reserve_furi)
         placement_bounds = bbox;
     if (!reserve_furi) {
@@ -13216,10 +13272,11 @@ static const ASS_TimedColorcode *event_timed_colorcode(ASS_Renderer *renderer, A
     return entry;
 }
 
-bool ass_render_event(RenderContext *state, ASS_Event *event,
-                      EventImages *event_images, ASS_ImageRGBA **rgba_out)
+static bool render_frame_event(RenderContext *state, ASS_Event *event, unsigned groups,
+                               EventImages *event_images, ASS_ImageRGBA **rgba_out)
 {
     ASS_Renderer *renderer = state->renderer;
+    state->column_mask = groups;
     state->timed_colorcode = event_timed_colorcode(renderer, event);
     state->global_colorcode = find_actor_colorcode(renderer->track, event->Name);
     state->expression_bounds = (ASS_ExprBounds) {0};
@@ -13318,7 +13375,7 @@ ass_start_frame(ASS_Renderer *render_priv, ASS_Track *track,
 /* Keep the old array intact if growing it fails. Both legacy and RGBA frame
  * paths use this storage, so allocation failure cannot become an invalid
  * EventImages write through a lost realloc pointer. */
-bool ass_ensure_event_images(ASS_Renderer *render_priv, int count)
+static bool ensure_event_images(ASS_Renderer *render_priv, int count)
 {
     if (count < render_priv->eimg_size)
         return true;
@@ -13339,6 +13396,65 @@ bool ass_ensure_event_images(ASS_Renderer *render_priv, int count)
     render_priv->eimg = images;
     render_priv->eimg_size = new_size;
     return true;
+}
+
+int ass_render_frame_events(ASS_Renderer *renderer, bool rgba)
+{
+    ASS_Track *track = renderer->track;
+    long long now = renderer->time;
+    unsigned seen = 0, shared = 0;
+    int active = 0;
+    // Stage active events in the output array so both rendering modes can use
+    // the same frame-local group widths without allocating a second list.
+    for (int i = 0; i < track->n_events; i++) {
+        ASS_Event *event = track->events + i;
+        if (event->Start > now || now >= event->Start + event->Duration)
+            continue;
+        if (!ensure_event_images(renderer, active))
+            break;
+        unsigned groups = event->Text ? event_column_groups(event->Text) : 0;
+        renderer->eimg[active].event = event;
+        renderer->eimg[active].column_mask = groups;
+        active++;
+        shared |= seen & groups;
+        seen |= groups;
+    }
+
+    renderer->shared_column_mask = shared;
+    if (shared) {
+        for (int i = 0; i < MAX_COLUMN_GROUP; i++) {
+            if (shared & (1u << i))
+                renderer->column_groups[i].count = renderer->column_groups[i].events = 0;
+        }
+        int has_rgba = track->has_rgba, has_blend = track->has_blend;
+        renderer->measuring_column_groups = true;
+        for (int i = 0; i < active; i++) {
+            const EventImages *input = &renderer->eimg[i];
+            if (renderer->shared_column_mask & input->column_mask)
+                render_frame_event(&renderer->state, input->event, input->column_mask, NULL, NULL);
+        }
+        renderer->measuring_column_groups = false;
+        track->has_rgba = has_rgba;
+        track->has_blend = has_blend;
+        for (int i = 0; i < MAX_COLUMN_GROUP; i++)
+            if (renderer->column_groups[i].events < 2)
+                renderer->shared_column_mask &= ~(1u << i);
+    }
+
+    int rendered = 0;
+    for (int i = 0; i < active; i++) {
+        ASS_Event *event = renderer->eimg[i].event;
+        unsigned groups = renderer->eimg[i].column_mask;
+        EventImages *output = &renderer->eimg[rendered];
+        memset(output, 0, sizeof(*output));
+        if (render_frame_event(&renderer->state, event, groups, output,
+                               rgba ? &output->imgs_rgba : NULL)) {
+            output->column_mask = groups;
+            renderer->frame_needs_rgba |= output->needs_rgba;
+            rendered++;
+        }
+    }
+    return rendered;
 }
 
 int ass_cmp_event_layer(const void *p1, const void *p2)
@@ -13501,9 +13617,11 @@ ass_fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
             s.y1 = priv->top + priv->height;
             s.x0 = priv->left;
             s.x1 = priv->left + priv->width;
-            if (priv->height != imgs[i].height) {       // no, it's not
+            if (priv->height != imgs[i].height ||
+                    (imgs[i].column_mask && (priv->width != imgs[i].width ||
+                                             priv->left != imgs[i].left))) {
                 ass_msg(render_priv->library, MSGL_WARN,
-                        "Event height has changed");
+                        "Event collision bounds have changed");
                 priv->top = 0;
                 priv->height = 0;
                 priv->left = 0;
@@ -13678,21 +13796,7 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         return NULL;
     }
 
-    // render events separately
-    int cnt = 0;
-    for (int i = 0; i < track->n_events; i++) {
-        ASS_Event *event = track->events + i;
-        if ((event->Start <= now)
-            && (now < (event->Start + event->Duration))) {
-            if (!ass_ensure_event_images(priv, cnt))
-                break;
-            memset(priv->eimg + cnt, 0, sizeof(*priv->eimg));
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt, NULL)) {
-                priv->frame_needs_rgba |= priv->eimg[cnt].needs_rgba;
-                cnt++;
-            }
-        }
-    }
+    int cnt = ass_render_frame_events(priv, false);
 
     // sort by layer
     if (cnt > 0)

@@ -5513,7 +5513,7 @@ static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
         }
 
         if (state->karaoke_only_parse) {
-            if (state->column_event && state->column_active)
+            if (state->column_group)
                 continue;
             if (tag("kt")) {
                 double val = nargs ? argtod(*args) * 10 : 0;
@@ -5698,12 +5698,9 @@ static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 apply_curved_text_path(state, args[0]);
         } else if (tag("colsp")) {
             if (nargs) {
-                const TextInfo *info = &state->text_info;
-                int column = state->column_index;
-                double current = column >= 0 && column < info->max_columns ?
-                    info->column_spacing[column] : 1.0;
                 double val;
-                if (numeric_arg_strict(state, *args, current, NUM_NONNEGATIVE, &val))
+                if (numeric_arg_strict(state, *args, ass_column_spacing(state),
+                                       NUM_NONNEGATIVE, &val))
                     ass_column_set_spacing(state, val);
             }
         } else if (tag("colan")) {
@@ -5716,8 +5713,8 @@ static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
             if (nargs) {
                 int32_t val;
                 if (parse_int32_arg_strict(*args, &val) &&
-                        (val == 0 || val == 1))
-                    ass_column_set_mode(state, val == 1);
+                        val >= 0 && val <= MAX_COLUMN_GROUP)
+                    ass_column_set_group(state, val);
             }
         } else if (tag("xbord")) {
             double val;
@@ -7152,35 +7149,35 @@ static char *parse_tags(RenderContext *state, char *p, char *end, double pwr,
             column_default(COLUMN_STYLE_ITALIC);
         } else if (tag("kt")) {
             // v4++
-            if (state->column_event && state->column_active)
+            if (state->column_group)
                 continue;
             double val = 0;
             if (nargs)
                 val = argtod(*args) * 10;
             apply_karaoke_reset_tag(state, val);
         } else if (tag("kf") || tag("K")) {
-            if (state->column_event && state->column_active)
+            if (state->column_group)
                 continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
             apply_karaoke_duration_tag(state, EF_KARAOKE_KF, val);
         } else if (tag("kO")) {
-            if (state->column_event && state->column_active)
+            if (state->column_group)
                 continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
             apply_karaoke_duration_tag(state, EF_KARAOKE_REVEAL, val);
         } else if (tag("ko")) {
-            if (state->column_event && state->column_active)
+            if (state->column_group)
                 continue;
             double val = 100;
             if (nargs)
                 val = argtod(*args);
             apply_karaoke_duration_tag(state, EF_KARAOKE_KO, val);
         } else if (tag("k")) {
-            if (state->column_event && state->column_active)
+            if (state->column_group)
                 continue;
             double val = 100;
             if (nargs)
