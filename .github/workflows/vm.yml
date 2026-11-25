@@ -7,9 +7,9 @@ on:
     # Even with defaults, jobs not started via dispatch will only have blank inputs
     inputs:
       test_repo:
-        description: 'An instance of a libass-tests git repo'
+        description: 'A libass-tests mirror containing the pinned commit (owner/repository)'
         required: false
-        default: 'https://github.com/libass/libass-tests.git'
+        default: 'libass/libass-tests'
 
 jobs:
   ART-VM:
@@ -33,14 +33,13 @@ jobs:
 
           - name: 'ART (freebsd64-qemu, FreeBSD-14, amd64)'
             os_image: freebsd
-            os_version: 14.3
+            os_version: 14.5
             # The default FreeBSD env places the libiconv header from ports in the default include path,
             # but doesn't put the corresponding library into the default library path.
             # Either inlcuding the lib path (presumably done by ports) or
             # telling libiconv’s header to pose as system iconv resolves the mismatch.
             CC: 'clang -DLIBICONV_PLUG=1 -fsanitize=address -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all'
             confflags: ''
-            confenv: 'PKG_CONFIG_PATH=/tmp/libass-ci-pkgconfig'
             # Leak detection appears to find false positives in libc and external libs
             ASAN_OPTIONS: detect_leaks=0
             ART_REG_SKIP: ''
@@ -57,13 +56,13 @@ jobs:
 
           - name: 'ART (haiku64-qemu, Haiku, amd64)'
             os_image: haiku
-            os_version: r1beta5
+            os_version: r1beta6
             # no libubsan available, thus just SIGILL
             CC: 'gcc -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all -fsanitize-undefined-trap-on-error'
 
           - name: 'ART(omnios64-qemu, illumos/OmniOS, amd64)'
             os_image: omnios
-            os_version: r151056
+            os_version: r151058
             # errors by default, but illumos has spec-incompliant iconv (const vs restrict)
             CC: 'gcc -Wno-error=incompatible-pointer-types'
             confenv: 'PKG_CONFIG_PATH=/opt/ooce/lib/64/pkgconfig'
@@ -73,6 +72,11 @@ jobs:
       ASAN_OPTIONS: ${{ matrix.ASAN_OPTIONS }}
       AUTOCONF_VERSION: ${{ matrix.AUTOCONF_VERSION }}
       AUTOMAKE_VERSION: ${{ matrix.AUTOMAKE_VERSION }}
+
+    defaults:
+      run:
+        # The startup action copies both checkouts once. Later steps use the VM's workspace.
+        shell: cpa.sh {0} --sync-files none
 
     steps:
       # Available core count changes on runner type and over time, but GHA
@@ -106,131 +110,75 @@ jobs:
           ref: 9498737388cbd78cbab6b703821adc213a335995
           path: './libass-tests'
 
-      - name: Install Packages
-        uses: cross-platform-actions/action@v1.0.0
+      - name: Start VM
+        uses: cross-platform-actions/action@v1.7.0
         with:
           operating_system: ${{ matrix.os_image }}
           version: ${{ matrix.os_version }}
-          # env vars not really needed here, but must match across all steps
           environment_variables: ASAN_OPTIONS AUTOCONF_VERSION AUTOMAKE_VERSION
-          shutdown_vm: false
-          sync_files: false
-          run: |
-            # Install Packages
-            case "${{ matrix.os_image }}" in
-              netbsd)
-                # We'll use the base system's version of gcc
-                sudo pkgin -y install \
-                    mozilla-rootcerts-openssl git nasm \
-                    autoconf automake libtool-base pkg-config \
-                    freetype fribidi harfbuzz fontconfig png
-                ;;
-              freebsd)
-                # Using system compiler
-                sudo pkg -o ASSUME_ALWAYS_YES=yes install \
-                  git nasm ca_root_nss \
-                  autoconf automake libtool pkgconf \
-                  freetype2 fribidi harfbuzz fontconfig png
-                # FreeType packages built on newer FreeBSD can require bzip2.pc,
-                # which FreeBSD 14's base libbz2 does not ship (ports #290368).
-                # Describe the actual base library without editing package files
-                # or removing the dependency from FreeType's metadata.
-                mkdir -p /tmp/libass-ci-pkgconfig
-                if ! pkg-config --exists bzip2; then
-                  test -f /usr/include/bzlib.h
-                  test -f /usr/lib/libbz2.so
-                  bzversion=$(bzip2 -V 2>&1 | sed -n 's/.*Version \([0-9][0-9.]*\).*/\1/p' | head -n 1)
-                  test -n "$bzversion"
-                  printf '%s\n' \
-                    'Name: bzip2' 'Description: FreeBSD base libbz2' \
-                    "Version: $bzversion" 'Libs: -lbz2' \
-                    > /tmp/libass-ci-pkgconfig/bzip2.pc
-                fi
-                PKG_CONFIG_PATH=/tmp/libass-ci-pkgconfig \
-                  pkg-config --print-errors --exists freetype2
-                ;;
-              openbsd)
-                # while OpenBSD natively uses doas,
-                # cross-platform-action only preconfigured sudo.
-                # Using system-provided: compiler, fontconfig, freetype, pkgconf
-                sudo pkg_add \
-                  git nasm libtool \
-                  autoconf-"$AUTOCONF_VERSION"p0 \
-                  automake-"$AUTOMAKE_VERSION" \
-                  fribidi harfbuzz libunibreak png
-                ;;
-              haiku)
-                pkgman list-repos
-                # A failed automatic refresh otherwise uses stale image indexes
-                # and requests removed package versions. Refresh explicitly and
-                # retry transient mirror/checksum failures, retaining all deps.
-                for attempt in 1 2 3; do
-                  if pkgman refresh && pkgman install -y \
-                    git nasm gcc make pkgconfig \
-                    libtool autoconf automake \
-                    freetype_devel fribidi_devel harfbuzz_devel \
-                    fontconfig_devel libunibreak_devel libpng16_devel; then
-                    break
-                  fi
-                  if [ "$attempt" = 3 ]; then
-                    echo 'Haiku repository refresh/package install failed after 3 attempts' >&2
-                    exit 1
-                  fi
-                  sleep 5
-                done
-                ;;
-              omnios)
-                # "ooce" extra packages are not in regular search paths.
-                # Activate via /opt/ooce/lib/64/pkgconfig etc.
-                # Harfbuzz and fribidi are bundled with pango (no standalone package).
-                sudo pkg install --deny-new-be --no-backup-be \
-                  pkg:/developer/gcc14 \
-                  pkg:/developer/nasm \
-                  pkg:/developer/build/make \
-                  pkg:/developer/pkg-config \
-                  pkg:/developer/build/autoconf \
-                  pkg:/developer/build/automake \
-                  pkg:/developer/build/libtool \
-                  pkg:/ooce/library/fontconfig \
-                  pkg:/ooce/library/pango \
-                  pkg:/ooce/library/libpng
-                ;;
-            esac
+          sync_files: runner-to-vm
+
+      - name: Install Packages
+        run: |
+          case "${{ matrix.os_image }}" in
+            netbsd)
+              # We'll use the base system's version of gcc
+              sudo pkgin -y install \
+                  mozilla-rootcerts-openssl git nasm \
+                  autoconf automake libtool-base pkg-config \
+                  freetype fribidi harfbuzz fontconfig png
+              ;;
+            freebsd)
+              # Using system compiler
+              sudo pkg -o ASSUME_ALWAYS_YES=yes install \
+                git nasm ca_root_nss \
+                autoconf automake libtool pkgconf \
+                freetype2 fribidi harfbuzz fontconfig png
+              ;;
+            openbsd)
+              # while OpenBSD natively uses doas,
+              # cross-platform-action only preconfigured sudo.
+              # Using system-provided: compiler, fontconfig, freetype, pkgconf
+              sudo pkg_add \
+                git nasm libtool \
+                autoconf-"$AUTOCONF_VERSION"p0 \
+                automake-"$AUTOMAKE_VERSION" \
+                fribidi harfbuzz libunibreak png
+              ;;
+            haiku)
+              pkgman install -y \
+                git nasm gcc make pkgconfig \
+                libtool autoconf automake \
+                freetype_devel fribidi_devel harfbuzz_devel \
+                fontconfig_devel libunibreak_devel libpng16_devel
+              ;;
+            omnios)
+              # "ooce" extra packages are not in regular search paths.
+              # Activate via /opt/ooce/lib/64/pkgconfig etc.
+              # Harfbuzz and fribidi are bundled with pango (no standalone package).
+              sudo pkg install --deny-new-be --no-backup-be \
+                pkg:/developer/gcc14 \
+                pkg:/developer/nasm \
+                pkg:/developer/build/make \
+                pkg:/developer/pkg-config \
+                pkg:/developer/build/autoconf \
+                pkg:/developer/build/automake \
+                pkg:/developer/build/libtool \
+                pkg:/ooce/library/fontconfig \
+                pkg:/ooce/library/pango \
+                pkg:/ooce/library/libpng
+              ;;
+          esac
 
       - name: Build libass
-        uses: cross-platform-actions/action@v1.0.0
-        with:
-          operating_system: ${{ matrix.os_image }}
-          version: ${{ matrix.os_version }}
-          environment_variables: ASAN_OPTIONS AUTOCONF_VERSION AUTOMAKE_VERSION
-          shutdown_vm: false
-          sync_files: true
-          run: |
-            ./autogen.sh
-            env ${{ matrix.confenv }} \
-              ./configure CC="${{ matrix.CC }}" ${{ matrix.confflags }} --enable-fuzz --enable-compare
-            make -j '${{ steps.cpus.outputs.count }}'
+        run: |
+          ./autogen.sh
+          env ${{ matrix.confenv }} \
+            ./configure CC="${{ matrix.CC }}" ${{ matrix.confflags }} --enable-fuzz --enable-compare
+          make -j '${{ steps.cpus.outputs.count }}'
 
       - name: Run Tests
-        uses: cross-platform-actions/action@v1.0.0
-        with:
-          operating_system: ${{ matrix.os_image }}
-          version: ${{ matrix.os_version }}
-          environment_variables: ASAN_OPTIONS AUTOCONF_VERSION AUTOMAKE_VERSION
-          shutdown_vm: false
-          sync_files: true
-          run: |
-            ART_REG_SKIP="${{ matrix.ART_REG_SKIP }}" \
-            make ART_SAMPLES="./libass-tests" check \
-            || (cat ./test-suite.log; exit 1)
-
-      - name: Shutdown VM
-        if: always()
-        uses: cross-platform-actions/action@v1.0.0
-        with:
-          operating_system: ${{ matrix.os_image }}
-          version: ${{ matrix.os_version }}
-          environment_variables: ASAN_OPTIONS AUTOCONF_VERSION AUTOMAKE_VERSION
-          shutdown_vm: true
-          sync_files: false
-          run: echo 'Byebye ^^)/"'
+        run: |
+          ART_REG_SKIP="${{ matrix.ART_REG_SKIP }}" \
+          make ART_SAMPLES="./libass-tests" check \
+          || (cat ./test-suite.log; exit 1)
